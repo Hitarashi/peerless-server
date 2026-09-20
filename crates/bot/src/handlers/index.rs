@@ -2,30 +2,30 @@ use std::{
     cmp::max,
     collections::HashSet,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
 
 use engine::{
+    TrackKey,
     orchestrator::{
         caption::{
-            format_dump_caption, parse_dump_caption, parse_zip_dump_caption, DumpCaptionMetadata,
+            DumpCaptionMetadata, format_dump_caption, parse_dump_caption, parse_zip_dump_caption,
         },
         deps::{ProviderAccess, SaveTrackInput},
     },
-    TrackKey,
 };
 use ferogram::{
+    InputMessage,
     filters::{self, Dispatcher},
     media::Document,
-    InputMessage,
 };
 
 use crate::{
-    html::{escape, parse_dynamic_html},
     BotState,
+    html::{escape, parse_dynamic_html},
 };
 
 static INDEXING: AtomicBool = AtomicBool::new(false);
@@ -197,10 +197,9 @@ async fn index_dump_channel(
         .client
         .get_messages(state.dump_peer.clone(), &[max_id])
         .await
+        && let Some(message) = messages.first()
     {
-        if let Some(message) = messages.first() {
-            let _ = message.delete().await;
-        }
+        let _ = message.delete().await;
     }
 
     let mut end = max_id - 1;
@@ -519,7 +518,7 @@ mod tests {
         };
         assert_eq!(
             format_index_summary(&summary),
-        "✓ <b>Dump channel sync complete</b><br/><br/>• <b>Messages scanned:</b> <code>250</code><br/>• <b>Tracks synced:</b> <code>240</code><br/>• <b>Ghost tracks pruned:</b> <code>3</code><br/>• <b>Skipped (non-tracks):</b> <code>10</code><br/>• <b>Time elapsed:</b> <code>4.5s</code>"
+            "✓ <b>Dump channel sync complete</b><br/><br/>• <b>Messages scanned:</b> <code>250</code><br/>• <b>Tracks synced:</b> <code>240</code><br/>• <b>Ghost tracks pruned:</b> <code>3</code><br/>• <b>Skipped (non-tracks):</b> <code>10</code><br/>• <b>Time elapsed:</b> <code>4.5s</code>"
         );
     }
 

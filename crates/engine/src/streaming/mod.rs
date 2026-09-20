@@ -5,8 +5,8 @@ mod source_id;
 mod stream_transport;
 
 pub use http::{
-    ByteStream, ReqwestHttp, StreamBodyError, StreamHttp, StreamHttpError, StreamHttpResponse,
-    CHROME_USER_AGENT,
+    ByteStream, CHROME_USER_AGENT, ReqwestHttp, StreamBodyError, StreamHttp, StreamHttpError,
+    StreamHttpResponse,
 };
 pub use source_id::SourceId;
 pub use stream_transport::{

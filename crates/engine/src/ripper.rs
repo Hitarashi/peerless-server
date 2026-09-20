@@ -107,7 +107,9 @@ impl std::fmt::Display for RipError {
                 "audio stream stalled on {source}: no data received for {secs}s"
             ),
             Self::Timeout { detail, .. } => write!(formatter, "operation timed out: {detail}"),
-            Self::Authentication { source } => write!(formatter, "authentication failed on {source}"),
+            Self::Authentication { source } => {
+                write!(formatter, "authentication failed on {source}")
+            }
             Self::PlaylistParse { which, detail } => {
                 write!(formatter, "{which} playlist parse failed: {detail}")
             }
@@ -740,23 +742,23 @@ impl AlacTrackRipper {
                     }
                 }
 
-                if let Some(expected) = total {
-                    if downloaded_bytes != expected {
-                        if signal.is_some_and(|token| token.is_cancelled()) {
-                            return Err(RipError::Cancelled);
-                        }
-                        let error = RipError::IncompleteBody {
-                            source: stream.source.clone(),
-                            expected,
-                            received: downloaded_bytes,
-                        };
-                        stage.observe_stream_failure(
-                            &stream.source,
-                            SourceFailureKind::IncompleteBody,
-                            &error.to_string(),
-                        );
-                        return Err(error);
+                if let Some(expected) = total
+                    && downloaded_bytes != expected
+                {
+                    if signal.is_some_and(|token| token.is_cancelled()) {
+                        return Err(RipError::Cancelled);
                     }
+                    let error = RipError::IncompleteBody {
+                        source: stream.source.clone(),
+                        expected,
+                        received: downloaded_bytes,
+                    };
+                    stage.observe_stream_failure(
+                        &stream.source,
+                        SourceFailureKind::IncompleteBody,
+                        &error.to_string(),
+                    );
+                    return Err(error);
                 }
 
                 file.flush().await?;
@@ -903,7 +905,7 @@ fn unique_temp_suffix() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{map_media_finalize_error, RipError};
+    use super::{RipError, map_media_finalize_error};
 
     #[test]
     fn source_validation_is_attributed_to_the_acquired_stream() {

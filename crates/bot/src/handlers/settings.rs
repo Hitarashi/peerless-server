@@ -13,17 +13,16 @@
 use std::sync::Arc;
 
 use ferogram::{
-    filters,
+    InputMessage, PeerRef, filters,
     filters::Dispatcher,
     keyboard::{Button, InlineKeyboard},
     update::CallbackQuery,
-    InputMessage, PeerRef,
 };
 
 use crate::{
+    BotState,
     html::parse_dynamic_html,
     interaction::{SettingFeature, SettingsAction},
-    BotState,
 };
 
 /// Storefronts offered in the auto-dump picker.
@@ -207,17 +206,16 @@ pub fn render_settings_text(settings: &engine::settings::BotSettings) -> String 
         } else {
             "Disabled"
         },
-        settings.stream_public_url.as_deref().unwrap_or("Not configured"),
+        settings
+            .stream_public_url
+            .as_deref()
+            .unwrap_or("Not configured"),
         settings.stream_server_port,
     )
 }
 
 fn flag(enabled: bool) -> &'static str {
-    if enabled {
-        "Enabled"
-    } else {
-        "Disabled"
-    }
+    if enabled { "Enabled" } else { "Disabled" }
 }
 
 /// Render the storefronts panel text.
@@ -322,7 +320,7 @@ async fn subcommand_reply(
                     return Some(
                         "Usage: <code>/settings mode &lt;live|cache_only|paused&gt;</code>"
                             .to_owned(),
-                    )
+                    );
                 }
             };
             state
@@ -426,7 +424,7 @@ async fn subcommand_reply(
                     return Some(
                         "Usage: <code>/settings limit &lt;number (0 for unlimited)&gt;</code>"
                             .to_owned(),
-                    )
+                    );
                 }
             };
             if num >= 0 {
@@ -617,10 +615,10 @@ pub async fn callback(state: Arc<BotState>, query: CallbackQuery, action: Settin
 
 /// Channel-aware panel deletion, same pattern as the auth-list close button.
 async fn delete_panel_message(state: Arc<BotState>, peer: PeerRef, id: i32) {
-    if let Ok(messages) = state.client.get_messages(peer, &[id]).await {
-        if let Some(message) = messages.first() {
-            let _ = message.delete().await;
-        }
+    if let Ok(messages) = state.client.get_messages(peer, &[id]).await
+        && let Some(message) = messages.first()
+    {
+        let _ = message.delete().await;
     }
 }
 

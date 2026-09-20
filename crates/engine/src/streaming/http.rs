@@ -116,7 +116,7 @@ impl StreamHttp for ReqwestHttp {
             Err(_) => {
                 return Err(StreamHttpError::Timeout {
                     elapsed_ms: started.elapsed().as_millis() as u64,
-                })
+                });
             }
         };
 

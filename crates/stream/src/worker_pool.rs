@@ -1,17 +1,17 @@
 use std::{
     sync::{
-        atomic::{AtomicI32, AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicI32, AtomicUsize, Ordering},
     },
     time::Duration,
 };
 
 use bytes::Bytes;
 pub use db::hash_token as hash_bot_token;
-use ferogram::{tl, ErrorKind, InvocationErrorExt};
+use ferogram::{ErrorKind, InvocationErrorExt, tl};
 use tokio::sync::Mutex;
 
-use crate::{circuit_breaker::CircuitBreaker, StreamError};
+use crate::{StreamError, circuit_breaker::CircuitBreaker};
 
 struct InFlightGuard<'a>(&'a AtomicUsize);
 
@@ -268,7 +268,9 @@ impl StreamWorkerPool {
                         (primary, true)
                     } else if !self.workers.is_empty() {
                         // All pool workers temporarily quarantined; wait briefly and fall back to first worker
-                        tracing::warn!("All workers quarantined in circuit breaker; waiting 500ms before retry");
+                        tracing::warn!(
+                            "All workers quarantined in circuit breaker; waiting 500ms before retry"
+                        );
                         tokio::time::sleep(Duration::from_millis(500)).await;
                         (&self.workers[0], false)
                     } else {
@@ -337,7 +339,10 @@ impl StreamWorkerPool {
                             );
                         }
                         if self.workers.len() <= 1 || self.circuit_breaker.available_count() == 0 {
-                            tracing::info!(secs, "Single worker or all workers quarantined; sleeping through FloodWait");
+                            tracing::info!(
+                                secs,
+                                "Single worker or all workers quarantined; sleeping through FloodWait"
+                            );
                             tokio::time::sleep(Duration::from_secs(secs + 1)).await;
                             if !is_primary {
                                 self.circuit_breaker.record_success(worker.id);
@@ -354,7 +359,13 @@ impl StreamWorkerPool {
                     }
                     ErrorKind::Rpc { ref name, .. } if name == "CONNECTION_NOT_INITED" => {
                         attempts += 1;
-                        tracing::warn!(attempts, max_attempts, offset, target_dc, "Telegram CONNECTION_NOT_INITED during fetch_chunk; waiting 500ms before retry");
+                        tracing::warn!(
+                            attempts,
+                            max_attempts,
+                            offset,
+                            target_dc,
+                            "Telegram CONNECTION_NOT_INITED during fetch_chunk; waiting 500ms before retry"
+                        );
                         tokio::time::sleep(Duration::from_millis(500)).await;
                         if attempts >= max_attempts {
                             break;

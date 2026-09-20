@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 use engine::orchestrator::deps::{CollectionResolver, ProviderAccess, ProviderComposition};
 use ferogram::{
-    filters::{self, Dispatcher},
     InputMessage,
+    filters::{self, Dispatcher},
 };
 
 use crate::BotState;

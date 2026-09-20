@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{Path, Query, State},
     Json,
+    extract::{Path, Query, State},
 };
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
-use crate::{error::ServerError, ServerState};
+use crate::{ServerState, error::ServerError};
 
 /// Summary information for a track in catalog listings.
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -279,31 +279,32 @@ pub async fn search_catalog(
     let mut live_results: Vec<music::TrackMeta> = Vec::new();
     if let Some(ref catalog) = state.catalog_service {
         let provider = query.provider.as_deref().unwrap_or("apple");
-        if provider.eq_ignore_ascii_case("apple") && !query.q.trim().is_empty() {
-            if let Ok(results) = catalog.search_catalog(&query.q, 10, "us").await {
-                let cached_track_ids: std::collections::HashSet<&str> =
-                    cached.iter().map(|c| c.track_id.as_str()).collect();
-                for item in &results {
-                    if !cached_track_ids.contains(item.id.as_str()) {
-                        live.push(UncachedTrackDto {
-                            provider: "apple".to_string(),
-                            item_id: item.id.clone(),
-                            track_id: item.id.clone(),
-                            title: item.title.clone(),
-                            artist: item.artist.clone(),
-                            album: item.album.clone(),
-                            duration: item.duration_secs as i32,
-                            is_cached: false,
-                            artwork_url: if item.artwork_url.is_empty() {
-                                None
-                            } else {
-                                Some(item.artwork_url.clone())
-                            },
-                        });
-                    }
+        if provider.eq_ignore_ascii_case("apple")
+            && !query.q.trim().is_empty()
+            && let Ok(results) = catalog.search_catalog(&query.q, 10, "us").await
+        {
+            let cached_track_ids: std::collections::HashSet<&str> =
+                cached.iter().map(|c| c.track_id.as_str()).collect();
+            for item in &results {
+                if !cached_track_ids.contains(item.id.as_str()) {
+                    live.push(UncachedTrackDto {
+                        provider: "apple".to_string(),
+                        item_id: item.id.clone(),
+                        track_id: item.id.clone(),
+                        title: item.title.clone(),
+                        artist: item.artist.clone(),
+                        album: item.album.clone(),
+                        duration: item.duration_secs as i32,
+                        is_cached: false,
+                        artwork_url: if item.artwork_url.is_empty() {
+                            None
+                        } else {
+                            Some(item.artwork_url.clone())
+                        },
+                    });
                 }
-                live_results = results;
             }
+            live_results = results;
         }
     }
 
@@ -626,49 +627,48 @@ pub async fn get_album_tracks(
         .await
         .map_err(|e| ServerError::Internal(e.to_string()))?;
 
-    if tracks.is_empty() {
-        if let Ok(track_id) = id_or_name.parse::<i32>() {
-            if let Ok(Some(track)) = state.tracks_repo.find_track_by_id(track_id).await {
-                tracks = state
-                    .tracks_repo
-                    .find_tracks_by_album(&track.album)
-                    .await
-                    .map_err(|e| ServerError::Internal(e.to_string()))?;
-            }
-        }
+    if tracks.is_empty()
+        && let Ok(track_id) = id_or_name.parse::<i32>()
+        && let Ok(Some(track)) = state.tracks_repo.find_track_by_id(track_id).await
+    {
+        tracks = state
+            .tracks_repo
+            .find_tracks_by_album(&track.album)
+            .await
+            .map_err(|e| ServerError::Internal(e.to_string()))?;
     }
 
     if tracks.is_empty() {
-        if let Some(ref catalog) = state.catalog_service {
-            if let Ok(album_res) = catalog.fetch_album_tracks(&id_or_name, "us").await {
-                let album = album_res.album.album.clone();
-                let artist = album_res.album.artist.clone();
-                let track_count = album_res.tracks.len();
-                let dtos = album_res
-                    .tracks
-                    .into_iter()
-                    .map(|t| TrackSummaryDto {
-                        id: 0,
-                        provider: "apple".to_string(),
-                        track_id: t.id,
-                        title: t.title,
-                        artist: t.artist,
-                        album: album.clone(),
-                        duration: t.duration_secs as i32,
-                        codec: "alac".to_string(),
-                        bit_depth: None,
-                        sample_rate: None,
-                        is_cached: false,
-                        isrc: None,
-                    })
-                    .collect();
-                return Ok(Json(AlbumDetailsDto {
-                    album,
-                    artist,
-                    track_count,
-                    tracks: dtos,
-                }));
-            }
+        if let Some(ref catalog) = state.catalog_service
+            && let Ok(album_res) = catalog.fetch_album_tracks(&id_or_name, "us").await
+        {
+            let album = album_res.album.album.clone();
+            let artist = album_res.album.artist.clone();
+            let track_count = album_res.tracks.len();
+            let dtos = album_res
+                .tracks
+                .into_iter()
+                .map(|t| TrackSummaryDto {
+                    id: 0,
+                    provider: "apple".to_string(),
+                    track_id: t.id,
+                    title: t.title,
+                    artist: t.artist,
+                    album: album.clone(),
+                    duration: t.duration_secs as i32,
+                    codec: "alac".to_string(),
+                    bit_depth: None,
+                    sample_rate: None,
+                    is_cached: false,
+                    isrc: None,
+                })
+                .collect();
+            return Ok(Json(AlbumDetailsDto {
+                album,
+                artist,
+                track_count,
+                tracks: dtos,
+            }));
         }
         return Err(ServerError::NotFound(format!(
             "Album '{id_or_name}' not found"
@@ -724,17 +724,30 @@ mod tests {
 
     use super::*;
 
-    fn fake_db_track(
+    struct FakeDbTrackSpec<'a> {
         id: i32,
         provider: Provider,
-        track_id: &str,
+        track_id: &'a str,
         codec: Codec,
-        title: &str,
-        artist: &str,
-        album: &str,
+        title: &'a str,
+        artist: &'a str,
+        album: &'a str,
         duration: i32,
-        isrc: Option<&str>,
-    ) -> db::Track {
+        isrc: Option<&'a str>,
+    }
+
+    fn fake_db_track(spec: FakeDbTrackSpec<'_>) -> db::Track {
+        let FakeDbTrackSpec {
+            id,
+            provider,
+            track_id,
+            codec,
+            title,
+            artist,
+            album,
+            duration,
+            isrc,
+        } = spec;
         db::Track {
             id,
             provider,
@@ -798,28 +811,28 @@ mod tests {
     #[test]
     fn groups_tracks_by_isrc_across_providers() {
         let cached = vec![
-            fake_db_track(
-                1,
-                Provider::Apple,
-                "1440857781",
-                Codec::Alac,
-                "Blank Space",
-                "Taylor Swift",
-                "1989",
-                231,
-                Some("USCJY1431245"),
-            ),
-            fake_db_track(
-                2,
-                Provider::Qobuz,
-                "8888888",
-                Codec::Flac,
-                "Blank Space (Qobuz Master)",
-                "Taylor Swift",
-                "1989 Deluxe",
-                231,
-                Some("USCJY1431245"),
-            ),
+            fake_db_track(FakeDbTrackSpec {
+                id: 1,
+                provider: Provider::Apple,
+                track_id: "1440857781",
+                codec: Codec::Alac,
+                title: "Blank Space",
+                artist: "Taylor Swift",
+                album: "1989",
+                duration: 231,
+                isrc: Some("USCJY1431245"),
+            }),
+            fake_db_track(FakeDbTrackSpec {
+                id: 2,
+                provider: Provider::Qobuz,
+                track_id: "8888888",
+                codec: Codec::Flac,
+                title: "Blank Space (Qobuz Master)",
+                artist: "Taylor Swift",
+                album: "1989 Deluxe",
+                duration: 231,
+                isrc: Some("USCJY1431245"),
+            }),
         ];
 
         let live = vec![fake_track_meta(
@@ -842,41 +855,45 @@ mod tests {
             Some("https://artwork.url/image.jpg")
         );
         assert_eq!(track.sources.len(), 2);
-        assert!(track
-            .sources
-            .iter()
-            .any(|s| s.provider == "apple" && s.id == 1));
-        assert!(track
-            .sources
-            .iter()
-            .any(|s| s.provider == "qobuz" && s.id == 2));
+        assert!(
+            track
+                .sources
+                .iter()
+                .any(|s| s.provider == "apple" && s.id == 1)
+        );
+        assert!(
+            track
+                .sources
+                .iter()
+                .any(|s| s.provider == "qobuz" && s.id == 2)
+        );
     }
 
     #[test]
     fn groups_tracks_by_provider_track_id() {
         let cached = vec![
-            fake_db_track(
-                1,
-                Provider::Apple,
-                "1440857781",
-                Codec::Alac,
-                "Blank Space",
-                "Taylor Swift",
-                "1989",
-                231,
-                None,
-            ),
-            fake_db_track(
-                2,
-                Provider::Apple,
-                "1440857781",
-                Codec::Ec3,
-                "Blank Space",
-                "Taylor Swift",
-                "1989",
-                231,
-                None,
-            ),
+            fake_db_track(FakeDbTrackSpec {
+                id: 1,
+                provider: Provider::Apple,
+                track_id: "1440857781",
+                codec: Codec::Alac,
+                title: "Blank Space",
+                artist: "Taylor Swift",
+                album: "1989",
+                duration: 231,
+                isrc: None,
+            }),
+            fake_db_track(FakeDbTrackSpec {
+                id: 2,
+                provider: Provider::Apple,
+                track_id: "1440857781",
+                codec: Codec::Ec3,
+                title: "Blank Space",
+                artist: "Taylor Swift",
+                album: "1989",
+                duration: 231,
+                isrc: None,
+            }),
         ];
 
         let canonical = build_canonical_tracks(&cached, &[]);
@@ -889,17 +906,17 @@ mod tests {
 
     #[test]
     fn groups_tracks_by_normalized_title_artist_and_duration_within_3s() {
-        let cached = vec![fake_db_track(
-            1,
-            Provider::Apple,
-            "111",
-            Codec::Alac,
-            "Blank Space!",
-            "Taylor Swift",
-            "1989",
-            231,
-            None,
-        )];
+        let cached = vec![fake_db_track(FakeDbTrackSpec {
+            id: 1,
+            provider: Provider::Apple,
+            track_id: "111",
+            codec: Codec::Alac,
+            title: "Blank Space!",
+            artist: "Taylor Swift",
+            album: "1989",
+            duration: 231,
+            isrc: None,
+        })];
 
         let live = vec![fake_track_meta(
             "222",
@@ -924,28 +941,28 @@ mod tests {
     #[test]
     fn does_not_group_tracks_with_different_isrcs() {
         let cached = vec![
-            fake_db_track(
-                1,
-                Provider::Apple,
-                "111",
-                Codec::Alac,
-                "Song A",
-                "Artist",
-                "Album",
-                200,
-                Some("ISRC11111111"),
-            ),
-            fake_db_track(
-                2,
-                Provider::Apple,
-                "222",
-                Codec::Alac,
-                "Song A",
-                "Artist",
-                "Album",
-                200,
-                Some("ISRC22222222"),
-            ),
+            fake_db_track(FakeDbTrackSpec {
+                id: 1,
+                provider: Provider::Apple,
+                track_id: "111",
+                codec: Codec::Alac,
+                title: "Song A",
+                artist: "Artist",
+                album: "Album",
+                duration: 200,
+                isrc: Some("ISRC11111111"),
+            }),
+            fake_db_track(FakeDbTrackSpec {
+                id: 2,
+                provider: Provider::Apple,
+                track_id: "222",
+                codec: Codec::Alac,
+                title: "Song A",
+                artist: "Artist",
+                album: "Album",
+                duration: 200,
+                isrc: Some("ISRC22222222"),
+            }),
         ];
 
         let canonical = build_canonical_tracks(&cached, &[]);
@@ -954,17 +971,17 @@ mod tests {
 
     #[test]
     fn does_not_group_tracks_with_duration_diff_greater_than_3s() {
-        let cached = vec![fake_db_track(
-            1,
-            Provider::Apple,
-            "111",
-            Codec::Alac,
-            "Song",
-            "Artist",
-            "Album",
-            200,
-            None,
-        )];
+        let cached = vec![fake_db_track(FakeDbTrackSpec {
+            id: 1,
+            provider: Provider::Apple,
+            track_id: "111",
+            codec: Codec::Alac,
+            title: "Song",
+            artist: "Artist",
+            album: "Album",
+            duration: 200,
+            isrc: None,
+        })];
 
         let live = vec![fake_track_meta(
             "222", "Song", "Artist", "Album", 205, // diff is 5 seconds (> 3s)

@@ -2,9 +2,9 @@ use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 
 use crate::{
+    DbError, DbPool,
     models::{NewUserIntegration, UserIntegration},
     schema::user_integrations,
-    DbError, DbPool,
 };
 
 /// Upsert a user's third-party integration credentials (e.g. Last.fm session).

@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use anyhow::{anyhow, Context, Result};
-use bot::{handlers, BotState};
-use ferogram::{filters::Dispatcher, Client, InputMessage, PeerRef};
+use anyhow::{Context, Result, anyhow};
+use bot::{BotState, handlers};
+use ferogram::{Client, InputMessage, PeerRef, filters::Dispatcher};
 use tokio::{signal, sync::Semaphore};
 use tracing::info;
 use tracing_subscriber::EnvFilter;

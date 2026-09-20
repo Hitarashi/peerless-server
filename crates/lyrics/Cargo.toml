@@ -7,15 +7,43 @@ license.workspace = true
 
 [features]
 default = ["lrclib"]
+all-providers = [
+    "lrclib",
+    "betterlyrics",
+    "paxsenix",
+    "unison",
+    "binimum",
+    "amll-ttml-db",
+    "kugou",
+    "netease",
+    "musixmatch",
+    "qq",
+    "youtube",
+    "spotify",
+]
 lrclib = []
-betterlyrics = []
-paxsenix = []
+betterlyrics = ["format-parser"]
+paxsenix = ["format-parser"]
+unison = ["format-parser"]
+binimum = ["format-parser"]
+amll-ttml-db = ["format-parser"]
+kugou = ["format-parser"]
+netease = ["format-parser"]
+musixmatch = ["format-parser"]
+qq = ["format-parser", "dep:base64"]
+youtube = ["dep:ytmusic"]
+spotify = ["format-parser"]
+format-parser = ["dep:lyrics-helper"]
 
 [dependencies]
 futures-util.workspace = true
 regex.workspace = true
+roxmltree = "0.21"
 serde.workspace = true
 serde_json.workspace = true
+ytmusic = { workspace = true, optional = true }
+lyrics-helper = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time", "test-util"] }

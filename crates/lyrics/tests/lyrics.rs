@@ -3,9 +3,9 @@
 #[cfg(any(feature = "lrclib", feature = "betterlyrics", feature = "paxsenix"))]
 use std::{collections::HashMap, sync::Mutex};
 
-use lyrics::{convert_ttml_to_elrc, detect_lyrics_tier, score_lyrics, LyricsTier};
 #[cfg(any(feature = "lrclib", feature = "betterlyrics", feature = "paxsenix"))]
-use lyrics::{lookup, LyricsFuture, LyricsHttp, LyricsLookup, LyricsRegistry};
+use lyrics::{LyricsFuture, LyricsHttp, LyricsLookup, LyricsRegistry, lookup};
+use lyrics::{LyricsTier, convert_ttml_to_elrc, detect_lyrics_tier, score_lyrics};
 
 #[cfg(any(feature = "lrclib", feature = "betterlyrics", feature = "paxsenix"))]
 struct FakeHttp {
@@ -190,9 +190,11 @@ async fn all_providers_fail_returns_none() {
         album: None,
         duration: None,
     };
-    assert!(lookup(&http, &LyricsRegistry::all_sources(), &meta)
-        .await
-        .is_none());
+    assert!(
+        lookup(&http, &LyricsRegistry::all_sources(), &meta)
+            .await
+            .is_none()
+    );
 }
 
 #[cfg(all(feature = "lrclib", feature = "paxsenix"))]
@@ -245,10 +247,12 @@ async fn ranked_result_exposes_source_and_rights_metadata() {
     let candidates = lyrics::lookup_ranked(&http, &LyricsRegistry::default(), &input).await;
     let candidate = candidates.first().unwrap();
     assert_eq!(candidate.source_id(), "lrclib");
-    assert!(candidate
-        .source_url()
-        .unwrap()
-        .contains("lrclib.net/api/get"));
+    assert!(
+        candidate
+            .source_url()
+            .unwrap()
+            .contains("lrclib.net/api/get")
+    );
     assert_eq!(candidate.rights().license, None);
     assert_eq!(candidate.provider(), "LRCLIB Exact (LRC)");
     assert_eq!(candidate.document.source.id, "lrclib");

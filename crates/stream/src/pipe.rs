@@ -1,19 +1,19 @@
 use std::{
     future::Future,
     pin::Pin,
-    sync::{atomic::AtomicI32, Arc},
+    sync::{Arc, atomic::AtomicI32},
     task::{Context, Poll},
 };
 
 use bytes::Bytes;
 use ferogram::tl;
 use futures_util::Stream;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 
 use crate::{
-    cache::{ChunkCache, CHUNK_SIZE},
-    worker_pool::StreamWorkerPool,
     StreamError,
+    cache::{CHUNK_SIZE, ChunkCache},
+    worker_pool::StreamWorkerPool,
 };
 
 /// Parsed HTTP byte range [start, end] (inclusive).

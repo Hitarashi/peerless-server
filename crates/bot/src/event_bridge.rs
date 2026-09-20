@@ -15,10 +15,9 @@ use engine::orchestrator::types::{
 use tokio::sync::mpsc;
 
 use crate::{
-    dashboard_manager,
-    dashboard_map::{snapshot_from, JobContexts},
+    BotState, dashboard_manager,
+    dashboard_map::{JobContexts, snapshot_from},
     mirror_health::last_known_health,
-    BotState,
 };
 
 /// Owned copies of engine events, safe to move across an mpsc channel.

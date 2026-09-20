@@ -11,8 +11,8 @@ use crate::{
         signature::generate_request_signature,
     },
     gateway::{
-        normalize_sample_rate, quality_fallback_ladder, BoxFuture, QobuzError, QobuzGateway,
-        QobuzStreamInfo,
+        BoxFuture, QobuzError, QobuzGateway, QobuzStreamInfo, normalize_sample_rate,
+        quality_fallback_ladder,
     },
     types::{QobuzAlbum, QobuzArtistData, QobuzPlaylist, QobuzStreamData, QobuzTrack},
 };
@@ -77,20 +77,20 @@ impl NativeRipperAdapter {
 
         {
             let read_guard = self.cached_tokens.read().await;
-            if let Some((tokens, fetched_at)) = read_guard.as_ref() {
-                if fetched_at.elapsed() < TOKEN_TTL {
-                    let app_id = self
-                        .config
-                        .app_id
-                        .clone()
-                        .unwrap_or_else(|| tokens.app_id.clone());
-                    let secrets = if let Some(sec) = &self.config.app_secret {
-                        vec![sec.clone()]
-                    } else {
-                        tokens.secrets.clone()
-                    };
-                    return (app_id, secrets);
-                }
+            if let Some((tokens, fetched_at)) = read_guard.as_ref()
+                && fetched_at.elapsed() < TOKEN_TTL
+            {
+                let app_id = self
+                    .config
+                    .app_id
+                    .clone()
+                    .unwrap_or_else(|| tokens.app_id.clone());
+                let secrets = if let Some(sec) = &self.config.app_secret {
+                    vec![sec.clone()]
+                } else {
+                    tokens.secrets.clone()
+                };
+                return (app_id, secrets);
             }
         }
 
@@ -239,18 +239,18 @@ impl QobuzGateway for NativeRipperAdapter {
                             if !status.is_success() {
                                 continue;
                             }
-                            if let Ok(data) = res.json::<QobuzStreamData>().await {
-                                if let Some(stream_url) = data.url {
-                                    return Ok(QobuzStreamInfo {
-                                        url: stream_url,
-                                        format_id: data.format_id.unwrap_or(format_id),
-                                        mime_type: data
-                                            .mime_type
-                                            .unwrap_or_else(|| "audio/flac".to_owned()),
-                                        bit_depth: data.bit_depth.unwrap_or(16),
-                                        sample_rate: normalize_sample_rate(data.sampling_rate),
-                                    });
-                                }
+                            if let Ok(data) = res.json::<QobuzStreamData>().await
+                                && let Some(stream_url) = data.url
+                            {
+                                return Ok(QobuzStreamInfo {
+                                    url: stream_url,
+                                    format_id: data.format_id.unwrap_or(format_id),
+                                    mime_type: data
+                                        .mime_type
+                                        .unwrap_or_else(|| "audio/flac".to_owned()),
+                                    bit_depth: data.bit_depth.unwrap_or(16),
+                                    sample_rate: normalize_sample_rate(data.sampling_rate),
+                                });
                             }
                         }
                         Err(_) => continue,
@@ -328,7 +328,9 @@ impl QobuzGateway for NativeRipperAdapter {
     ) -> BoxFuture<'a, Result<ArtistTracks, QobuzError>> {
         Box::pin(async move {
             let (app_id, _) = self.ensure_tokens().await;
-            let url = format!("{API_BASE}/artist/get?artist_id={artist_id}&app_id={app_id}&limit=100&extra=albums");
+            let url = format!(
+                "{API_BASE}/artist/get?artist_id={artist_id}&app_id={app_id}&limit=100&extra=albums"
+            );
 
             let res = self
                 .client

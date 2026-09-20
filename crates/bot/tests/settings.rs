@@ -1,7 +1,7 @@
 //! `/settings` presentation and storefront behavior tests.
 
-use bot::handlers::settings::{render_settings_text, render_storefronts_text, POPULAR_STOREFRONTS};
-use engine::settings::{default_settings, BotSettings, RippingMode};
+use bot::handlers::settings::{POPULAR_STOREFRONTS, render_settings_text, render_storefronts_text};
+use engine::settings::{BotSettings, RippingMode, default_settings};
 
 fn settings() -> BotSettings {
     BotSettings {
@@ -50,8 +50,11 @@ fn storefronts_text_renders_expected_layout() {
     let text = render_storefronts_text(&settings());
     assert!(text.starts_with("<b>Auto-dump storefront configuration</b><br/><br/>"));
     assert!(text.contains("• <b>Active Storefronts:</b> <code>US</code>"));
-    assert!(text
-        .ends_with("<i>You can also use:</i> <code>/settings storefronts add &lt;code&gt;</code>"));
+    assert!(
+        text.ends_with(
+            "<i>You can also use:</i> <code>/settings storefronts add &lt;code&gt;</code>"
+        )
+    );
 }
 
 #[test]

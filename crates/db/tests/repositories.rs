@@ -1,14 +1,14 @@
 use std::{
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use db::{
-    connect_test_isolated, migrate, AlbumsRepository, DbPool, NewAlbum, RequestLogRepository,
-    SettingsStore, TracksRepository,
+    AlbumsRepository, DbPool, NewAlbum, RequestLogRepository, SettingsStore, TracksRepository,
+    connect_test_isolated, migrate,
 };
 use diesel::{sql_query, sql_types::Text};
 use diesel_async::RunQueryDsl;
@@ -99,16 +99,20 @@ async fn track_cache_hit_miss_and_empty_list() {
         .expect("find cached tracks");
     assert_eq!(result.len(), 1);
     assert_eq!(result[&TrackKey::apple(id.clone())].title, "Cache Hit");
-    assert!(repository
-        .find_cached_tracks(&[])
-        .await
-        .expect("empty lookup")
-        .is_empty());
-    assert!(repository
-        .find_track_by_file_unique_id(&format!("unique-{id}"))
-        .await
-        .expect("file unique lookup")
-        .is_some());
+    assert!(
+        repository
+            .find_cached_tracks(&[])
+            .await
+            .expect("empty lookup")
+            .is_empty()
+    );
+    assert!(
+        repository
+            .find_track_by_file_unique_id(&format!("unique-{id}"))
+            .await
+            .expect("file unique lookup")
+            .is_some()
+    );
     clean_tracks(&client, &prefix).await;
 }
 
@@ -155,14 +159,18 @@ async fn save_find_delete_search_and_prune_tracks() {
             .expect("prune")
             >= 1
     );
-    assert!(repository
-        .delete_track(&TrackKey::apple_codec(first.clone(), Codec::Alac))
-        .await
-        .expect("delete hit"));
-    assert!(!repository
-        .delete_track(&TrackKey::apple_codec(first.clone(), Codec::Alac))
-        .await
-        .expect("delete miss"));
+    assert!(
+        repository
+            .delete_track(&TrackKey::apple_codec(first.clone(), Codec::Alac))
+            .await
+            .expect("delete hit")
+    );
+    assert!(
+        !repository
+            .delete_track(&TrackKey::apple_codec(first.clone(), Codec::Alac))
+            .await
+            .expect("delete miss")
+    );
     clean_tracks(&client, &prefix).await;
 }
 

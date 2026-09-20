@@ -115,11 +115,7 @@ pub fn readable_time_compact(seconds: u64) -> String {
             out.push_str(&format!("{value}{name}"));
         }
     }
-    if out.is_empty() {
-        "0s".to_owned()
-    } else {
-        out
-    }
+    if out.is_empty() { "0s".to_owned() } else { out }
 }
 
 /// The 12-cell box progress bar with a two-decimal percent using `■`, `▤`, `□`:
@@ -153,22 +149,22 @@ pub async fn resolve_user_display_name(client: &ferogram::Client, user_id: i64) 
     if user_id <= 0 {
         return "User".to_string();
     }
-    if let Ok(users) = client.get_users_by_id(&[user_id]).await {
-        if let Some(Some(u)) = users.into_iter().next() {
-            if let Some(username) = u.username().filter(|n| !n.trim().is_empty()) {
-                return format!("@{username}");
-            }
-            let first = u.first_name().unwrap_or_default().trim();
-            let last = u.last_name().unwrap_or_default().trim();
-            let full = match (!first.is_empty(), !last.is_empty()) {
-                (true, true) => format!("{first} {last}"),
-                (true, false) => first.to_owned(),
-                (false, true) => last.to_owned(),
-                (false, false) => String::new(),
-            };
-            if !full.is_empty() {
-                return full;
-            }
+    if let Ok(users) = client.get_users_by_id(&[user_id]).await
+        && let Some(Some(u)) = users.into_iter().next()
+    {
+        if let Some(username) = u.username().filter(|n| !n.trim().is_empty()) {
+            return format!("@{username}");
+        }
+        let first = u.first_name().unwrap_or_default().trim();
+        let last = u.last_name().unwrap_or_default().trim();
+        let full = match (!first.is_empty(), !last.is_empty()) {
+            (true, true) => format!("{first} {last}"),
+            (true, false) => first.to_owned(),
+            (false, true) => last.to_owned(),
+            (false, false) => String::new(),
+        };
+        if !full.is_empty() {
+            return full;
         }
     }
     format!("User {user_id}")

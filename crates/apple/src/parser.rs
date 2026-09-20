@@ -50,30 +50,30 @@ pub fn parse_single_item(raw_token: &str) -> Option<ParsedTargetItem> {
     }
     let [playlist, artist, song_with_album, song_direct, album] = regexes();
 
-    if let Some(caps) = playlist.captures(token) {
-        if let Some(id) = caps.get(2) {
-            return Some(item(id.as_str(), TargetKind::Playlist, &caps));
-        }
+    if let Some(caps) = playlist.captures(token)
+        && let Some(id) = caps.get(2)
+    {
+        return Some(item(id.as_str(), TargetKind::Playlist, &caps));
     }
-    if let Some(caps) = artist.captures(token) {
-        if let Some(id) = caps.get(2) {
-            return Some(item(id.as_str(), TargetKind::Artist, &caps));
-        }
+    if let Some(caps) = artist.captures(token)
+        && let Some(id) = caps.get(2)
+    {
+        return Some(item(id.as_str(), TargetKind::Artist, &caps));
     }
-    if let Some(caps) = song_with_album.captures(token) {
-        if let Some(id) = caps.get(2) {
-            return Some(item(id.as_str(), TargetKind::Track, &caps));
-        }
+    if let Some(caps) = song_with_album.captures(token)
+        && let Some(id) = caps.get(2)
+    {
+        return Some(item(id.as_str(), TargetKind::Track, &caps));
     }
-    if let Some(caps) = song_direct.captures(token) {
-        if let Some(id) = caps.get(2) {
-            return Some(item(id.as_str(), TargetKind::Track, &caps));
-        }
+    if let Some(caps) = song_direct.captures(token)
+        && let Some(id) = caps.get(2)
+    {
+        return Some(item(id.as_str(), TargetKind::Track, &caps));
     }
-    if let Some(caps) = album.captures(token) {
-        if let Some(id) = caps.get(2) {
-            return Some(item(id.as_str(), TargetKind::Album, &caps));
-        }
+    if let Some(caps) = album.captures(token)
+        && let Some(id) = caps.get(2)
+    {
+        return Some(item(id.as_str(), TargetKind::Album, &caps));
     }
     None
 }
@@ -105,10 +105,10 @@ pub fn extract_batch_items(content: &str) -> Vec<ParsedTargetItem> {
 pub fn parse_alac_input(raw_text: &str, reply_text: Option<&str>) -> Option<ParsedAlacInput> {
     let text = raw_text.trim();
     let mut tokens = text.split_whitespace().peekable();
-    if let Some(first) = tokens.peek() {
-        if first.starts_with('/') {
-            tokens.next();
-        }
+    if let Some(first) = tokens.peek()
+        && first.starts_with('/')
+    {
+        tokens.next();
     }
 
     let mut force = false;
@@ -132,14 +132,14 @@ pub fn parse_alac_input(raw_text: &str, reply_text: Option<&str>) -> Option<Pars
         }
     }
 
-    if items.is_empty() {
-        if let Some(reply) = reply_text {
-            for token in reply.split_whitespace() {
-                if let Some(parsed) = parse_single_item(token) {
-                    let key = format!("{:?}", (parsed.kind, parsed.id.clone()));
-                    if seen.insert(key) {
-                        items.push(parsed);
-                    }
+    if items.is_empty()
+        && let Some(reply) = reply_text
+    {
+        for token in reply.split_whitespace() {
+            if let Some(parsed) = parse_single_item(token) {
+                let key = format!("{:?}", (parsed.kind, parsed.id.clone()));
+                if seen.insert(key) {
+                    items.push(parsed);
                 }
             }
         }

@@ -1,11 +1,11 @@
 //! Database access for the bot.
 
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
     Arc,
+    atomic::{AtomicU64, Ordering},
 };
 
-use diesel_async::{pooled_connection::bb8::Pool, AsyncPgConnection, RunQueryDsl};
+use diesel_async::{AsyncPgConnection, RunQueryDsl, pooled_connection::bb8::Pool};
 
 mod albums;
 mod auth;
@@ -37,7 +37,7 @@ pub use models::{
 };
 pub use music::{Provider, TrackKey};
 pub use requests::RequestLogRepository;
-pub use session::{hash_token, ClientMetadata, SessionIdentity, SessionManager, SessionTokens};
+pub use session::{ClientMetadata, SessionIdentity, SessionManager, SessionTokens, hash_token};
 pub use settings::SettingsStore;
 pub use stats::{AlacStats, StatsRepository, TopTrackStat};
 pub use tracks::{AlbumArtist, TracksRepository};

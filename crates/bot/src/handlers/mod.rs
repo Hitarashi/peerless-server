@@ -29,7 +29,7 @@ use ferogram::{
     update::CallbackQuery,
 };
 
-use crate::{interaction::TelegramAction, BotState};
+use crate::{BotState, interaction::TelegramAction};
 
 /// Bot-API marked group id (-100...) -> t.me/c/ link segment, matching the
 /// string-slice semantics.

@@ -2,10 +2,10 @@ use std::sync::RwLock;
 
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
-use engine::settings::{default_settings, BotSettings, RippingMode};
-use serde_json::{json, Value};
+use engine::settings::{BotSettings, RippingMode, default_settings};
+use serde_json::{Value, json};
 
-use crate::{models::SettingsRow, schema::settings, DbError, DbPool};
+use crate::{DbError, DbPool, models::SettingsRow, schema::settings};
 
 /// The settings table is a one-row, JSONB-backed configuration record.
 /// Unknown keys are preserved in `BotSettings.extra` to ensure future settings
@@ -214,20 +214,19 @@ fn from_row(row: SettingsRow) -> BotSettings {
         tracing::warn!(%error, "failed to decode stored settings; using defaults");
         default_settings()
     });
-    if settings.stream_public_url.is_none() {
-        if let Some(val) = settings.extra.remove("stream_public_url") {
-            if let Some(s) = val.as_str() {
-                let trimmed = s.trim().trim_end_matches('/');
-                if !trimmed.is_empty() {
-                    settings.stream_public_url = Some(trimmed.to_string());
-                }
-            }
+    if settings.stream_public_url.is_none()
+        && let Some(val) = settings.extra.remove("stream_public_url")
+        && let Some(s) = val.as_str()
+    {
+        let trimmed = s.trim().trim_end_matches('/');
+        if !trimmed.is_empty() {
+            settings.stream_public_url = Some(trimmed.to_string());
         }
     }
-    if let Some(val) = settings.extra.remove("stream_server_port") {
-        if let Some(port) = val.as_u64().and_then(|v| u16::try_from(v).ok()) {
-            settings.stream_server_port = port;
-        }
+    if let Some(val) = settings.extra.remove("stream_server_port")
+        && let Some(port) = val.as_u64().and_then(|v| u16::try_from(v).ok())
+    {
+        settings.stream_server_port = port;
     }
     settings
 }

@@ -1,16 +1,16 @@
 use std::sync::Arc;
 
 use axum::{
+    Json, Router,
     extract::State,
     http::StatusCode,
     routing::{delete, get, post},
-    Json, Router,
 };
 use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::{auth::AuthedUser, error::ServerError, ServerState};
+use crate::{ServerState, auth::AuthedUser, error::ServerError};
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct LastfmLoginRequest {
@@ -98,10 +98,10 @@ pub async fn login(
         .await
         .map_err(|e| ServerError::Internal(format!("Failed to parse Last.fm response: {e}")))?;
 
-    if let Some(err_msg) = json_val.get("message").and_then(|m| m.as_str()) {
-        if json_val.get("error").is_some() {
-            return Err(ServerError::BadRequest(format!("Last.fm error: {err_msg}")));
-        }
+    if let Some(err_msg) = json_val.get("message").and_then(|m| m.as_str())
+        && json_val.get("error").is_some()
+    {
+        return Err(ServerError::BadRequest(format!("Last.fm error: {err_msg}")));
     }
 
     let session = json_val.get("session").ok_or_else(|| {

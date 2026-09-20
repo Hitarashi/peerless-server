@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
-use ferogram::{tl, PeerRef};
+use ferogram::{PeerRef, tl};
 use moka::future::Cache;
 use music::Codec;
 
 use crate::{
-    cache::ChunkCache,
-    pipe::{create_stream_pipe, ByteRange, ChunkStream},
-    worker_pool::StreamWorkerPool,
     StreamError,
+    cache::ChunkCache,
+    pipe::{ByteRange, ChunkStream, create_stream_pipe},
+    worker_pool::StreamWorkerPool,
 };
 
 /// Track media document location and attributes cached in memory.
@@ -97,10 +97,8 @@ impl StreamEngine {
         track_id: i32,
         force_refresh: bool,
     ) -> Result<Arc<TrackMediaMetadata>, StreamError> {
-        if !force_refresh {
-            if let Some(cached) = self.metadata_cache.get(&track_id).await {
-                return Ok(cached);
-            }
+        if !force_refresh && let Some(cached) = self.metadata_cache.get(&track_id).await {
+            return Ok(cached);
         }
 
         let track = self

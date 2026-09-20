@@ -15,7 +15,7 @@ members = [
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
@@ -65,6 +65,8 @@ tower = "0.5"
 tower-http = { version = "0.7", features = ["cors", "trace"] }
 utoipa = { version = "5", features = ["axum_extras", "chrono", "yaml"] }
 hmac = "0.13"
+ytmusic = { git = "https://github.com/sonorahq/ytmusic-rs", rev = "e0a5174" }
+lyrics-helper = { version = "0.4.0", default-features = false }
 
 
 

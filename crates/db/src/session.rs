@@ -10,9 +10,9 @@ use rand::Rng;
 use sha2::{Digest, Sha256};
 
 use crate::{
+    DbError, DbPool,
     models::{NewOneTimeAuthCode, NewUser, NewUserSession, OneTimeAuthCode, UserSession},
     schema::{one_time_auth_codes, user_sessions, users},
-    DbError, DbPool,
 };
 
 #[derive(Debug, Clone)]

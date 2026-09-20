@@ -22,7 +22,7 @@ use tracing::{debug, warn};
 use super::{
     client::{WrapperError, WrapperLiteClient, WrapperUnavailableReason},
     decryptor::{decrypt_fragment, transform_init_segment},
-    playlist::{parse_master_playlist, parse_media_playlist, AlacStreamInfo},
+    playlist::{AlacStreamInfo, parse_master_playlist, parse_media_playlist},
 };
 
 pub struct WrapperEngine {
@@ -210,23 +210,23 @@ impl WrapperEngine {
 
         let mut key_templates: HashMap<String, Arc<temari::rounds::Template>> = HashMap::new();
         for seg in &media_info.segments {
-            if let Some(key_uri) = &seg.key_uri {
-                if !key_templates.contains_key(key_uri) {
-                    let adam_for_key =
-                        if key_uri.contains("P000000000") || key_uri.ends_with("/s1/e1") {
-                            "0"
-                        } else {
-                            track_id
-                        };
-                    let tmpl = self
-                        .client
-                        .fetch_template(adam_for_key, key_uri)
-                        .await
-                        .map_err(|e| StreamError::Decrypt {
-                            detail: format!("fetch template for {key_uri}: {e}"),
-                        })?;
-                    key_templates.insert(key_uri.clone(), Arc::new(tmpl));
-                }
+            if let Some(key_uri) = &seg.key_uri
+                && !key_templates.contains_key(key_uri)
+            {
+                let adam_for_key = if key_uri.contains("P000000000") || key_uri.ends_with("/s1/e1")
+                {
+                    "0"
+                } else {
+                    track_id
+                };
+                let tmpl = self
+                    .client
+                    .fetch_template(adam_for_key, key_uri)
+                    .await
+                    .map_err(|e| StreamError::Decrypt {
+                        detail: format!("fetch template for {key_uri}: {e}"),
+                    })?;
+                key_templates.insert(key_uri.clone(), Arc::new(tmpl));
             }
         }
 
@@ -383,7 +383,7 @@ impl WrapperEngine {
         signal: Option<&CancellationToken>,
         on_progress: Option<&ProgressCallback>,
     ) -> Result<AudioStreamSource, StreamError> {
-        use base64::{engine::general_purpose::STANDARD as B64, Engine};
+        use base64::{Engine, engine::general_purpose::STANDARD as B64};
 
         if signal.is_some_and(|t| t.is_cancelled()) {
             return Err(StreamError::Cancelled);

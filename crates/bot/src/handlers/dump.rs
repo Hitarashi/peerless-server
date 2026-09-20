@@ -8,20 +8,20 @@
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
 };
 
 use engine::types::{ParsedTargetItem, TargetKind};
 use ferogram::{
+    InputMessage, PeerRef,
     filters::{self, Dispatcher},
     update::IncomingMessage,
-    InputMessage, PeerRef,
 };
 use serde_json::Value;
 
-use crate::{html::parse_dynamic_html, BotState};
+use crate::{BotState, html::parse_dynamic_html};
 
 /// Re-entry guard .
 static AUTO_DUMP_RUNNING: AtomicBool = AtomicBool::new(false);
@@ -406,12 +406,11 @@ async fn handle_dump_command(state: Arc<BotState>, msg: IncomingMessage) {
 
     let tokens: Vec<&str> = msg.text().unwrap_or_default().split_whitespace().collect();
     let mut days: i64 = 1;
-    if let Some(raw) = tokens.get(1) {
-        if let Some(parsed) = parse_days_prefix(raw) {
-            if parsed > 0 {
-                days = parsed;
-            }
-        }
+    if let Some(raw) = tokens.get(1)
+        && let Some(parsed) = parse_days_prefix(raw)
+        && parsed > 0
+    {
+        days = parsed;
     }
 
     if AUTO_DUMP_RUNNING.load(Ordering::SeqCst) {

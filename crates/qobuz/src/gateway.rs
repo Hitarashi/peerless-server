@@ -122,10 +122,10 @@ pub trait QobuzGateway: Send + Sync {
             let res = self.fetch_artist_tracks(artist_id).await?;
             let mut album_ids = Vec::new();
             for t in res.tracks {
-                if let Some(aid) = t.album_id {
-                    if !album_ids.contains(&aid) {
-                        album_ids.push(aid);
-                    }
+                if let Some(aid) = t.album_id
+                    && !album_ids.contains(&aid)
+                {
+                    album_ids.push(aid);
                 }
             }
             Ok(album_ids)

@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 
-use crate::{models::NewUser, schema::users, DbError, DbPool, User};
+use crate::{DbError, DbPool, User, models::NewUser, schema::users};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthedPeer {

@@ -1,19 +1,19 @@
 use std::{
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use engine::limits::MAX_DOCUMENT_BYTES;
-use ferogram::{filters, filters::Dispatcher, InputMessage, PeerRef};
+use ferogram::{InputMessage, PeerRef, filters, filters::Dispatcher};
 
 use crate::{
-    html::{escape, parse_dynamic_html},
-    spectrogram::{self, AudioProbeResult, AUDIO_EXTENSIONS},
     BotState,
+    html::{escape, parse_dynamic_html},
+    spectrogram::{self, AUDIO_EXTENSIONS, AudioProbeResult},
 };
 
 const USAGE: &str = "<b>Audio spectrogram analyzer</b><br/><br/>Reply to any audio file, voice note, or audio document with <code>/spec</code> to generate its frequency spectrogram.<br/><br/><blockquote><i>Spectrograms expose frequency cut-offs and help verify lossless masters.</i></blockquote>";
@@ -89,10 +89,10 @@ async fn edit_status(state: &BotState, peer: &PeerRef, id: i32, text: &str) {
 }
 
 async fn delete_status(state: &BotState, peer: &PeerRef, id: i32) {
-    if let Ok(messages) = state.client.get_messages(peer.clone(), &[id]).await {
-        if let Some(message) = messages.first() {
-            let _ = message.delete().await;
-        }
+    if let Ok(messages) = state.client.get_messages(peer.clone(), &[id]).await
+        && let Some(message) = messages.first()
+    {
+        let _ = message.delete().await;
     }
 }
 

@@ -3,13 +3,12 @@
 use std::sync::Arc;
 
 use ferogram::{
-    filters,
+    InputMessage, filters,
     filters::Dispatcher,
     keyboard::{Button, InlineKeyboard},
-    InputMessage,
 };
 
-use crate::{html::parse_dynamic_html, BotState};
+use crate::{BotState, html::parse_dynamic_html};
 
 pub async fn stream_command(state: Arc<BotState>, msg: ferogram::update::IncomingMessage) {
     if !msg.is_private() {

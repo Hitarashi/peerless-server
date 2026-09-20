@@ -34,9 +34,9 @@ use crate::{
     filename::StandardFilename,
     orchestrator::{
         caption::{
+            AlbumDetailsCaptionMetadata, DumpCaptionMetadata, DumpZipCaptionMetadata,
             clamp_str_utf16, format_album_details_caption, format_dump_caption,
-            format_zip_dump_caption, html_escape, AlbumDetailsCaptionMetadata, DumpCaptionMetadata,
-            DumpZipCaptionMetadata,
+            format_zip_dump_caption, html_escape,
         },
         deps::{
             AlbumCache, AlbumCacheError, AlbumReplacementExpectation, AlbumReplacementResult,
@@ -59,8 +59,8 @@ use crate::{
     settings::BotSettings,
     types::{AlbumTracks, ArtistTracks, Codec, Provider, TargetKind, TrackKey, TrackRipResult},
     zip::{
-        album_generation_hash, build_zip_entry_filename_with_codec, create_zip_archive,
-        plan_zip_parts_with_codec, ZipTrackEntry, TELEGRAM_SPLIT_THRESHOLD_BYTES,
+        TELEGRAM_SPLIT_THRESHOLD_BYTES, ZipTrackEntry, album_generation_hash,
+        build_zip_entry_filename_with_codec, create_zip_archive, plan_zip_parts_with_codec,
     },
 };
 
@@ -1491,10 +1491,7 @@ impl RipOrchestrator {
         }
 
         self.set_phase(&shared, JobPhase::CheckingCache);
-        let check_item = {
-            let header = shared.lock().expect("job poisoned").job.job_header.clone();
-            header
-        };
+        let check_item = { shared.lock().expect("job poisoned").job.job_header.clone() };
         self.bus.set_job_activity(
             &shared,
             Some(JobActivity::CheckingCache { item: check_item }),
@@ -1620,29 +1617,29 @@ impl RipOrchestrator {
         // Atmos archive is allowed to be sparse, so a non-empty valid archive
         // is sufficient to reuse it.
         let mut zip_reuse: HashMap<Rendition, Vec<CachedAlbum>> = HashMap::new();
-        if let Some(hash) = &zip_generation_hash {
-            if !options.is_force {
-                for rendition in options.rendition_policy.renditions() {
-                    let codecs: &[Codec] = match rendition {
-                        Rendition::Primary => &[Codec::Alac, Codec::Flac, Codec::Aac],
-                        Rendition::Atmos => &[Codec::Ec3],
-                    };
-                    for codec in codecs {
-                        let rows = existing_album_rows
-                            .iter()
-                            .filter(|row| row.codec == *codec)
-                            .cloned()
-                            .collect::<Vec<_>>();
-                        if !rows.is_empty()
-                            && rows.iter().all(|row| row.generation_hash == *hash)
-                            && rows.len() == rows[0].total_parts.max(1) as usize
-                            && (1..=rows.len())
-                                .zip(&rows)
-                                .all(|(n, row)| row.part_index as usize == n)
-                        {
-                            zip_reuse.insert(*rendition, rows);
-                            break;
-                        }
+        if let Some(hash) = &zip_generation_hash
+            && !options.is_force
+        {
+            for rendition in options.rendition_policy.renditions() {
+                let codecs: &[Codec] = match rendition {
+                    Rendition::Primary => &[Codec::Alac, Codec::Flac, Codec::Aac],
+                    Rendition::Atmos => &[Codec::Ec3],
+                };
+                for codec in codecs {
+                    let rows = existing_album_rows
+                        .iter()
+                        .filter(|row| row.codec == *codec)
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if !rows.is_empty()
+                        && rows.iter().all(|row| row.generation_hash == *hash)
+                        && rows.len() == rows[0].total_parts.max(1) as usize
+                        && (1..=rows.len())
+                            .zip(&rows)
+                            .all(|(n, row)| row.part_index as usize == n)
+                    {
+                        zip_reuse.insert(*rendition, rows);
+                        break;
                     }
                 }
             }
@@ -2374,10 +2371,10 @@ impl FinalizingRenditionGuard {
 
 impl Drop for FinalizingRenditionGuard {
     fn drop(&mut self) {
-        if !std::thread::panicking() {
-            if let Ok(mut rendition) = self.rendition.lock() {
-                *rendition = None;
-            }
+        if !std::thread::panicking()
+            && let Ok(mut rendition) = self.rendition.lock()
+        {
+            *rendition = None;
         }
     }
 }
@@ -2643,7 +2640,7 @@ where
     let panic_artist = upload_item.rip_result.artist.clone();
     let item_ctx = Arc::clone(&ctx);
     let task_controller = job_controller.clone();
-    let pushed = push_lane_task(
+    push_lane_task(
         &upload_lane,
         "upload_track",
         Some(Box::new(move |message| {
@@ -2667,8 +2664,7 @@ where
             })
         },
     )
-    .await;
-    pushed
+    .await
 }
 
 struct CachedResolutionInput<'a, D> {
@@ -2810,68 +2806,69 @@ where
         }
     }
 
-    if ctx.zip_build && !ctx.zip_reuse.contains_key(&item.rendition) {
-        if let Some(state) = ctx.zip_state(item.rendition) {
-            let filename = build_zip_entry_filename_with_codec(
+    if ctx.zip_build
+        && !ctx.zip_reuse.contains_key(&item.rendition)
+        && let Some(state) = ctx.zip_state(item.rendition)
+    {
+        let filename = build_zip_entry_filename_with_codec(
+            None,
+            &cached.title,
+            &cached.artist,
+            &item.track_id,
+            cached.codec.as_str(),
+        );
+        let destination = state.dir.join(&filename);
+        let download_result = tokio::select! {
+            result = deps.materialize_cached(
+                DumpMessageRef::new(cached.message_id),
+                &destination,
                 None,
-                &cached.title,
-                &cached.artist,
-                &item.track_id,
-                cached.codec.as_str(),
+            ) => result,
+            _ = job_controller.cancelled() => {
+                let _ = tokio::fs::remove_file(&destination).await;
+                return CacheResolution::Cancelled;
+            }
+            _ = queue_signal.cancelled() => {
+                let _ = tokio::fs::remove_file(&destination).await;
+                return CacheResolution::Cancelled;
+            }
+        };
+        if let Err(error) = download_result {
+            tracing::warn!(
+                track_id = %item.track_id,
+                %error,
+                "cached ZIP source unavailable; reripping"
             );
-            let destination = state.dir.join(&filename);
-            let download_result = tokio::select! {
-                result = deps.materialize_cached(
-                    DumpMessageRef::new(cached.message_id),
-                    &destination,
-                    None,
-                ) => result,
-                _ = job_controller.cancelled() => {
-                    let _ = tokio::fs::remove_file(&destination).await;
-                    return CacheResolution::Cancelled;
-                }
-                _ = queue_signal.cancelled() => {
-                    let _ = tokio::fs::remove_file(&destination).await;
-                    return CacheResolution::Cancelled;
-                }
-            };
-            if let Err(error) = download_result {
+            let _ = tokio::fs::remove_file(&destination).await;
+            let _ = deps.delete_track(&cache_key).await;
+            return CacheResolution::Rerip;
+        }
+        if is_cancelled() {
+            let _ = tokio::fs::remove_file(&destination).await;
+            return CacheResolution::Cancelled;
+        }
+        match tokio::fs::metadata(&destination).await {
+            Ok(metadata) => {
+                seed_zip_codec(state, cached.codec);
+                state
+                    .sources
+                    .lock()
+                    .expect("zip sources poisoned")
+                    .push(ZipTrackEntry {
+                        file_path: destination,
+                        archive_filename: filename,
+                        file_size: metadata.len(),
+                    });
+            }
+            Err(error) => {
                 tracing::warn!(
                     track_id = %item.track_id,
                     %error,
-                    "cached ZIP source unavailable; reripping"
+                    "cached ZIP source disappeared; reripping"
                 );
                 let _ = tokio::fs::remove_file(&destination).await;
                 let _ = deps.delete_track(&cache_key).await;
                 return CacheResolution::Rerip;
-            }
-            if is_cancelled() {
-                let _ = tokio::fs::remove_file(&destination).await;
-                return CacheResolution::Cancelled;
-            }
-            match tokio::fs::metadata(&destination).await {
-                Ok(metadata) => {
-                    seed_zip_codec(state, cached.codec);
-                    state
-                        .sources
-                        .lock()
-                        .expect("zip sources poisoned")
-                        .push(ZipTrackEntry {
-                            file_path: destination,
-                            archive_filename: filename,
-                            file_size: metadata.len(),
-                        });
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        track_id = %item.track_id,
-                        %error,
-                        "cached ZIP source disappeared; reripping"
-                    );
-                    let _ = tokio::fs::remove_file(&destination).await;
-                    let _ = deps.delete_track(&cache_key).await;
-                    return CacheResolution::Rerip;
-                }
             }
         }
     }
@@ -3648,83 +3645,83 @@ async fn run_upload_item<D>(
 
     let cancelled =
         shared.lock().expect("job poisoned").job.is_cancelled || job_controller.is_cancelled();
-    if uploaded_ok && ctx.zip_build && !cancelled {
-        if let Some(state) = ctx.zip_state(upload_item.rendition) {
-            let filename = build_zip_entry_filename_with_codec(
-                Some(upload_item.rip_result.track_number),
-                &upload_item.rip_result.title,
-                &upload_item.rip_result.artist,
-                &upload_item.track_id,
-                &upload_item.rip_result.codec,
+    if uploaded_ok
+        && ctx.zip_build
+        && !cancelled
+        && let Some(state) = ctx.zip_state(upload_item.rendition)
+    {
+        let filename = build_zip_entry_filename_with_codec(
+            Some(upload_item.rip_result.track_number),
+            &upload_item.rip_result.title,
+            &upload_item.rip_result.artist,
+            &upload_item.track_id,
+            &upload_item.rip_result.codec,
+        );
+        let destination = state.dir.join(&filename);
+        if let Err(error) = tokio::fs::copy(&upload_item.rip_result.file_path, &destination).await {
+            tracing::warn!(
+                %error,
+                track_id = %upload_item.track_id,
+                rendition = ?upload_item.rendition,
+                "failed to stage track for ZIP"
             );
-            let destination = state.dir.join(&filename);
-            if let Err(error) =
-                tokio::fs::copy(&upload_item.rip_result.file_path, &destination).await
-            {
-                tracing::warn!(
-                    %error,
-                    track_id = %upload_item.track_id,
-                    rendition = ?upload_item.rendition,
-                    "failed to stage track for ZIP"
-                );
-                if upload_item.rendition == Rendition::Primary {
-                    set_primary_zip_error(
-                        &ctx,
-                        format!(
-                            "primary ZIP staging failed for {}: {error}",
-                            upload_item.track_id
-                        ),
-                    );
-                } else {
-                    *ctx.atmos_warning.lock().expect("atmos poisoned") = Some(format!(
-                        "optional Atmos ZIP staging failed for {}: {error}",
+            if upload_item.rendition == Rendition::Primary {
+                set_primary_zip_error(
+                    &ctx,
+                    format!(
+                        "primary ZIP staging failed for {}: {error}",
                         upload_item.track_id
-                    ));
-                }
-            } else if shared.lock().expect("job poisoned").job.is_cancelled
-                || job_controller.is_cancelled()
-            {
-                let _ = tokio::fs::remove_file(&destination).await;
+                    ),
+                );
             } else {
-                match tokio::fs::metadata(&destination).await {
-                    Ok(metadata) => {
-                        if let Ok(codec) = upload_item.rip_result.codec.parse::<Codec>() {
-                            if codec_allowed_for_rendition(upload_item.rendition, codec) {
-                                seed_zip_codec(state, codec);
-                            }
-                        }
-                        state
-                            .sources
-                            .lock()
-                            .expect("zip sources poisoned")
-                            .push(ZipTrackEntry {
-                                file_path: destination,
-                                archive_filename: filename,
-                                file_size: metadata.len(),
-                            });
+                *ctx.atmos_warning.lock().expect("atmos poisoned") = Some(format!(
+                    "optional Atmos ZIP staging failed for {}: {error}",
+                    upload_item.track_id
+                ));
+            }
+        } else if shared.lock().expect("job poisoned").job.is_cancelled
+            || job_controller.is_cancelled()
+        {
+            let _ = tokio::fs::remove_file(&destination).await;
+        } else {
+            match tokio::fs::metadata(&destination).await {
+                Ok(metadata) => {
+                    if let Ok(codec) = upload_item.rip_result.codec.parse::<Codec>()
+                        && codec_allowed_for_rendition(upload_item.rendition, codec)
+                    {
+                        seed_zip_codec(state, codec);
                     }
-                    Err(error) => {
-                        tracing::warn!(
-                            %error,
-                            track_id = %upload_item.track_id,
-                            rendition = ?upload_item.rendition,
-                            "staged ZIP source disappeared"
-                        );
-                        let _ = tokio::fs::remove_file(&destination).await;
-                        if upload_item.rendition == Rendition::Primary {
-                            set_primary_zip_error(
-                                &ctx,
-                                format!(
-                                    "primary ZIP source metadata failed for {}: {error}",
-                                    upload_item.track_id
-                                ),
-                            );
-                        } else {
-                            *ctx.atmos_warning.lock().expect("atmos poisoned") = Some(format!(
-                                "optional Atmos ZIP source metadata failed for {}: {error}",
+                    state
+                        .sources
+                        .lock()
+                        .expect("zip sources poisoned")
+                        .push(ZipTrackEntry {
+                            file_path: destination,
+                            archive_filename: filename,
+                            file_size: metadata.len(),
+                        });
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        track_id = %upload_item.track_id,
+                        rendition = ?upload_item.rendition,
+                        "staged ZIP source disappeared"
+                    );
+                    let _ = tokio::fs::remove_file(&destination).await;
+                    if upload_item.rendition == Rendition::Primary {
+                        set_primary_zip_error(
+                            &ctx,
+                            format!(
+                                "primary ZIP source metadata failed for {}: {error}",
                                 upload_item.track_id
-                            ));
-                        }
+                            ),
+                        );
+                    } else {
+                        *ctx.atmos_warning.lock().expect("atmos poisoned") = Some(format!(
+                            "optional Atmos ZIP source metadata failed for {}: {error}",
+                            upload_item.track_id
+                        ));
                     }
                 }
             }
@@ -3784,10 +3781,10 @@ where
         shared.lock().expect("job poisoned").job.is_cancelled || job_controller.is_cancelled();
     if result.is_err() || cancelled {
         let message_ids = take_uncommitted_zip_dump_messages(ctx);
-        if !message_ids.is_empty() {
-            if let Err(error) = deps.retract_dump(&message_ids).await {
-                tracing::error!(%error, "failed to retract ZIP dump publication");
-            }
+        if !message_ids.is_empty()
+            && let Err(error) = deps.retract_dump(&message_ids).await
+        {
+            tracing::error!(%error, "failed to retract ZIP dump publication");
         }
     }
     result

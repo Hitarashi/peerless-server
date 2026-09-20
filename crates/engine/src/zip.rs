@@ -13,7 +13,7 @@ use std::{
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
-use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
+use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
 pub use crate::filename::MAX_ZIP_ENTRY_FILENAME_BYTES;
 use crate::filename::{ArchiveFilename, StandardFilename, ZipEntryName};

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use ferogram::update::CallbackQuery;
 
-use crate::{handlers::get::cancel, interaction::DashboardAction, BotState};
+use crate::{BotState, handlers::get::cancel, interaction::DashboardAction};
 
 pub async fn dispatch_dashboard(
     state: Arc<BotState>,

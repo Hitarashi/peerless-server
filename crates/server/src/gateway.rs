@@ -2,13 +2,13 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Query, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header},
     response::{Html, IntoResponse, Response},
 };
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use serde::Deserialize;
 
-use crate::{error::ServerError, ServerState};
+use crate::{ServerState, error::ServerError};
 
 static GATEWAY_TEMPLATE: &str = include_str!("gateway.html");
 

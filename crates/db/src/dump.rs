@@ -10,13 +10,13 @@ use std::{io::Write, time::Instant};
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use engine::limits::MAX_DOCUMENT_BYTES;
-use flate2::{write::GzEncoder, Compression};
+use flate2::{Compression, write::GzEncoder};
 use music::Provider;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    schema::{albums, requests, settings, tracks, users},
     Album, DbError, DbPool, Request, SettingsRow, Track, User,
+    schema::{albums, requests, settings, tracks, users},
 };
 
 const ARCHIVE_VERSION: u32 = 2;
@@ -338,12 +338,12 @@ impl DbDumpService {
                 archive.format_version
             )));
         }
-        if let Some(expected) = expected_channel_id {
-            if archive.dump_channel_id != Some(expected) {
-                return Err(DbError::Row(
-                    "database archive belongs to a different dump channel".to_owned(),
-                ));
-            }
+        if let Some(expected) = expected_channel_id
+            && archive.dump_channel_id != Some(expected)
+        {
+            return Err(DbError::Row(
+                "database archive belongs to a different dump channel".to_owned(),
+            ));
         }
         validate_archive_limits(&archive)?;
         let users_merged = archive.users.len() as u64;

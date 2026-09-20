@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use apple::{MirrorError, MirrorHttp, MirrorHttpError, MirrorPolicyManager, MANIFEST_URL};
+use apple::{MANIFEST_URL, MirrorError, MirrorHttp, MirrorHttpError, MirrorPolicyManager};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]

@@ -1,4 +1,4 @@
-use db::{connect_test_isolated, migrate, Auth, ClientMetadata, SessionManager};
+use db::{Auth, ClientMetadata, SessionManager, connect_test_isolated, migrate};
 
 #[tokio::test]
 async fn session_lifecycle_and_sliding_auth() {
@@ -232,10 +232,12 @@ async fn session_lifecycle_and_sliding_auth() {
     );
 
     // Delete session
-    assert!(worker_store
-        .delete_session(token_hash)
-        .await
-        .expect("delete session"));
+    assert!(
+        worker_store
+            .delete_session(token_hash)
+            .await
+            .expect("delete session")
+    );
     assert_eq!(
         worker_store
             .get_session(token_hash)
@@ -287,10 +289,12 @@ async fn session_lifecycle_and_sliding_auth() {
     assert_eq!(decrypt_failed, None);
 
     // Clean up
-    assert!(enc_store
-        .delete_session(enc_token_hash)
-        .await
-        .expect("delete encrypted session"));
+    assert!(
+        enc_store
+            .delete_session(enc_token_hash)
+            .await
+            .expect("delete encrypted session")
+    );
     assert_eq!(
         enc_store
             .get_session(enc_token_hash)

@@ -15,14 +15,14 @@ use realfft::RealFftPlanner;
 use symphonia::core::{
     audio::sample::Sample,
     codecs::audio::{
+        AudioCodecId, AudioDecoderOptions,
         well_known::{
             CODEC_ID_AAC, CODEC_ID_ALAC, CODEC_ID_EAC3, CODEC_ID_FLAC, CODEC_ID_MP3, CODEC_ID_OPUS,
             CODEC_ID_VORBIS,
         },
-        AudioCodecId, AudioDecoderOptions,
     },
     errors::Error as SymphoniaError,
-    formats::{probe::Hint, FormatOptions, TrackType},
+    formats::{FormatOptions, TrackType, probe::Hint},
     io::MediaSourceStream,
     meta::MetadataOptions,
 };
@@ -443,10 +443,11 @@ fn decode_sync(
             }
         }
     }
-    if collect_samples && decoded_packets == 0 {
-        if let Some(err) = first_decode_error {
-            return Err(MediaError::Decode(err));
-        }
+    if collect_samples
+        && decoded_packets == 0
+        && let Some(err) = first_decode_error
+    {
+        return Err(MediaError::Decode(err));
     }
     Ok(DecodedAudio {
         info: AudioInfo {

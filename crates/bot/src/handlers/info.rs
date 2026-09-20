@@ -2,11 +2,11 @@ use std::sync::Arc;
 
 use apple::parse_alac_input;
 use engine::{Provider, TrackKey};
-use ferogram::{filters, filters::Dispatcher, tl, InputMessage, PeerRef};
+use ferogram::{InputMessage, PeerRef, filters, filters::Dispatcher, tl};
 
 use crate::{
-    html::{escape, parse_dynamic_html},
     BotState,
+    html::{escape, parse_dynamic_html},
 };
 
 const USAGE: &str = "<b>Track info usage</b><br/><br/><blockquote>• <code>/info &lt;Apple Music link&gt;</code><br/>• Reply to an Apple Music link with <code>/info</code></blockquote>";
@@ -17,12 +17,11 @@ async fn reply_text(msg: &ferogram::update::IncomingMessage, state: &BotState) -
         tl::enums::Message::Service(m) => m.reply_to.as_ref(),
         _ => None,
     };
-    if let Some(tl::enums::MessageReplyHeader::MessageReplyHeader(h)) = reply_header {
-        if let Some(ref quote) = h.quote_text {
-            if !quote.trim().is_empty() {
-                return Some(quote.clone());
-            }
-        }
+    if let Some(tl::enums::MessageReplyHeader::MessageReplyHeader(h)) = reply_header
+        && let Some(ref quote) = h.quote_text
+        && !quote.trim().is_empty()
+    {
+        return Some(quote.clone());
     }
     let reply_id = msg.reply_to_message_id()?;
     let peer = msg.peer_id()?.clone();

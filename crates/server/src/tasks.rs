@@ -1,15 +1,15 @@
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
 use axum::{
+    Json,
     extract::{Path, State},
     response::sse::{Event, KeepAlive, Sse},
-    Json,
 };
 use futures_util::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::{auth::AuthedUser, error::ServerError, ServerState};
+use crate::{ServerState, auth::AuthedUser, error::ServerError};
 
 /// Request payload to trigger an on-demand provider ripping job.
 #[derive(Debug, Deserialize, ToSchema)]
@@ -97,7 +97,7 @@ pub async fn create_rip_task(
             return Err(ServerError::BadRequest(format!(
                 "Unsupported provider: {}",
                 payload.provider
-            )))
+            )));
         }
     };
 

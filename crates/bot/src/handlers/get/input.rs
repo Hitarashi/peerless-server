@@ -87,37 +87,37 @@ pub fn parse_text(text: &str, reply: Option<&str>, force_override: bool) -> Opti
     }
 
     // 3. Fall back to Apple Music direct
-    if let Some(direct) = parse_alac_input(text, None) {
-        if !direct.items.is_empty() {
-            return Some(ParsedCommand {
-                provider: engine::types::Provider::Apple,
-                items: direct.items,
-                force: force_override || direct.force,
-                storefront: direct.storefront,
-                document: false,
-                from_reply: false,
-                reply_sender_id: None,
-                reply_sender_name: None,
-                codec_preference: Some(CodecPreference::HighestQuality),
-            });
-        }
+    if let Some(direct) = parse_alac_input(text, None)
+        && !direct.items.is_empty()
+    {
+        return Some(ParsedCommand {
+            provider: engine::types::Provider::Apple,
+            items: direct.items,
+            force: force_override || direct.force,
+            storefront: direct.storefront,
+            document: false,
+            from_reply: false,
+            reply_sender_id: None,
+            reply_sender_name: None,
+            codec_preference: Some(CodecPreference::HighestQuality),
+        });
     }
 
     // 4. Fall back to Apple Music reply
-    if let Some(reply_text) = reply {
-        if let Some(parsed) = parse_alac_input(text, Some(reply_text)) {
-            return Some(ParsedCommand {
-                provider: engine::types::Provider::Apple,
-                items: parsed.items,
-                force: force_override || parsed.force,
-                storefront: parsed.storefront,
-                document: false,
-                from_reply: true,
-                reply_sender_id: None,
-                reply_sender_name: None,
-                codec_preference: Some(CodecPreference::HighestQuality),
-            });
-        }
+    if let Some(reply_text) = reply
+        && let Some(parsed) = parse_alac_input(text, Some(reply_text))
+    {
+        return Some(ParsedCommand {
+            provider: engine::types::Provider::Apple,
+            items: parsed.items,
+            force: force_override || parsed.force,
+            storefront: parsed.storefront,
+            document: false,
+            from_reply: true,
+            reply_sender_id: None,
+            reply_sender_name: None,
+            codec_preference: Some(CodecPreference::HighestQuality),
+        });
     }
     None
 }
@@ -146,10 +146,10 @@ pub async fn parse_message(
     // Prime the peer cache for this chat so channels.getMessages has a valid
     // access_hash. On a cache hit this is a no-op (just a local map read);
     // on a cache miss (fresh start) it does one cheap RPC to fetch the chat.
-    if message.reply_to_message_id().is_some() {
-        if let Err(e) = client.resolve(ferogram::PeerRef::Id(chat_id)).await {
-            tracing::warn!(chat_id, error = %e, "get: could not prime peer cache for chat");
-        }
+    if message.reply_to_message_id().is_some()
+        && let Err(e) = client.resolve(ferogram::PeerRef::Id(chat_id)).await
+    {
+        tracing::warn!(chat_id, error = %e, "get: could not prime peer cache for chat");
     }
 
     let reply = message.get_reply_with(client).await.ok().flatten();

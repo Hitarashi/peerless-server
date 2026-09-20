@@ -1,13 +1,14 @@
 use std::{sync::Arc, time::Duration};
 
 use ferogram::{
-    filters::{self, Dispatcher},
     ErrorKind, InputMessage, InvocationErrorExt, PeerRef,
+    filters::{self, Dispatcher},
 };
 
 use crate::{
+    BotState,
     dashboard::{DashboardFuture, DashboardSink, EditError},
-    dashboard_manager, event_bridge, BotState,
+    dashboard_manager, event_bridge,
 };
 
 struct TelegramSink {

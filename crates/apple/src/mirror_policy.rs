@@ -8,7 +8,7 @@ use std::{
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
-use crate::mirror_http::{MirrorHttp, MirrorHttpError, CHROME_USER_AGENT};
+use crate::mirror_http::{CHROME_USER_AGENT, MirrorHttp, MirrorHttpError};
 
 /// The decoded manifest URL used by the TypeScript implementation.
 pub const MANIFEST_URL: &str =
@@ -148,26 +148,27 @@ impl<H: MirrorHttp> MirrorPolicyManager<H> {
         signal: Option<CancellationToken>,
     ) -> Result<MirrorEndpoint, MirrorError> {
         // An empty mirror URL or key means "not configured".
-        if let Some((mirror_url, api_key)) = &self.env_override {
-            if !mirror_url.is_empty() && !api_key.is_empty() {
-                return Ok(MirrorEndpoint {
-                    mirror_url: mirror_url.trim_end_matches('/').to_owned(),
-                    api_key: api_key.clone(),
-                });
-            }
+        if let Some((mirror_url, api_key)) = &self.env_override
+            && !mirror_url.is_empty()
+            && !api_key.is_empty()
+        {
+            return Ok(MirrorEndpoint {
+                mirror_url: mirror_url.trim_end_matches('/').to_owned(),
+                api_key: api_key.clone(),
+            });
         }
 
         if !force_refresh {
             let state = self.state.lock().expect("mirror policy mutex poisoned");
-            if let Some(failure) = &state.last_failure {
-                if failure.time.elapsed() < self.failure_cooldown {
-                    return Err(MirrorError::Message(failure.error.clone()));
-                }
+            if let Some(failure) = &state.last_failure
+                && failure.time.elapsed() < self.failure_cooldown
+            {
+                return Err(MirrorError::Message(failure.error.clone()));
             }
-            if let Some(cached) = &state.cached {
-                if cached.expires_at > Instant::now() {
-                    return Ok(cached.endpoint.clone());
-                }
+            if let Some(cached) = &state.cached
+                && cached.expires_at > Instant::now()
+            {
+                return Ok(cached.endpoint.clone());
             }
         }
 

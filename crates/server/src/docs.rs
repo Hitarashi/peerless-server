@@ -1,10 +1,10 @@
 use axum::{
-    http::{header, StatusCode},
+    http::{StatusCode, header},
     response::{Html, IntoResponse, Response},
 };
 use utoipa::{
-    openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme},
     Modify, OpenApi,
+    openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme},
 };
 
 struct SecurityAddon;
@@ -96,6 +96,7 @@ impl Modify for SecurityAddon {
             crate::assets::LyricsResponse,
             crate::assets::LyricsLineDto,
             crate::assets::LyricsWordDto,
+            crate::assets::LyricsTranslationDto,
             crate::library::PlaylistSummaryDto,
             crate::library::CreatePlaylistRequest,
             crate::library::PlaylistWithTracksDto,

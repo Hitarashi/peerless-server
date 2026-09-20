@@ -19,8 +19,8 @@ pub mod tasks;
 use std::{net::IpAddr, sync::Arc, time::Duration};
 
 use axum::{
-    routing::{get, post},
     Router,
+    routing::{get, post},
 };
 pub use error::ServerError;
 use moka::future::Cache;

@@ -31,7 +31,7 @@ reqwest = { workspace = true, features = ["json", "form"] }
 
 music = { path = "../music" }
 apple = { path = "../apple" }
-lyrics = { path = "../lyrics", features = ["lrclib", "betterlyrics", "paxsenix"] }
+lyrics = { path = "../lyrics", features = ["all-providers"] }
 engine = { path = "../engine" }
 db = { path = "../db" }
 stream = { path = "../stream" }

@@ -4,14 +4,15 @@
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
 };
 
 use engine::{
     orchestrator::{
+        RipOrchestrator,
         deps::{
             AlbumCache, AlbumCacheError, AlbumReplacementExpectation, AlbumReplacementResult,
             AlbumUpload, ArtworkProvider, BoxFuture, CachedAlbum, CachedTrack, ChatDelivery,
@@ -22,7 +23,6 @@ use engine::{
             UploadProgressCallback,
         },
         types::{JobPhase, OrchestratorEvent, RipJobOptions},
-        RipOrchestrator,
     },
     settings::BotSettings,
     types::{AlbumTracks, ArtistTracks, ParsedTargetItem, Provider, TargetKind, TrackKey},

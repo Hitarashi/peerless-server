@@ -4,6 +4,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use diesel::result::{DatabaseErrorKind, Error as DieselError};
 use engine::{
+    Codec, Provider,
     orchestrator::deps::{
         AlbumCache, AlbumCacheError, AlbumCacheOperation, AlbumReplacementExpectation,
         AlbumReplacementResult, AlbumUpload, BoxFuture, CachedAlbum, CachedTrack, ChatDelivery,
@@ -14,7 +15,6 @@ use engine::{
     ripper::RipperConfig,
     settings::BotSettings,
     types::TrackKey,
-    Codec, Provider,
 };
 use lyrics::LyricsRegistry;
 

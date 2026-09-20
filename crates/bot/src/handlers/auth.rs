@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use ferogram::{filters, filters::Dispatcher, tl, InputMessage, PeerRef};
+use ferogram::{InputMessage, PeerRef, filters, filters::Dispatcher, tl};
 
 use crate::{
-    html::{escape, parse_dynamic_html},
     BotState,
+    html::{escape, parse_dynamic_html},
 };
 
 /// Resolve a TL peer to the Bot-API "marked" id the stores
@@ -45,10 +45,10 @@ async fn resolve_user_display_name(
     id: i64,
     hint_name: Option<String>,
 ) -> String {
-    if let Some(name) = hint_name {
-        if !name.trim().is_empty() {
-            return name;
-        }
+    if let Some(name) = hint_name
+        && !name.trim().is_empty()
+    {
+        return name;
     }
     match client.get_users_by_id(&[id]).await {
         Ok(users) => users
@@ -79,28 +79,28 @@ pub(crate) async fn resolve_target(
     if is_reply {
         // Fast path: check reply_from on the MessageReplyHeader.
         if let Some(tl::enums::MessageReplyHeader::MessageReplyHeader(h)) = reply_header {
-            if let Some(tl::enums::MessageFwdHeader::MessageFwdHeader(fwd)) = &h.reply_from {
-                if let Some(peer) = &fwd.from_id {
-                    let (id, user) = peer_id(peer);
-                    let name = if user {
-                        resolve_user_display_name(
-                            &state.client,
-                            id,
-                            fwd.from_name.clone().or_else(|| fwd.post_author.clone()),
-                        )
-                        .await
-                    } else {
-                        fwd.from_name
-                            .clone()
-                            .or_else(|| fwd.post_author.clone())
-                            .unwrap_or_else(|| format!("Chat {id}"))
-                    };
-                    return TargetResult::Ok {
+            if let Some(tl::enums::MessageFwdHeader::MessageFwdHeader(fwd)) = &h.reply_from
+                && let Some(peer) = &fwd.from_id
+            {
+                let (id, user) = peer_id(peer);
+                let name = if user {
+                    resolve_user_display_name(
+                        &state.client,
                         id,
-                        name,
-                        is_user: user,
-                    };
-                }
+                        fwd.from_name.clone().or_else(|| fwd.post_author.clone()),
+                    )
+                    .await
+                } else {
+                    fwd.from_name
+                        .clone()
+                        .or_else(|| fwd.post_author.clone())
+                        .unwrap_or_else(|| format!("Chat {id}"))
+                };
+                return TargetResult::Ok {
+                    id,
+                    name,
+                    is_user: user,
+                };
             }
         } else if let Some(tl::enums::MessageReplyHeader::MessageReplyStoryHeader(s)) = reply_header
         {
@@ -208,19 +208,18 @@ pub(crate) async fn resolve_target(
                 is_user: id > 0,
             };
         }
-        if text.starts_with('@') {
-            if let Ok(peer) = state
+        if text.starts_with('@')
+            && let Ok(peer) = state
                 .client
                 .resolve(PeerRef::Username(text.to_owned()))
                 .await
-            {
-                let (id, user) = peer_id(&peer);
-                return TargetResult::Ok {
-                    id,
-                    name: text.to_owned(),
-                    is_user: user,
-                };
-            }
+        {
+            let (id, user) = peer_id(&peer);
+            return TargetResult::Ok {
+                id,
+                name: text.to_owned(),
+                is_user: user,
+            };
         }
         // An invalid explicit argument must never fall through to group
         // authorization. Report invalid argument.

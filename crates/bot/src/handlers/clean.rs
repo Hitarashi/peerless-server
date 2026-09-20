@@ -1,10 +1,10 @@
 use std::{io, path::Path, sync::Arc};
 
-use ferogram::{filters, filters::Dispatcher, InputMessage};
+use ferogram::{InputMessage, filters, filters::Dispatcher};
 
 use crate::{
-    html::{escape, parse_dynamic_html},
     BotState,
+    html::{escape, parse_dynamic_html},
 };
 
 const RESTRICTED: &str =
@@ -39,13 +39,13 @@ fn clean_downloads_dir(downloads_dir: &Path) -> io::Result<(usize, u64)> {
     }
     // In production this prevents `bot-data -> /tmp/...` from turning the
     // fixed relative target into an arbitrary cleanup root.
-    if let Some(parent) = downloads_dir.parent() {
-        if std::fs::symlink_metadata(parent)?.file_type().is_symlink() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "downloads parent must not be a symlink",
-            ));
-        }
+    if let Some(parent) = downloads_dir.parent()
+        && std::fs::symlink_metadata(parent)?.file_type().is_symlink()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "downloads parent must not be a symlink",
+        ));
     }
 
     fn clean_entry(path: &Path) -> io::Result<(usize, u64)> {

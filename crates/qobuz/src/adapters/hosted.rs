@@ -6,7 +6,7 @@ use music::{AlbumTracks, ArtistTracks, PlaylistData, TrackMeta};
 use reqwest::header::{HeaderMap, HeaderValue};
 
 use crate::{
-    gateway::{normalize_sample_rate, BoxFuture, QobuzError, QobuzGateway, QobuzStreamInfo},
+    gateway::{BoxFuture, QobuzError, QobuzGateway, QobuzStreamInfo, normalize_sample_rate},
     types::{
         QobuzAlbumResponse, QobuzArtistResponse, QobuzPlaylistResponse, QobuzStreamUrlResponse,
         QobuzTrackResponse,

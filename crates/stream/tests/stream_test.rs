@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use stream::{hash_bot_token, ByteRange, ChunkCache, CircuitBreaker, CHUNK_SIZE};
+use stream::{ByteRange, CHUNK_SIZE, ChunkCache, CircuitBreaker, hash_bot_token};
 
 #[test]
 fn test_hash_bot_token_deterministic() {

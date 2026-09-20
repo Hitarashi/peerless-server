@@ -12,5 +12,5 @@ pub use decryptor::{decrypt_fragment, transform_init_segment};
 pub use engine::{WrapperEngine, WrapperTrackOutcome};
 pub use music::CodecPreference;
 pub use playlist::{
-    parse_master_playlist, parse_media_playlist, AlacStreamInfo, MediaPlaylistInfo,
+    AlacStreamInfo, MediaPlaylistInfo, parse_master_playlist, parse_media_playlist,
 };

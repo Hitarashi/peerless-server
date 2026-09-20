@@ -1,14 +1,14 @@
 use std::{
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
 };
 
 use apple::{
-    map_acquisition_outcome, AcquisitionOutcome, AppleAcquisitionConfig, AppleStreamAcquisition,
-    MirrorHttp, MirrorHttpError, MirrorPolicyManager, WrapperKind, MANIFEST_URL,
+    AcquisitionOutcome, AppleAcquisitionConfig, AppleStreamAcquisition, MANIFEST_URL, MirrorHttp,
+    MirrorHttpError, MirrorPolicyManager, WrapperKind, map_acquisition_outcome,
 };
 use bytes::Bytes;
 use engine::{
@@ -134,10 +134,9 @@ impl StreamHttp for FakeStream {
         if self.cancel_after_second_candidate
             && url.ends_with("/stream/42")
             && !url.contains("/api/")
+            && let Some(token) = signal
         {
-            if let Some(token) = signal {
-                token.cancel();
-            }
+            token.cancel();
         }
         Ok(StreamHttpResponse {
             status: 200,
@@ -751,17 +750,21 @@ async fn wrapper_corruption_does_not_fallback_or_poison_mirror() {
         } if endpoint == "https://wrapper/api/stream/42" && !detail.is_empty()
     ));
     assert!(!stage.acquisition.mirror_policy().is_circuit_open());
-    assert!(calls
-        .lock()
-        .unwrap()
-        .iter()
-        .all(|url| url.starts_with("https://wrapper/")));
-    assert!(stage
-        .reports
-        .lock()
-        .unwrap()
-        .iter()
-        .all(|(source, _, _)| { matches!(source, SourceId::WrapperCandidate { .. }) }));
+    assert!(
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|url| url.starts_with("https://wrapper/"))
+    );
+    assert!(
+        stage
+            .reports
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(source, _, _)| { matches!(source, SourceId::WrapperCandidate { .. }) })
+    );
 }
 
 #[tokio::test]
@@ -789,11 +792,13 @@ async fn atmos_wrapper_m3u8_404_returns_absence_without_retry() {
     assert!(matches!(outcome, AcquisitionOutcome::RenditionAbsent));
     assert_eq!(requests.load(Ordering::SeqCst), 1);
     assert!(stream_calls.lock().unwrap().is_empty());
-    assert!(messages
-        .lock()
-        .unwrap()
-        .iter()
-        .all(|activity| matches!(activity, RipActivity::Connecting { .. })));
+    assert!(
+        messages
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|activity| matches!(activity, RipActivity::Connecting { .. }))
+    );
     server.abort();
 }
 

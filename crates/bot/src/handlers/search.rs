@@ -11,16 +11,16 @@ use engine::{
     types::{ParsedTargetItem, Provider, TargetKind, TrackKey, TrackMeta},
 };
 use ferogram::{
+    InputMessage, PeerRef,
     filters::{self, Dispatcher},
     keyboard::{Button, InlineKeyboard},
     update::{CallbackQuery, IncomingMessage},
-    InputMessage, PeerRef,
 };
 
 use crate::{
+    BotState,
     html::{escape, parse_dynamic_html},
     interaction::TelegramAction,
-    BotState,
 };
 
 /// truncation: `{artist} - {title}` over 28 chars → first 25 + "...".
@@ -461,10 +461,10 @@ async fn delete_query_message(state: &BotState, query: &CallbackQuery) {
         return;
     };
     let peer = PeerRef::Peer(peer.clone());
-    if let Ok(messages) = state.client.get_messages(peer, &[message_id]).await {
-        if let Some(message) = messages.first() {
-            let _ = message.delete().await;
-        }
+    if let Ok(messages) = state.client.get_messages(peer, &[message_id]).await
+        && let Some(message) = messages.first()
+    {
+        let _ = message.delete().await;
     }
 }
 

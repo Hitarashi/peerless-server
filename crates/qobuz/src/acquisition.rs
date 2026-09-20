@@ -10,7 +10,7 @@ use futures_util::StreamExt;
 use music::{CodecPreference, TrackMeta};
 use tokio_util::sync::CancellationToken;
 
-use crate::gateway::{quality_ladder, QobuzError, QobuzGateway, QobuzStreamInfo};
+use crate::gateway::{QobuzError, QobuzGateway, QobuzStreamInfo, quality_ladder};
 
 #[derive(Clone)]
 pub struct QobuzAcquisition {

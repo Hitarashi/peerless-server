@@ -2,17 +2,17 @@ use std::{collections::HashMap, sync::Arc};
 
 use axum::{
     extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
         Query, State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::HeaderMap,
     response::IntoResponse,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{Mutex, broadcast};
 
-use crate::{error::ServerError, ServerState};
+use crate::{ServerState, error::ServerError};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConnectedDeviceInfo {
@@ -166,11 +166,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServerState>, telegram_id: 
             msg_res = rx.recv() => {
                 match msg_res {
                     Ok(server_msg) => {
-                        if let Ok(json_str) = serde_json::to_string(&server_msg) {
-                            if sender.send(Message::Text(json_str.into())).await.is_err() {
+                        if let Ok(json_str) = serde_json::to_string(&server_msg)
+                            && sender.send(Message::Text(json_str.into())).await.is_err() {
                                 break;
                             }
-                        }
                     }
                     Err(broadcast::error::RecvError::Lagged(lag)) => {
                         tracing::warn!(telegram_id, lag, "WebSocket subscriber lagged behind");
@@ -196,11 +195,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServerState>, telegram_id: 
                                 match client_msg {
                                     ClientMessage::Hello { device_id, device_name, platform } => {
                                         let mut room = room_arc.lock().await;
-                                        if let Some(prev) = my_device_id.replace(device_id.clone()) {
-                                            if prev != device_id {
+                                        if let Some(prev) = my_device_id.replace(device_id.clone())
+                                            && prev != device_id {
                                                 remove_device_connection(&mut room, &prev, connection_id);
                                             }
-                                        }
                                         room.devices.insert(
                                             device_id.clone(),
                                             ConnectedDeviceInfo {

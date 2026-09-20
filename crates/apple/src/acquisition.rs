@@ -18,10 +18,10 @@ use music::CodecPreference;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
+    ReqwestMirrorHttp,
     mirror_http::MirrorHttp,
     mirror_policy::{MirrorEndpoint, MirrorPolicyManager},
     wrapper::{WrapperEngine, WrapperTrackOutcome, WrapperUnavailableReason},
-    ReqwestMirrorHttp,
 };
 
 pub struct AppleStreamAcquisition<S: StreamHttp, M: MirrorHttp> {
@@ -289,8 +289,9 @@ impl<S: StreamHttp, M: MirrorHttp> AppleStreamAcquisition<S, M> {
                         expected,
                         received,
                     }) => {
-                        let message =
-                            format!("incomplete audio body from {source}: expected {expected} bytes, received {received}");
+                        let message = format!(
+                            "incomplete audio body from {source}: expected {expected} bytes, received {received}"
+                        );
                         errors.push(format!("Primary mirror failed: {message}"));
                         if !signal.as_ref().is_some_and(CancellationToken::is_cancelled) {
                             self.mirror_policy.record_failure(&message);
@@ -307,7 +308,7 @@ impl<S: StreamHttp, M: MirrorHttp> AppleStreamAcquisition<S, M> {
                     Err(StreamError::LimitExceeded { .. }) => {
                         return AcquisitionAttempt::Typed(StreamError::LimitExceeded {
                             limit_mib: engine::limits::MAX_AUDIO_BYTES / (1024 * 1024),
-                        })
+                        });
                     }
                     Err(StreamError::Cancelled) => {
                         errors.push("Primary mirror cancelled".to_owned());
@@ -439,10 +440,8 @@ impl<S: StreamHttp, M: MirrorHttp> AppleStreamAcquisition<S, M> {
                 );
                 return AcquisitionAttempt::NoSource;
             }
-            if only_unavailable {
-                if let Some(reason) = unavailable_reason {
-                    return Self::rendition_absence(reason, codec_preference);
-                }
+            if only_unavailable && let Some(reason) = unavailable_reason {
+                return Self::rendition_absence(reason, codec_preference);
             }
             AcquisitionAttempt::NoSource
         }

@@ -1,8 +1,8 @@
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc, Mutex, OnceLock,
+        atomic::{AtomicU64, Ordering},
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -12,17 +12,17 @@ use engine::{
     types::{ParsedTargetItem, Provider, TargetKind, TrackKey},
 };
 use ferogram::{
+    InputMessage, PeerRef,
     filters::{self, Dispatcher},
     keyboard::{Button, InlineKeyboard},
     update::{CallbackQuery, IncomingMessage},
-    InputMessage, PeerRef,
 };
 use regex::Regex;
 
 use crate::{
+    BotState,
     html::{escape, parse_dynamic_html},
     interaction::{ReportAction, ReportReason},
-    BotState,
 };
 
 const USER_RATE_LIMIT_MAX: usize = 5;
@@ -324,10 +324,10 @@ async fn handle_command(state: Arc<BotState>, msg: IncomingMessage) {
             if let Some(document) = reply.document() {
                 target = find_by_file_unique_id(&state, &document_file_unique_id(&document)).await;
             }
-            if target.is_none() {
-                if let Some(track_id) = reply.text().and_then(extract_track_id_from_text) {
-                    target = find_cached_track(&state, &track_id).await;
-                }
+            if target.is_none()
+                && let Some(track_id) = reply.text().and_then(extract_track_id_from_text)
+            {
+                target = find_cached_track(&state, &track_id).await;
             }
             custom_reason = raw_args;
         } else if raw_args.is_empty() {
@@ -422,10 +422,10 @@ async fn handle_command(state: Arc<BotState>, msg: IncomingMessage) {
 }
 
 async fn delete_message(state: &BotState, peer: PeerRef, message_id: i32) {
-    if let Ok(messages) = state.client.get_messages(peer, &[message_id]).await {
-        if let Some(message) = messages.first() {
-            let _ = message.delete().await;
-        }
+    if let Ok(messages) = state.client.get_messages(peer, &[message_id]).await
+        && let Some(message) = messages.first()
+    {
+        let _ = message.delete().await;
     }
 }
 
@@ -702,7 +702,8 @@ async fn admin_callback(state: Arc<BotState>, query: CallbackQuery, action: Repo
             let title = escape(&report.track_title);
             let text = format!(
                 "🔄 <b>Re-ripping Track...</b><br/><br/><blockquote>Re-ripping track <code>{}</code> (<b>{}</b>) in force cache-only mode. Old corrupted dump message will be replaced automatically.</blockquote>",
-                escape(&track_id), title
+                escape(&track_id),
+                title
             );
             edit_query(&state, &query, &text, None).await;
             let marked_chat = query
@@ -769,7 +770,8 @@ async fn admin_callback(state: Arc<BotState>, query: CallbackQuery, action: Repo
                     }
                     let text = format!(
                         "✅ <b>Track Re-ripped Successfully!</b><br/><br/><blockquote>Track <code>{}</code> (<b>{}</b>) was successfully re-ripped and replaced in the dump channel. Old message was deleted.</blockquote>",
-                        escape(&track_id), title
+                        escape(&track_id),
+                        title
                     );
                     edit_query(&state, &query, &text, None).await;
                 }

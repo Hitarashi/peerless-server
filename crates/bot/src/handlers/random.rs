@@ -5,20 +5,20 @@
 use std::sync::Arc;
 
 use engine::{
-    types::{ParsedTargetItem, TargetKind, TrackKey},
     Provider,
+    types::{ParsedTargetItem, TargetKind, TrackKey},
 };
 use ferogram::{
+    InputMessage, PeerRef,
     filters::{self, Dispatcher},
     keyboard::{Button, InlineKeyboard},
     update::{CallbackQuery, IncomingMessage},
-    InputMessage, PeerRef,
 };
 
 use crate::{
+    BotState,
     html::{escape, parse_dynamic_html},
     interaction::DiscoveryAction,
-    BotState,
 };
 
 /// WILD_SEEDS (50 words).
@@ -368,10 +368,8 @@ async fn fetch_south_asia_album(
 
     // 25% chance to pick from top charts in India
     let pick_charts = pick_index(rng, 4) == 0;
-    if pick_charts {
-        if let Ok(candidate) = fetch_charts_album(state, sf, rng).await {
-            return Ok(candidate);
-        }
+    if pick_charts && let Ok(candidate) = fetch_charts_album(state, sf, rng).await {
+        return Ok(candidate);
     }
 
     let seed = SOUTH_ASIA_SEEDS[pick_index(rng, SOUTH_ASIA_SEEDS.len())];
@@ -409,10 +407,9 @@ async fn is_album_already_dumped(
         .albums()
         .find_albums(Provider::Apple, album_id, None)
         .await
+        && !parts.is_empty()
     {
-        if !parts.is_empty() {
-            return true;
-        }
+        return true;
     }
 
     // 2. Check if tracks of this album are all in the tracks cache
@@ -426,10 +423,9 @@ async fn is_album_already_dumped(
             .tracks()
             .find_cached_tracks(&track_keys)
             .await
+            && cached.len() == tracks.len()
         {
-            if cached.len() == tracks.len() {
-                return true;
-            }
+            return true;
         }
     }
 
@@ -455,17 +451,16 @@ async fn discover_valid_candidate(
                     .albums()
                     .find_albums(Provider::Apple, &candidate.id, None)
                     .await
+                    && !parts.is_empty()
                 {
-                    if !parts.is_empty() {
-                        tracing::info!(
-                            album_id = %candidate.id,
-                            title = %candidate.title,
-                            attempt,
-                            "Random album candidate ZIP is already cached in albums table, skipping..."
-                        );
-                        last_err = format!("Album {} is already dumped", candidate.id);
-                        continue;
-                    }
+                    tracing::info!(
+                        album_id = %candidate.id,
+                        title = %candidate.title,
+                        attempt,
+                        "Random album candidate ZIP is already cached in albums table, skipping..."
+                    );
+                    last_err = format!("Album {} is already dumped", candidate.id);
+                    continue;
                 }
 
                 match state
@@ -568,10 +563,10 @@ async fn random(state: Arc<BotState>, msg: IncomingMessage) {
         .collect();
     let source_arg = tokens.first().map(|s| s.to_lowercase());
     let storefront_arg = tokens.get(1).map(|s| s.to_lowercase()).unwrap_or_else(|| {
-        if let Some(src) = &source_arg {
-            if is_south_asia_source(src) {
-                return "in".to_owned();
-            }
+        if let Some(src) = &source_arg
+            && is_south_asia_source(src)
+        {
+            return "in".to_owned();
         }
         "us".to_owned()
     });
@@ -791,10 +786,10 @@ pub async fn callback(state: Arc<BotState>, query: CallbackQuery, action: Discov
 }
 
 async fn delete_message(state: &BotState, peer: &PeerRef, message_id: i32) {
-    if let Ok(messages) = state.client.get_messages(peer.clone(), &[message_id]).await {
-        if let Some(message) = messages.first() {
-            let _ = message.delete().await;
-        }
+    if let Ok(messages) = state.client.get_messages(peer.clone(), &[message_id]).await
+        && let Some(message) = messages.first()
+    {
+        let _ = message.delete().await;
     }
 }
 

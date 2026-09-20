@@ -1,4 +1,4 @@
-use bot::dashboard::{cancelable_job_ids, render, DashboardJob, DashboardSnapshot, JobPhase};
+use bot::dashboard::{DashboardJob, DashboardSnapshot, JobPhase, cancelable_job_ids, render};
 use engine::orchestrator::types::{
     ByteProgress, DownloadLane, RipActivity, TrackLabel, UploadLane,
 };

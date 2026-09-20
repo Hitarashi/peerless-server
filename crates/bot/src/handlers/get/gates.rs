@@ -3,8 +3,7 @@
 
 use engine::{settings::BotSettings, types::ParsedTargetItem};
 
-pub const CACHE_RESTRICTED: &str =
-    "! <b>Access restricted</b><br/>Caching directly to the dump channel is restricted to the bot owner.";
+pub const CACHE_RESTRICTED: &str = "! <b>Access restricted</b><br/>Caching directly to the dump channel is restricted to the bot owner.";
 pub const FORCE_RESTRICTED: &str =
     "! <b>Access restricted</b><br/>Force re-rip is restricted to the bot owner.";
 pub const PAUSED: &str =

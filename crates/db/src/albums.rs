@@ -6,9 +6,9 @@ use engine::orchestrator::deps::{
 use music::{Codec, Provider};
 
 use crate::{
+    DbError, DbPool,
     models::{Album, NewAlbum},
     schema::albums,
-    DbError, DbPool,
 };
 
 /// Database repository for cached album archive parts.

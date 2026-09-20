@@ -160,10 +160,10 @@ impl<H: PlaylistHttp> PlaylistClient<H> {
         let now = now_ms();
         {
             let cache = self.token_cache.lock().expect("token cache poisoned");
-            if let Some(token) = &cache.token {
-                if cache.expires_at_ms > now {
-                    return Ok(token.clone());
-                }
+            if let Some(token) = &cache.token
+                && cache.expires_at_ms > now
+            {
+                return Ok(token.clone());
             }
         }
 
@@ -210,10 +210,10 @@ impl<H: PlaylistHttp> PlaylistClient<H> {
             .await
             .map_err(|e| e.to_string())?;
 
-        if let Some(var_name) = find_developer_token_var(&js) {
-            if let Some(value) = find_var_assignment(&js, &var_name) {
-                return Ok(value);
-            }
+        if let Some(var_name) = find_developer_token_var(&js)
+            && let Some(value) = find_var_assignment(&js, &var_name)
+        {
+            return Ok(value);
         }
 
         if let Some(jwt) = find_direct_jwt(&js) {
@@ -458,10 +458,10 @@ impl<H: PlaylistHttp> PlaylistClient<H> {
         let mut map = HashMap::new();
         if let Some(items) = res.data {
             for item in items {
-                if let Some(attrs) = item.attributes {
-                    if let Some(isrc) = attrs.isrc.filter(|s| !s.is_empty()) {
-                        map.insert(item.id, isrc);
-                    }
+                if let Some(attrs) = item.attributes
+                    && let Some(isrc) = attrs.isrc.filter(|s| !s.is_empty())
+                {
+                    map.insert(item.id, isrc);
                 }
             }
         }
@@ -552,11 +552,7 @@ fn find_developer_token_var(js: &str) -> Option<String> {
         .chars()
         .take_while(|c| c.is_ascii_alphanumeric() || *c == '$' || *c == '_')
         .collect();
-    if name.is_empty() {
-        None
-    } else {
-        Some(name)
-    }
+    if name.is_empty() { None } else { Some(name) }
 }
 
 /// `${varName}\\s*=\\s*"([^"]+)"` — first assignment of `var_name`.
@@ -570,10 +566,10 @@ fn find_var_assignment(js: &str, var_name: &str) -> Option<String> {
         if let Some(stripped) = rest.strip_prefix('=') {
             let ws_len = stripped.chars().take_while(|c| c.is_whitespace()).count();
             let rest = &stripped[ws_len..];
-            if let Some(after_quote) = rest.strip_prefix('"') {
-                if let Some(end) = after_quote.find('"') {
-                    return Some(after_quote[..end].to_string());
-                }
+            if let Some(after_quote) = rest.strip_prefix('"')
+                && let Some(end) = after_quote.find('"')
+            {
+                return Some(after_quote[..end].to_string());
             }
         }
         search_from = start + 1;

@@ -1,17 +1,16 @@
 use std::sync::Arc;
 
 use ferogram::{
-    filters,
+    InputMessage, PeerRef, filters,
     filters::Dispatcher,
     keyboard::{Button, InlineKeyboard},
     update::CallbackQuery,
-    InputMessage, PeerRef,
 };
 
 use crate::{
+    BotState,
     html::{escape, parse_dynamic_html},
     interaction::TelegramAction,
-    BotState,
 };
 
 const PAGE_SIZE: usize = 20;
@@ -144,10 +143,10 @@ pub async fn callback(state: Arc<BotState>, query: CallbackQuery, action: Telegr
                 // dispatches to channels.deleteMessages for supergroups,
                 // messages.deleteMessages otherwise. Fetch first, then
                 // delete through the message's own peer context.
-                if let Ok(messages) = state.client.get_messages(peer, &[id]).await {
-                    if let Some(message) = messages.first() {
-                        let _ = message.delete().await;
-                    }
+                if let Ok(messages) = state.client.get_messages(peer, &[id]).await
+                    && let Some(message) = messages.first()
+                {
+                    let _ = message.delete().await;
                 }
             }
         }

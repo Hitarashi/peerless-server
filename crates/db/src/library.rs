@@ -8,11 +8,11 @@ use diesel::prelude::*;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 
 use crate::{
+    DbError, DbPool,
     models::{
         NewUserFavorite, NewUserPlaylist, NewUserPlaylistTrack, Track, UserFavorite, UserPlaylist,
     },
     schema::{tracks, user_favorites, user_playlist_tracks, user_playlists},
-    DbError, DbPool,
 };
 
 #[derive(Debug, Clone)]

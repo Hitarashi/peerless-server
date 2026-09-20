@@ -724,28 +724,28 @@ pub fn normalize_fragment(fragment: &mut Vec<u8>) {
     let mut sdi_shrink: i64 = 0;
     if let Some((tfhd_off, tfhd_len)) =
         find_child_box(fragment, traf_off + 8, traf_off + traf_len, b"tfhd")
+        && tfhd_len >= 16
+        && tfhd_off + tfhd_len <= fragment.len()
     {
-        if tfhd_len >= 16 && tfhd_off + tfhd_len <= fragment.len() {
-            let flags = read_u24_be(&fragment[tfhd_off + 9..tfhd_off + 12]);
-            if flags & 0x2 != 0 {
-                let mut cur = tfhd_off + 12;
-                if flags & 0x1 != 0 {
-                    cur += 8; // base_data_offset
-                }
-                cur += 4; // track_id precedes sample_description_index
-                let sdi_pos = cur; // sample_description_index field
-                if sdi_pos + 4 <= fragment.len() {
-                    fragment.drain(sdi_pos..sdi_pos + 4);
-                    let new_flags = flags & !0x2;
-                    fragment[tfhd_off + 9..tfhd_off + 12]
-                        .copy_from_slice(&new_flags.to_be_bytes()[1..4]);
-                    write_u32_be(&mut fragment[tfhd_off..tfhd_off + 4], (tfhd_len - 4) as u32);
-                    let traf_size = read_u32_be(&fragment[traf_off..traf_off + 4]);
-                    write_u32_be(&mut fragment[traf_off..traf_off + 4], traf_size - 4);
-                    let moof_size = read_u32_be(&fragment[moof_off..moof_off + 4]);
-                    write_u32_be(&mut fragment[moof_off..moof_off + 4], moof_size - 4);
-                    sdi_shrink = -4;
-                }
+        let flags = read_u24_be(&fragment[tfhd_off + 9..tfhd_off + 12]);
+        if flags & 0x2 != 0 {
+            let mut cur = tfhd_off + 12;
+            if flags & 0x1 != 0 {
+                cur += 8; // base_data_offset
+            }
+            cur += 4; // track_id precedes sample_description_index
+            let sdi_pos = cur; // sample_description_index field
+            if sdi_pos + 4 <= fragment.len() {
+                fragment.drain(sdi_pos..sdi_pos + 4);
+                let new_flags = flags & !0x2;
+                fragment[tfhd_off + 9..tfhd_off + 12]
+                    .copy_from_slice(&new_flags.to_be_bytes()[1..4]);
+                write_u32_be(&mut fragment[tfhd_off..tfhd_off + 4], (tfhd_len - 4) as u32);
+                let traf_size = read_u32_be(&fragment[traf_off..traf_off + 4]);
+                write_u32_be(&mut fragment[traf_off..traf_off + 4], traf_size - 4);
+                let moof_size = read_u32_be(&fragment[moof_off..moof_off + 4]);
+                write_u32_be(&mut fragment[moof_off..moof_off + 4], moof_size - 4);
+                sdi_shrink = -4;
             }
         }
     }

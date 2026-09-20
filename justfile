@@ -21,7 +21,7 @@ check:
 
 # Lint with warnings as errors.
 clippy:
-    cargo clippy --workspace --all-targets
+    cargo clippy --workspace --all-targets -- -D warnings
 
 # Run the test suite (needs a PostgreSQL test database).
 test_database_url := env_var_or_default('TEST_DATABASE_URL', 'postgres://admin:password@localhost:5432/alac_bot_test')

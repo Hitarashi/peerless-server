@@ -101,21 +101,19 @@ impl BundleScraper {
 
     fn extract_app_id(content: &str) -> String {
         let app_id_regex = Regex::new(r#"production:\{api:\{appId:"(?P<id>\d{9})""#).ok();
-        if let Some(re) = app_id_regex {
-            if let Some(caps) = re.captures(content) {
-                if let Some(m) = caps.name("id") {
-                    return m.as_str().to_owned();
-                }
-            }
+        if let Some(re) = app_id_regex
+            && let Some(caps) = re.captures(content)
+            && let Some(m) = caps.name("id")
+        {
+            return m.as_str().to_owned();
         }
 
         let secondary = Regex::new(r#"appId:"(?P<id>\d{9})""#).ok();
-        if let Some(re) = secondary {
-            if let Some(caps) = re.captures(content) {
-                if let Some(m) = caps.name("id") {
-                    return m.as_str().to_owned();
-                }
-            }
+        if let Some(re) = secondary
+            && let Some(caps) = re.captures(content)
+            && let Some(m) = caps.name("id")
+        {
+            return m.as_str().to_owned();
         }
 
         FALLBACK_APP_IDS[0].to_owned()
@@ -177,12 +175,11 @@ impl BundleScraper {
             let combined = parts.join("");
             if combined.len() > 44 {
                 let raw_b64 = &combined[..combined.len() - 44];
-                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(raw_b64) {
-                    if bytes.len() == 32 {
-                        if let Ok(s) = String::from_utf8(bytes) {
-                            decoded_secrets.push(s);
-                        }
-                    }
+                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(raw_b64)
+                    && bytes.len() == 32
+                    && let Ok(s) = String::from_utf8(bytes)
+                {
+                    decoded_secrets.push(s);
                 }
             }
         }

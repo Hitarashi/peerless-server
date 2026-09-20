@@ -1,4 +1,4 @@
-use db::{connect_test_isolated, migrate, Auth};
+use db::{Auth, connect_test_isolated, migrate};
 
 #[tokio::test]
 async fn authorization_and_migrations_round_trip() {
@@ -14,30 +14,36 @@ async fn authorization_and_migrations_round_trip() {
     let _ = auth.revoke(user).await;
     let _ = auth.revoke(chat).await;
 
-    assert!(auth
-        .authorize(user, Some("first"))
-        .await
-        .expect("authorize"));
-    assert!(!auth
-        .authorize(user, Some("updated"))
-        .await
-        .expect("re-authorize"));
+    assert!(
+        auth.authorize(user, Some("first"))
+            .await
+            .expect("authorize")
+    );
+    assert!(
+        !auth
+            .authorize(user, Some("updated"))
+            .await
+            .expect("re-authorize")
+    );
     assert!(auth.is_authorized(user, None).await.expect("user auth"));
-    assert!(auth
-        .is_authorized(123, Some(user))
-        .await
-        .expect("chat auth"));
+    assert!(
+        auth.is_authorized(123, Some(user))
+            .await
+            .expect("chat auth")
+    );
     assert!(!auth.is_authorized(123, Some(456)).await.expect("auth miss"));
     assert!(auth.is_admin(900_000_001));
-    assert!(auth
-        .is_authorized(900_000_001, None)
-        .await
-        .expect("admin auth"));
+    assert!(
+        auth.is_authorized(900_000_001, None)
+            .await
+            .expect("admin auth")
+    );
 
-    assert!(auth
-        .authorize(chat, Some("group"))
-        .await
-        .expect("group authorize"));
+    assert!(
+        auth.authorize(chat, Some("group"))
+            .await
+            .expect("group authorize")
+    );
     let list = auth.list_authorized().await.expect("list authorized");
     let listed = list
         .iter()

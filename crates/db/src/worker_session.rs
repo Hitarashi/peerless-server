@@ -1,17 +1,17 @@
 use aes_gcm::{
-    aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
+    aead::{Aead, KeyInit},
 };
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use chrono::Utc;
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use sha2::{Digest, Sha256};
 
 use crate::{
+    DbError, DbPool,
     models::{NewTgWorkerSession, TgWorkerSession},
     schema::tg_worker_sessions,
-    DbError, DbPool,
 };
 
 /// High-leverage repository for persisting Telegram worker bot session strings.
@@ -55,16 +55,15 @@ impl WorkerSessionStore {
 
         let raw_data = s.session_data;
         if let Some(ref c) = self.cipher {
-            if let Ok(decoded) = BASE64.decode(&raw_data) {
-                if decoded.len() >= 12 {
-                    let (nonce_bytes, ciphertext) = decoded.split_at(12);
-                    if let Ok(nonce) = Nonce::try_from(nonce_bytes) {
-                        if let Ok(plaintext) = c.decrypt(&nonce, ciphertext) {
-                            if let Ok(session_str) = String::from_utf8(plaintext) {
-                                return Ok(Some(session_str));
-                            }
-                        }
-                    }
+            if let Ok(decoded) = BASE64.decode(&raw_data)
+                && decoded.len() >= 12
+            {
+                let (nonce_bytes, ciphertext) = decoded.split_at(12);
+                if let Ok(nonce) = Nonce::try_from(nonce_bytes)
+                    && let Ok(plaintext) = c.decrypt(&nonce, ciphertext)
+                    && let Ok(session_str) = String::from_utf8(plaintext)
+                {
+                    return Ok(Some(session_str));
                 }
             }
             tracing::warn!(token_hash, "Failed to decode or decrypt worker session");

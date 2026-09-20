@@ -51,10 +51,10 @@ impl CircuitBreaker {
     /// Mark a worker as healthy after a successful operation if it was previously quarantined.
     pub fn record_success(&self, worker_id: usize) {
         let mut states = self.worker_states.write().unwrap();
-        if let Some(slot) = states.get_mut(worker_id) {
-            if matches!(slot, WorkerState::Quarantined { .. }) {
-                *slot = WorkerState::Healthy;
-            }
+        if let Some(slot) = states.get_mut(worker_id)
+            && matches!(slot, WorkerState::Quarantined { .. })
+        {
+            *slot = WorkerState::Healthy;
         }
     }
 

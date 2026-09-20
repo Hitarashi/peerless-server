@@ -73,7 +73,10 @@ impl std::fmt::Display for StreamError {
             Self::Permanent(message) => formatter.write_str(message),
             Self::Unavailable(reason) => formatter.write_str(reason),
             Self::Timeout { source, secs } => {
-                write!(formatter, "stream handshake timed out after {secs}s on {source}")
+                write!(
+                    formatter,
+                    "stream handshake timed out after {secs}s on {source}"
+                )
             }
             Self::Authentication { source } => {
                 write!(formatter, "authentication failed on {source}")

@@ -10,11 +10,11 @@ pub mod engine;
 pub mod pipe;
 pub mod worker_pool;
 
-pub use cache::{ChunkCache, ChunkKey, CHUNK_SIZE};
+pub use cache::{CHUNK_SIZE, ChunkCache, ChunkKey};
 pub use circuit_breaker::CircuitBreaker;
 pub use engine::{AudioStreamResponse, StreamEngine, TrackMediaMetadata};
-pub use pipe::{create_stream_pipe, ByteRange, ChunkStream, LocationRefresher, StreamPipeParams};
-pub use worker_pool::{hash_bot_token, StreamWorkerPool};
+pub use pipe::{ByteRange, ChunkStream, LocationRefresher, StreamPipeParams, create_stream_pipe};
+pub use worker_pool::{StreamWorkerPool, hash_bot_token};
 
 /// Streaming engine errors.
 #[derive(Debug, thiserror::Error)]

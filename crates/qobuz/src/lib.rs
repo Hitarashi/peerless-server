@@ -17,7 +17,7 @@ pub use adapters::{
 };
 pub use catalog::QobuzCatalog;
 pub use gateway::{QobuzError, QobuzGateway, QobuzStreamInfo};
-pub use parser::{parse_qobuz_url, QobuzEntity, QobuzKind};
+pub use parser::{QobuzEntity, QobuzKind, parse_qobuz_url};
 pub use presentation::QobuzPresentation;
 
 #[derive(Clone)]

@@ -18,8 +18,8 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use base64::{engine::general_purpose::STANDARD as B64, Engine};
-use cbc::cipher::{block_padding::Pkcs7, BlockModeDecrypt, KeyIvInit};
+use base64::{Engine, engine::general_purpose::STANDARD as B64};
+use cbc::cipher::{BlockModeDecrypt, KeyIvInit, block_padding::Pkcs7};
 use cmac::{Cmac, KeyInit, Mac};
 
 use super::client::WrapperError;
@@ -288,7 +288,7 @@ impl Cdm {
         // RSA-PSS with SHA-1, salt length = hash length (20).
         let signing_key =
             rsa::pss::SigningKey::<sha1::Sha1>::new_with_salt_len(self.private_key.clone(), 20);
-        use rsa::signature::{hazmat::PrehashSigner, SignatureEncoding};
+        use rsa::signature::{SignatureEncoding, hazmat::PrehashSigner};
         let signature = signing_key
             .sign_prehash(&digest)
             .map_err(|e| WrapperError::Message(format!("Sign license request: {e}")))?
@@ -483,7 +483,7 @@ mod tests {
     #[test]
     fn unwrap_key_round_trips_pkcs7_padded_cbc() {
         // AES-CBC-encrypt 16 key bytes with PKCS#7 padding, then unwrap.
-        use cbc::cipher::{block_padding::Pkcs7, BlockModeEncrypt, KeyIvInit};
+        use cbc::cipher::{BlockModeEncrypt, KeyIvInit, block_padding::Pkcs7};
         type Enc = cbc::Encryptor<aes::Aes128>;
         let kek = [0x42u8; 16];
         let iv = [0x99u8; 16];

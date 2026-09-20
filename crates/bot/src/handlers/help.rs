@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use ferogram::{filters, filters::Dispatcher, InputMessage};
+use ferogram::{InputMessage, filters, filters::Dispatcher};
 
-use crate::{command_catalog::render_help, html::parse_dynamic_html, BotState};
+use crate::{BotState, command_catalog::render_help, html::parse_dynamic_html};
 
 pub fn register(dp: &mut Dispatcher, state: Arc<BotState>) {
     dp.on_message(filters::command("help"), move |msg| {

@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{Path, State},
     Json,
+    extract::{Path, State},
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::{auth::AuthedUser, catalog::TrackSummaryDto, error::ServerError, ServerState};
+use crate::{ServerState, auth::AuthedUser, catalog::TrackSummaryDto, error::ServerError};
 
 #[utoipa::path(
     get,

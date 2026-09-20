@@ -3,7 +3,7 @@ use std::borrow::Borrow;
 use diesel_async::RunQueryDsl;
 use engine::orchestrator::deps::RequestLog;
 
-use crate::{models::NewRequest, schema::requests, DbError, DbPool};
+use crate::{DbError, DbPool, models::NewRequest, schema::requests};
 
 /// Append-only request log repository.
 #[derive(Clone)]

@@ -398,7 +398,7 @@ fn valid_source(value: &str) -> bool {
 }
 
 fn encode_settings(action: &SettingsAction) -> String {
-    let value = match action {
+    match action {
         SettingsAction::Close => "settings:close".to_owned(),
         SettingsAction::Refresh => "settings:refresh".to_owned(),
         SettingsAction::Storefronts => "settings:sf_menu".to_owned(),
@@ -418,8 +418,7 @@ fn encode_settings(action: &SettingsAction) -> String {
         ),
         SettingsAction::Limit(limit) => format!("settings:limit:{limit}"),
         SettingsAction::ToggleStorefront(sf) => format!("settings:sf:toggle:{sf}"),
-    };
-    value
+    }
 }
 
 fn encode_report(action: &ReportAction) -> String {

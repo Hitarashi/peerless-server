@@ -29,7 +29,7 @@ use music::{AlbumTracks, ArtistTracks, TrackMeta};
 use serde::Deserialize;
 use tracing::{debug, error, info, info_span};
 pub use transport::{
-    ReqwestTransport, Transport, TransportError, CHARTS_USER_AGENT, ITUNES_USER_AGENT,
+    CHARTS_USER_AGENT, ITUNES_USER_AGENT, ReqwestTransport, Transport, TransportError,
 };
 
 /// Regional storefronts tried after `us` in the fallback chain, in order.
@@ -245,11 +245,7 @@ fn is_track_item(item: &ItunesRawItem) -> bool {
 
 fn normalize_storefront(storefront: &str) -> String {
     let sf = storefront.to_lowercase();
-    if sf.is_empty() {
-        "us".to_owned()
-    } else {
-        sf
-    }
+    if sf.is_empty() { "us".to_owned() } else { sf }
 }
 
 /// URL-encode a query component (percent-encoding, unreserved chars kept) —
@@ -751,22 +747,20 @@ impl<T: Transport> Catalog<T> {
                 .transport
                 .get(&songs_url, ITUNES_USER_AGENT, ARTIST_BATCH_TIMEOUT)
                 .await
+                && let Ok(song_results) = Self::parse_results(&body)
             {
-                if let Ok(song_results) = Self::parse_results(&body) {
-                    if artist_name.is_empty() {
-                        artist_name = song_results
-                            .iter()
-                            .find(|r| r.wrapper_type.as_deref() == Some("artist"))
-                            .and_then(|r| r.artist_name.clone())
-                            .unwrap_or_default();
-                    }
-                    for item in &song_results {
-                        if is_track_item(item) {
-                            let track_id =
-                                item.track_id.map_or_else(String::new, |id| id.to_string());
-                            if !track_id.is_empty() && seen_track_ids.insert(track_id) {
-                                all_tracks.push(map_itunes_item(item));
-                            }
+                if artist_name.is_empty() {
+                    artist_name = song_results
+                        .iter()
+                        .find(|r| r.wrapper_type.as_deref() == Some("artist"))
+                        .and_then(|r| r.artist_name.clone())
+                        .unwrap_or_default();
+                }
+                for item in &song_results {
+                    if is_track_item(item) {
+                        let track_id = item.track_id.map_or_else(String::new, |id| id.to_string());
+                        if !track_id.is_empty() && seen_track_ids.insert(track_id) {
+                            all_tracks.push(map_itunes_item(item));
                         }
                     }
                 }

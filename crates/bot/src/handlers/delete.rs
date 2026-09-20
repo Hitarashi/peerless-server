@@ -1,8 +1,8 @@
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc, Mutex, OnceLock,
+        atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -10,17 +10,16 @@ use std::{
 use apple::parse_alac_input;
 use engine::{Provider, TrackKey};
 use ferogram::{
-    filters,
+    InputMessage, PeerRef, filters,
     filters::Dispatcher,
     keyboard::{Button, InlineKeyboard},
     tl,
     update::CallbackQuery,
-    InputMessage, PeerRef,
 };
 
 use crate::{
-    html::{escape, parse_dynamic_html},
     BotState,
+    html::{escape, parse_dynamic_html},
 };
 
 const RESTRICTED: &str =
@@ -79,12 +78,11 @@ async fn reply_text(msg: &ferogram::update::IncomingMessage, state: &BotState) -
         tl::enums::Message::Service(m) => m.reply_to.as_ref(),
         _ => None,
     };
-    if let Some(tl::enums::MessageReplyHeader::MessageReplyHeader(h)) = reply_header {
-        if let Some(ref quote) = h.quote_text {
-            if !quote.trim().is_empty() {
-                return Some(quote.clone());
-            }
-        }
+    if let Some(tl::enums::MessageReplyHeader::MessageReplyHeader(h)) = reply_header
+        && let Some(ref quote) = h.quote_text
+        && !quote.trim().is_empty()
+    {
+        return Some(quote.clone());
     }
     let reply_id = msg.reply_to_message_id()?;
     let peer = msg.peer_id()?.clone();
@@ -293,7 +291,10 @@ pub async fn callback(
     } else {
         &cached.artist
     });
-    let text = format!("<b>Track deleted</b><br/><br/><blockquote>• Title: <b>{title}</b> — {artist}<br/>• Apple ID: <code>{}</code><br/>• Removed from the database and dump channel.</blockquote>", pending.track_id);
+    let text = format!(
+        "<b>Track deleted</b><br/><br/><blockquote>• Title: <b>{title}</b> — {artist}<br/>• Apple ID: <code>{}</code><br/>• Removed from the database and dump channel.</blockquote>",
+        pending.track_id
+    );
     edit_query(&state, &query, &text).await;
 }
 
@@ -315,12 +316,10 @@ async fn edit_query(state: &BotState, query: &CallbackQuery, text: &str) {
 async fn delete_query_message(state: &BotState, query: &CallbackQuery) {
     if let (Some(peer), Some(message_id)) =
         (query.chat_peer.clone().map(PeerRef::Peer), query.message_id)
+        && let Ok(messages) = state.client.get_messages(peer, &[message_id]).await
+        && let Some(message) = messages.first()
     {
-        if let Ok(messages) = state.client.get_messages(peer, &[message_id]).await {
-            if let Some(message) = messages.first() {
-                let _ = message.delete().await;
-            }
-        }
+        let _ = message.delete().await;
     }
 }
 

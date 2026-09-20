@@ -1,20 +1,20 @@
 use std::sync::Arc;
 
 use axum::{
+    Json,
     body::Body,
     extract::{Query, State},
-    http::{header, Method, StatusCode},
+    http::{Method, StatusCode, header},
     response::Response,
-    Json,
 };
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD as BASE64URL, Engine};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as BASE64URL};
 use chrono::Utc;
-use hmac::{digest::KeyInit, Hmac, Mac};
+use hmac::{Hmac, Mac, digest::KeyInit};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use utoipa::{IntoParams, ToSchema};
 
-use crate::{auth::AuthedUser, error::ServerError, ServerState};
+use crate::{ServerState, auth::AuthedUser, error::ServerError};
 
 type HmacSha256 = Hmac<Sha256>;
 

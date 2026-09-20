@@ -2,12 +2,12 @@ use std::sync::Arc;
 
 use axum::{
     body::Body,
-    http::{header, Request, StatusCode},
+    http::{Request, StatusCode, header},
 };
 use ferogram::PeerRef;
 use server::{
-    streaming::{create_stream_ticket, verify_stream_ticket, StreamTicket},
     ServerState,
+    streaming::{StreamTicket, create_stream_ticket, verify_stream_ticket},
 };
 use tower::ServiceExt;
 
@@ -335,10 +335,12 @@ async fn test_auth_and_library_lifecycle() {
         .await
         .unwrap();
     let pb_res: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert!(pb_res["stream_url"]
-        .as_str()
-        .unwrap()
-        .contains("/api/v1/stream?ticket="));
+    assert!(
+        pb_res["stream_url"]
+            .as_str()
+            .unwrap()
+            .contains("/api/v1/stream?ticket=")
+    );
     assert_eq!(pb_res["expires_in"], 7200);
     assert!(pb_res["file_size"].as_i64().is_some());
 

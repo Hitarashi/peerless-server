@@ -1,15 +1,15 @@
 use std::sync::Arc;
 
 use axum::{
+    Json,
     extract::{FromRef, FromRequestParts, State},
     http::request::Parts,
-    Json,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::{error::ServerError, ServerState};
+use crate::{ServerState, error::ServerError};
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AuthedUser {

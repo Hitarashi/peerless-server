@@ -1,21 +1,28 @@
 use std::sync::{Arc, LazyLock};
 
 use axum::{
-    extract::{Path, Query, State},
-    http::{header, StatusCode},
-    response::Response,
     Json,
+    extract::{Path, Query, State},
+    http::{StatusCode, header},
+    response::Response,
 };
 use moka::future::Cache;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
-use crate::{error::ServerError, ServerState};
+use crate::{ServerState, error::ServerError};
 
 static ARTWORK_CACHE: LazyLock<Cache<(String, u16), String>> = LazyLock::new(|| {
     Cache::builder()
         .max_capacity(10_000)
         .time_to_live(std::time::Duration::from_secs(86400 * 7))
+        .build()
+});
+
+static LYRICS_CACHE: LazyLock<Cache<i32, LyricsResponse>> = LazyLock::new(|| {
+    Cache::builder()
+        .max_capacity(10_000)
+        .time_to_live(std::time::Duration::from_secs(60 * 60 * 12))
         .build()
 });
 
@@ -36,6 +43,12 @@ pub struct ProviderArtworkQuery {
     pub title: Option<String>,
     /// Track artist used when resolving artwork for a provider result not in the database.
     pub artist: Option<String>,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct LyricsQuery {
+    /// Skip the server result cache and query the lyric providers again.
+    pub refresh: Option<bool>,
 }
 
 #[utoipa::path(
@@ -188,22 +201,18 @@ async fn resolve_artwork(
                     )
                 };
 
-                if let Ok(resp) = state.http_client.get(&url).send().await {
-                    if resp.status().is_success() {
-                        if let Ok(json) = resp.json::<serde_json::Value>().await {
-                            if let Some(url_str) = json
-                                .get("results")
-                                .and_then(|r| r.as_array())
-                                .and_then(|arr| arr.first())
-                                .and_then(|item| item.get("artworkUrl100"))
-                                .and_then(|u| u.as_str())
-                            {
-                                resolved =
-                                    Some(url_str.replace("100x100bb", &format!("{size}x{size}bb")));
-                                break;
-                            }
-                        }
-                    }
+                if let Ok(resp) = state.http_client.get(&url).send().await
+                    && resp.status().is_success()
+                    && let Ok(json) = resp.json::<serde_json::Value>().await
+                    && let Some(url_str) = json
+                        .get("results")
+                        .and_then(|r| r.as_array())
+                        .and_then(|arr| arr.first())
+                        .and_then(|item| item.get("artworkUrl100"))
+                        .and_then(|u| u.as_str())
+                {
+                    resolved = Some(url_str.replace("100x100bb", &format!("{size}x{size}bb")));
+                    break;
                 }
             }
 
@@ -216,23 +225,18 @@ async fn resolve_artwork(
                     let search_url = format!(
                         "https://itunes.apple.com/search?term={encoded_term}&entity=song&limit=1&country={country}"
                     );
-                    if let Ok(resp) = state.http_client.get(&search_url).send().await {
-                        if resp.status().is_success() {
-                            if let Ok(json) = resp.json::<serde_json::Value>().await {
-                                if let Some(url_str) = json
-                                    .get("results")
-                                    .and_then(|r| r.as_array())
-                                    .and_then(|arr| arr.first())
-                                    .and_then(|item| item.get("artworkUrl100"))
-                                    .and_then(|u| u.as_str())
-                                {
-                                    resolved = Some(
-                                        url_str.replace("100x100bb", &format!("{size}x{size}bb")),
-                                    );
-                                    break;
-                                }
-                            }
-                        }
+                    if let Ok(resp) = state.http_client.get(&search_url).send().await
+                        && resp.status().is_success()
+                        && let Ok(json) = resp.json::<serde_json::Value>().await
+                        && let Some(url_str) = json
+                            .get("results")
+                            .and_then(|r| r.as_array())
+                            .and_then(|arr| arr.first())
+                            .and_then(|item| item.get("artworkUrl100"))
+                            .and_then(|u| u.as_str())
+                    {
+                        resolved = Some(url_str.replace("100x100bb", &format!("{size}x{size}bb")));
+                        break;
                     }
                 }
             }
@@ -255,46 +259,43 @@ async fn resolve_artwork(
             }
 
             let mut resolved = None;
-            if let Ok(resp) = req.send().await {
-                if resp.status().is_success() {
-                    if let Ok(json) = resp.json::<serde_json::Value>().await {
-                        let track_obj = json.get("track").unwrap_or(&json);
-                        let img_url = track_obj
-                            .get("album")
-                            .and_then(|a| a.get("image"))
-                            .and_then(|img| {
-                                img.get("large")
-                                    .or_else(|| img.get("small"))
-                                    .or_else(|| img.get("thumbnail"))
-                            })
+            if let Ok(resp) = req.send().await
+                && resp.status().is_success()
+                && let Ok(json) = resp.json::<serde_json::Value>().await
+            {
+                let track_obj = json.get("track").unwrap_or(&json);
+                let img_url = track_obj
+                    .get("album")
+                    .and_then(|a| a.get("image"))
+                    .and_then(|img| {
+                        img.get("large")
+                            .or_else(|| img.get("small"))
+                            .or_else(|| img.get("thumbnail"))
+                    })
+                    .and_then(|u| u.as_str())
+                    .or_else(|| {
+                        track_obj
+                            .get("tags")
+                            .and_then(|t| t.get("coverUrl600").or_else(|| t.get("coverUrl")))
                             .and_then(|u| u.as_str())
-                            .or_else(|| {
-                                track_obj
-                                    .get("tags")
-                                    .and_then(|t| {
-                                        t.get("coverUrl600").or_else(|| t.get("coverUrl"))
-                                    })
-                                    .and_then(|u| u.as_str())
-                            })
-                            .or_else(|| track_obj.get("originalCoverUrl").and_then(|u| u.as_str()));
+                    })
+                    .or_else(|| track_obj.get("originalCoverUrl").and_then(|u| u.as_str()));
 
-                        if let Some(base_url) = img_url {
-                            let mapped_url = if size > 600 {
-                                base_url
-                                    .replace("_600.jpg", "_org.jpg")
-                                    .replace("_230.jpg", "_org.jpg")
-                            } else if size <= 230 {
-                                base_url
-                                    .replace("_600.jpg", "_230.jpg")
-                                    .replace("_org.jpg", "_230.jpg")
-                            } else {
-                                base_url
-                                    .replace("_230.jpg", "_600.jpg")
-                                    .replace("_org.jpg", "_600.jpg")
-                            };
-                            resolved = Some(mapped_url);
-                        }
-                    }
+                if let Some(base_url) = img_url {
+                    let mapped_url = if size > 600 {
+                        base_url
+                            .replace("_600.jpg", "_org.jpg")
+                            .replace("_230.jpg", "_org.jpg")
+                    } else if size <= 230 {
+                        base_url
+                            .replace("_600.jpg", "_230.jpg")
+                            .replace("_org.jpg", "_230.jpg")
+                    } else {
+                        base_url
+                            .replace("_230.jpg", "_600.jpg")
+                            .replace("_org.jpg", "_600.jpg")
+                    };
+                    resolved = Some(mapped_url);
                 }
             }
 
@@ -326,18 +327,47 @@ struct ReqwestLyricsHttp(reqwest::Client);
 
 impl lyrics::LyricsHttp for ReqwestLyricsHttp {
     fn get_json<'a>(&'a self, url: &'a str) -> lyrics::LyricsFuture<'a, Option<String>> {
+        self.get_with_headers(url, &[])
+    }
+
+    fn get_with_headers<'a>(
+        &'a self,
+        url: &'a str,
+        headers: &'a [(&'a str, &'a str)],
+    ) -> lyrics::LyricsFuture<'a, Option<String>> {
         Box::pin(async move {
-            let res = self
-                .0
-                .get(url)
-                .header("User-Agent", "AlacBot/1.0")
-                .send()
-                .await
-                .ok()?;
+            let mut request = self.0.get(url).header("User-Agent", "AlacBot/1.0");
+            for (name, value) in headers {
+                request = request.header(*name, *value);
+            }
+            let res = request.send().await.ok()?;
             if !res.status().is_success() {
                 return None;
             }
             res.text().await.ok()
+        })
+    }
+
+    fn post_with_headers<'a>(
+        &'a self,
+        url: &'a str,
+        headers: &'a [(&'a str, &'a str)],
+        body: &'a str,
+    ) -> lyrics::LyricsFuture<'a, Option<String>> {
+        Box::pin(async move {
+            let mut request = self
+                .0
+                .post(url)
+                .header("User-Agent", "AlacBot/1.0")
+                .body(body.to_owned());
+            for (name, value) in headers {
+                request = request.header(*name, *value);
+            }
+            let response = request.send().await.ok()?;
+            if !response.status().is_success() {
+                return None;
+            }
+            response.text().await.ok()
         })
     }
 }
@@ -354,7 +384,7 @@ fn parse_lrc_timestamp(tag: &str) -> Option<i64> {
 }
 
 /// Word-by-word synchronized timing snippet.
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct LyricsWordDto {
     /// Text snippet or syllable.
     #[schema(example = "Hello")]
@@ -368,7 +398,7 @@ pub struct LyricsWordDto {
 }
 
 /// Line-by-line synchronized lyric entry.
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct LyricsLineDto {
     /// Full line text string.
     #[schema(example = "Hello from the other side")]
@@ -381,10 +411,30 @@ pub struct LyricsLineDto {
     pub end_ms: i64,
     /// Syllable or word-level timings when available.
     pub words: Vec<LyricsWordDto>,
+    /// Provider-supplied concurrent backing vocal timing.
+    pub background_words: Vec<LyricsWordDto>,
+    /// Provider-supplied singer alignment, when known.
+    pub alignment: Option<String>,
+    /// Provider-supplied TTML vocal agent identifier.
+    pub agent: Option<String>,
+    /// Provider-supplied translations attached to this line.
+    pub translations: Vec<LyricsTranslationDto>,
+    /// Provider-supplied romanization or pronunciation.
+    pub romanization: Option<String>,
+    /// Marker for a known or inferred instrumental passage.
+    pub is_instrumental: bool,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct LyricsTranslationDto {
+    /// Translation language tag supplied by the provider.
+    pub language: String,
+    /// Translated lyric text.
+    pub text: String,
 }
 
 /// Synchronized lyrics response.
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct LyricsResponse {
     /// Track database identifier.
     #[schema(example = 42)]
@@ -392,11 +442,21 @@ pub struct LyricsResponse {
     /// Format of the returned lyrics (`ttml_synced`, `lrc_synced`, `plain`).
     #[schema(example = "ttml_synced")]
     pub format: String,
+    /// Timing precision (`word`, `line`, or `plain`).
+    #[schema(example = "word")]
+    pub sync_level: String,
+    /// Provider that supplied the selected lyrics, when available.
+    #[schema(example = "Unison (TTML)")]
+    pub provider: Option<String>,
+    /// Attribution required by the selected provider, when supplied.
+    pub attribution: Option<String>,
     /// Full plain text representation of lyrics.
     #[schema(example = "Hello from the other side...")]
     pub plain_text: Option<String>,
     /// Chronologically ordered synchronized lyric lines.
     pub lines: Vec<LyricsLineDto>,
+    /// Audio duration in milliseconds, when known.
+    pub duration_ms: i64,
 }
 
 #[utoipa::path(
@@ -404,9 +464,10 @@ pub struct LyricsResponse {
     path = "/api/v1/assets/tracks/{id}/lyrics",
     tag = "assets",
     summary = "Get Synchronized Lyrics",
-    description = "Resolves word-by-word or line-by-line synchronized TTML/LRC lyrics using multi-provider engine (LRCLIB, BetterLyrics, Paxsenix). Returns structured timestamped lines and words.",
+    description = "Resolves word-by-word or line-by-line synchronized TTML/LRC lyrics using multi-provider engine (LRCLIB, BetterLyrics, Paxsenix, Unison). Returns structured timestamped lines, sync level, provider, and attribution metadata.",
     params(
-        ("id" = i32, Path, description = "Unique database track ID", example = 42)
+        ("id" = i32, Path, description = "Unique database track ID", example = 42),
+        LyricsQuery
     ),
     responses(
         (status = 200, description = "Synchronized lyrics lines and timing metadata", body = LyricsResponse),
@@ -420,6 +481,7 @@ pub struct LyricsResponse {
 pub async fn get_lyrics(
     State(state): State<Arc<ServerState>>,
     Path(track_id): Path<i32>,
+    Query(query): Query<LyricsQuery>,
 ) -> Result<Json<LyricsResponse>, ServerError> {
     let track = state
         .tracks_repo
@@ -427,6 +489,12 @@ pub async fn get_lyrics(
         .await
         .map_err(|e| ServerError::Internal(e.to_string()))?
         .ok_or_else(|| ServerError::NotFound(format!("Track {track_id} not found")))?;
+
+    if !query.refresh.unwrap_or(false)
+        && let Some(cached) = LYRICS_CACHE.get(&track_id).await
+    {
+        return Ok(Json(cached));
+    }
 
     let http = ReqwestLyricsHttp(state.http_client.clone());
     let mut lookup = lyrics::LyricsLookup::new(&track.title, [&track.artist])
@@ -440,48 +508,90 @@ pub async fn get_lyrics(
 
     if let Some(best) = candidates.into_iter().next() {
         let format_str = match best.document.format {
-            lyrics::LyricsFormat::Elrc | lyrics::LyricsFormat::Lrc => "ttml_synced",
+            lyrics::LyricsFormat::Elrc => "ttml_synced",
+            lyrics::LyricsFormat::Lrc => "lrc_synced",
             lyrics::LyricsFormat::Plain => "plain",
         }
         .to_string();
+        let sync_level = match best.tier() {
+            lyrics::LyricsTier::WordSynced => "word",
+            lyrics::LyricsTier::LineSynced => "line",
+            lyrics::LyricsTier::Plain | lyrics::LyricsTier::None => "plain",
+        }
+        .to_owned();
+        let provider = Some(best.provider().to_owned());
+        let attribution = best.rights().attribution.clone();
 
+        let duration_ms = (track.duration as i64).saturating_mul(1000);
         let mut lines = Vec::new();
         if let Some(timed_lines) = best.document.word_timing {
-            for line in timed_lines {
+            for (line_index, line) in timed_lines.iter().enumerate() {
                 let start_ms = line.start_ms as i64;
-                let text = line
-                    .words
-                    .iter()
-                    .map(|w| w.text.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                let words = line
-                    .words
-                    .iter()
-                    .enumerate()
-                    .map(|(i, w)| {
-                        let next_start = line
-                            .words
-                            .get(i + 1)
-                            .map(|nw| nw.start_ms as i64)
-                            .unwrap_or(w.start_ms as i64 + 400);
-                        LyricsWordDto {
-                            text: w.text.clone(),
-                            start_ms: w.start_ms as i64,
-                            end_ms: next_start,
-                        }
+                let line_end_ms = line
+                    .end_ms
+                    .map(|end_ms| end_ms as i64)
+                    .filter(|end_ms| *end_ms > start_ms)
+                    .or_else(|| {
+                        line.words
+                            .iter()
+                            .chain(line.background_words.iter())
+                            .filter_map(|word| word.end_ms.map(|end| end as i64))
+                            .max()
+                            .filter(|end_ms| *end_ms > start_ms)
                     })
-                    .collect();
-                let end_ms = line
-                    .words
-                    .last()
-                    .map(|w| w.start_ms as i64 + 500)
-                    .unwrap_or(start_ms + 3000);
+                    .or_else(|| {
+                        timed_lines
+                            .get(line_index + 1)
+                            .map(|next_line| next_line.start_ms as i64)
+                            .filter(|end_ms| *end_ms > start_ms)
+                    })
+                    .unwrap_or_else(|| start_ms.saturating_add(3000));
+                let text = if !line.text.is_empty() {
+                    line.text.clone()
+                } else {
+                    line.words.iter().map(|word| word.text.as_str()).collect()
+                };
+                let to_word_dtos = |source_words: &[lyrics::LyricsTimedWord]| {
+                    source_words
+                        .iter()
+                        .enumerate()
+                        .map(|(word_index, word)| {
+                            let start_ms = word.start_ms as i64;
+                            let inferred_end_ms = source_words
+                                .get(word_index + 1)
+                                .map(|next| next.start_ms as i64)
+                                .unwrap_or(line_end_ms);
+                            let end_ms = word
+                                .end_ms
+                                .map(|end_ms| end_ms as i64)
+                                .filter(|end_ms| *end_ms > start_ms)
+                                .unwrap_or(inferred_end_ms.max(start_ms.saturating_add(1)));
+                            LyricsWordDto {
+                                text: word.text.clone(),
+                                start_ms,
+                                end_ms,
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                };
                 lines.push(LyricsLineDto {
                     text,
                     start_ms,
-                    end_ms,
-                    words,
+                    end_ms: line_end_ms,
+                    words: to_word_dtos(&line.words),
+                    background_words: to_word_dtos(&line.background_words),
+                    alignment: line.alignment.clone(),
+                    agent: line.agent.clone(),
+                    translations: line
+                        .translations
+                        .iter()
+                        .map(|translation| LyricsTranslationDto {
+                            language: translation.language.clone(),
+                            text: translation.text.clone(),
+                        })
+                        .collect(),
+                    romanization: line.romanization.clone(),
+                    is_instrumental: line.is_instrumental,
                 });
             }
         } else {
@@ -490,25 +600,37 @@ pub async fn get_lyrics(
                 if trimmed.is_empty() {
                     continue;
                 }
-                if trimmed.starts_with('[') {
-                    if let Some(idx) = trimmed.find(']') {
-                        let tag = &trimmed[1..idx];
-                        let content = trimmed[idx + 1..].trim();
-                        let start_ms = parse_lrc_timestamp(tag).unwrap_or(0);
-                        lines.push(LyricsLineDto {
-                            text: content.to_string(),
-                            start_ms,
-                            end_ms: start_ms + 3000,
-                            words: Vec::new(),
-                        });
-                        continue;
-                    }
+                if trimmed.starts_with('[')
+                    && let Some(idx) = trimmed.find(']')
+                {
+                    let tag = &trimmed[1..idx];
+                    let content = trimmed[idx + 1..].trim();
+                    let start_ms = parse_lrc_timestamp(tag).unwrap_or(0);
+                    lines.push(LyricsLineDto {
+                        text: content.to_string(),
+                        start_ms,
+                        end_ms: start_ms + 3000,
+                        words: Vec::new(),
+                        background_words: Vec::new(),
+                        alignment: None,
+                        agent: None,
+                        translations: Vec::new(),
+                        romanization: None,
+                        is_instrumental: false,
+                    });
+                    continue;
                 }
                 lines.push(LyricsLineDto {
                     text: trimmed.to_string(),
                     start_ms: 0,
                     end_ms: 0,
                     words: Vec::new(),
+                    background_words: Vec::new(),
+                    alignment: None,
+                    agent: None,
+                    translations: Vec::new(),
+                    romanization: None,
+                    is_instrumental: false,
                 });
             }
             for i in 0..lines.len() {
@@ -518,25 +640,100 @@ pub async fn get_lyrics(
             }
         }
 
-        return Ok(Json(LyricsResponse {
+        let plain_text = lines
+            .iter()
+            .map(|line| line.text.as_str())
+            .filter(|line| !line.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        if sync_level == "word" {
+            insert_instrumental_breaks(&mut lines, duration_ms);
+        }
+
+        let response = LyricsResponse {
             track_id,
             format: format_str,
-            plain_text: Some(best.document.text),
+            sync_level,
+            provider,
+            attribution,
+            plain_text: Some(plain_text),
             lines,
-        }));
+            duration_ms,
+        };
+        LYRICS_CACHE.insert(track_id, response.clone()).await;
+        return Ok(Json(response));
     }
 
     Ok(Json(LyricsResponse {
         track_id,
         format: "plain".to_string(),
+        sync_level: "plain".to_string(),
+        provider: None,
+        attribution: None,
         plain_text: Some(format!("{} - {}", track.title, track.artist)),
         lines: vec![LyricsLineDto {
             text: format!("{} - {}", track.title, track.artist),
             start_ms: 0,
             end_ms: (track.duration as i64) * 1000,
             words: Vec::new(),
+            background_words: Vec::new(),
+            alignment: None,
+            agent: None,
+            translations: Vec::new(),
+            romanization: None,
+            is_instrumental: false,
         }],
+        duration_ms: (track.duration as i64).saturating_mul(1000),
     }))
+}
+
+fn insert_instrumental_breaks(lines: &mut Vec<LyricsLineDto>, duration_ms: i64) {
+    const MIN_INSTRUMENTAL_GAP_MS: i64 = 5000;
+
+    let mut with_breaks = Vec::with_capacity(lines.len() + 4);
+    if let Some(first) = lines.first()
+        && first.start_ms >= MIN_INSTRUMENTAL_GAP_MS
+    {
+        with_breaks.push(instrumental_line(0, first.start_ms));
+    }
+
+    for line in lines.drain(..) {
+        if let Some(previous) = with_breaks.last()
+            && !previous.is_instrumental
+        {
+            let gap_start = previous.end_ms;
+            let gap_end = line.start_ms;
+            if gap_end.saturating_sub(gap_start) >= MIN_INSTRUMENTAL_GAP_MS {
+                with_breaks.push(instrumental_line(gap_start, gap_end));
+            }
+        }
+        with_breaks.push(line);
+    }
+
+    if let Some(last) = with_breaks.last()
+        && !last.is_instrumental
+        && duration_ms.saturating_sub(last.end_ms) >= MIN_INSTRUMENTAL_GAP_MS
+    {
+        with_breaks.push(instrumental_line(last.end_ms, duration_ms));
+    }
+
+    *lines = with_breaks;
+}
+
+fn instrumental_line(start_ms: i64, end_ms: i64) -> LyricsLineDto {
+    LyricsLineDto {
+        text: String::new(),
+        start_ms,
+        end_ms,
+        words: Vec::new(),
+        background_words: Vec::new(),
+        alignment: None,
+        agent: None,
+        translations: Vec::new(),
+        romanization: None,
+        is_instrumental: true,
+    }
 }
 
 fn urlencode(s: &str) -> String {

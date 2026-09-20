@@ -1,4 +1,4 @@
-use db::{connect_test_isolated, migrate, Auth, LibraryManager, SaveTrackInput, TracksRepository};
+use db::{Auth, LibraryManager, SaveTrackInput, TracksRepository, connect_test_isolated, migrate};
 use music::{Codec, Provider, TrackKey};
 
 fn test_track(id: &str, title: &str) -> SaveTrackInput {
@@ -63,14 +63,18 @@ async fn favorites_and_playlists_lifecycle() {
         .await
         .expect("add favorite");
     assert!(added);
-    assert!(library_mgr
-        .is_favorite(user_a, t1.id)
-        .await
-        .expect("is favorite"));
-    assert!(!library_mgr
-        .is_favorite(user_b, t1.id)
-        .await
-        .expect("user B does not have favorite"));
+    assert!(
+        library_mgr
+            .is_favorite(user_a, t1.id)
+            .await
+            .expect("is favorite")
+    );
+    assert!(
+        !library_mgr
+            .is_favorite(user_b, t1.id)
+            .await
+            .expect("user B does not have favorite")
+    );
 
     let favs = library_mgr
         .list_favorites(user_a, 0, 10)
@@ -85,10 +89,12 @@ async fn favorites_and_playlists_lifecycle() {
         .await
         .expect("remove favorite");
     assert!(!removed);
-    assert!(!library_mgr
-        .is_favorite(user_a, t1.id)
-        .await
-        .expect("is favorite after removal"));
+    assert!(
+        !library_mgr
+            .is_favorite(user_a, t1.id)
+            .await
+            .expect("is favorite after removal")
+    );
 
     // 2b. Explicit favorite methods (add_favorite, remove_favorite, list_favorite_ids)
     let explicit_added = library_mgr

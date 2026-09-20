@@ -10,25 +10,24 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc, Mutex, OnceLock,
+        atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use engine::limits::MAX_DOCUMENT_BYTES;
 use ferogram::{
-    filters,
+    InputMessage, PeerRef, filters,
     filters::Dispatcher,
     keyboard::{Button, InlineKeyboard},
     update::CallbackQuery,
-    InputMessage, PeerRef,
 };
 
 use crate::{
+    BotState,
     handlers::chat_peer_ref,
     html::{escape, parse_dynamic_html},
-    BotState,
 };
 
 const KB: f64 = 1024.0;
@@ -408,7 +407,10 @@ async fn restore_archive(
     };
     let _ = std::fs::remove_file(&tmp);
     let text = match restore_result {
-        Ok(stats) => format!("<b>Database restored</b><br/><br/><blockquote>• Users: {}<br/>• Tracks: {}<br/>• Requests: {}<br/>• Elapsed: {}ms</blockquote>", stats.users_merged, stats.tracks_merged, stats.requests_merged, stats.duration_ms),
+        Ok(stats) => format!(
+            "<b>Database restored</b><br/><br/><blockquote>• Users: {}<br/>• Tracks: {}<br/>• Requests: {}<br/>• Elapsed: {}ms</blockquote>",
+            stats.users_merged, stats.tracks_merged, stats.requests_merged, stats.duration_ms
+        ),
         Err(error) => {
             tracing::warn!(%error, file_name, "database restore failed");
             "<b>Database restore failed</b><br/>The archive could not be applied. The database was left unchanged.".to_owned()
@@ -426,12 +428,10 @@ async fn restore_archive(
 async fn delete_query_message(state: &BotState, query: &CallbackQuery) {
     if let (Some(peer), Some(message_id)) =
         (query.chat_peer.clone().map(PeerRef::Peer), query.message_id)
+        && let Ok(messages) = state.client.get_messages(peer, &[message_id]).await
+        && let Some(message) = messages.first()
     {
-        if let Ok(messages) = state.client.get_messages(peer, &[message_id]).await {
-            if let Some(message) = messages.first() {
-                let _ = message.delete().await;
-            }
-        }
+        let _ = message.delete().await;
     }
 }
 

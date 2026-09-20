@@ -8,6 +8,7 @@ use std::{
 
 use engine::{
     orchestrator::{
+        OrchestratorError, RipOrchestrator,
         deps::{
             AlbumCache, AlbumCacheError, AlbumCacheOperation, AlbumReplacementExpectation,
             AlbumReplacementResult, AlbumUpload, ArtworkProvider, CachedAlbum, CachedTrack,
@@ -22,10 +23,9 @@ use engine::{
             DownloadLane, JobActivity, JobPhase, OrchestratorEvent, RipJobOptions, RipJobProgress,
             RipJobSummary, UploadLane,
         },
-        OrchestratorError, RipOrchestrator,
     },
     ripper::RipError,
-    settings::{default_settings, BotSettings, RippingMode},
+    settings::{BotSettings, RippingMode, default_settings},
     types::{
         AlbumTracks, ArtistTracks, ParsedTargetItem, Provider, TargetKind, TrackKey, TrackMeta,
         TrackRipResult,
@@ -1135,9 +1135,10 @@ async fn happy_path_single_track() {
     assert!(ev.contains(&"started".to_string()));
     assert_eq!(*ev.last().unwrap(), "completed");
     // No cancelled/failed.
-    assert!(ev
-        .iter()
-        .all(|e| !e.starts_with("cancelled") && !e.starts_with("failed")));
+    assert!(
+        ev.iter()
+            .all(|e| !e.starts_with("cancelled") && !e.starts_with("failed"))
+    );
 
     // Job is gone from the map after completion.
     assert!(orch.get_active_jobs().is_empty());
@@ -1212,10 +1213,12 @@ async fn missing_atmos_is_silent_and_primary_still_delivers() {
         st.request_logs.iter().all(|log| log.status != "failed"),
         "unavailable Atmos must not create a failed request log"
     );
-    assert!(!events
-        .snapshot()
-        .iter()
-        .any(|event| event.starts_with("failed:")));
+    assert!(
+        !events
+            .snapshot()
+            .iter()
+            .any(|event| event.starts_with("failed:"))
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1359,10 +1362,12 @@ async fn cache_lookup_failure_stops_before_media_work() {
     assert!(st.copies.is_empty());
     assert!(st.request_logs.is_empty());
     drop(st);
-    assert!(events
-        .snapshot()
-        .iter()
-        .any(|event| event == "failed:find track unavailable: cache unavailable"));
+    assert!(
+        events
+            .snapshot()
+            .iter()
+            .any(|event| event == "failed:find track unavailable: cache unavailable")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1428,10 +1433,12 @@ async fn provider_disabled_skips_uncached_and_adds_warning() {
     assert_eq!(summary.skipped_uncached_tracks, vec!["1"]);
     assert_eq!(summary.cached_count, 0);
     assert_eq!(summary.ripped_count, 0);
-    assert!(summary
-        .warnings
-        .iter()
-        .any(|w| w.contains("Apple Music live ripping is currently disabled")));
+    assert!(
+        summary
+            .warnings
+            .iter()
+            .any(|w| w.contains("Apple Music live ripping is currently disabled"))
+    );
     assert!(events.snapshot().contains(&"completed".to_string()));
 }
 
@@ -2379,10 +2386,11 @@ async fn cache_failure_hands_rerip_to_active_lane_without_deadlock() {
         1,
         "the failed cache hit is reripped exactly once"
     );
-    assert!(st
-        .rip_calls
-        .iter()
-        .any(|track_id| track_id == "after-fallback"));
+    assert!(
+        st.rip_calls
+            .iter()
+            .any(|track_id| track_id == "after-fallback")
+    );
     assert_eq!(st.deleted_tracks, vec!["cached-fallback".to_owned()]);
 }
 
@@ -2512,10 +2520,12 @@ async fn cancelled_cached_wait_drops_gated_lane_two_send() {
         .expect("cancelled job still returns its summary");
     assert_eq!(result.ripped_count, 0);
     assert!(state.lock().unwrap().copies.is_empty());
-    assert!(events
-        .snapshot()
-        .iter()
-        .any(|event| event.starts_with("cancelled:")));
+    assert!(
+        events
+            .snapshot()
+            .iter()
+            .any(|event| event.starts_with("cancelled:"))
+    );
     assert!(
         !gate.is_cancelled(),
         "the fake gate was not needed to settle"
@@ -2676,11 +2686,13 @@ async fn queued_position_and_pending_cancel_are_terminally_safe() {
         .collect();
     assert_eq!(second_terminals.len(), 1);
     assert_eq!(second_terminals[0].1, "cancelled");
-    assert!(phase_snapshots
-        .lock()
-        .unwrap()
-        .iter()
-        .any(|(phase, position)| *phase == JobPhase::Processing && *position == Some(0)));
+    assert!(
+        phase_snapshots
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(phase, position)| *phase == JobPhase::Processing && *position == Some(0))
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2710,10 +2722,12 @@ async fn active_cancel_emits_only_cancelled_terminal_event() {
         })
         .count();
     assert_eq!(terminal_count, 1);
-    assert!(events
-        .snapshot()
-        .iter()
-        .any(|event| event.starts_with("cancelled")));
+    assert!(
+        events
+            .snapshot()
+            .iter()
+            .any(|event| event.starts_with("cancelled"))
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2953,15 +2967,19 @@ async fn panicking_zip_marker_settles_once_and_cleans_workspace() {
             .count(),
         1
     );
-    assert!(records
-        .iter()
-        .any(|event| event == "failed:finalize marker panicked"));
-    assert!(state
-        .lock()
-        .unwrap()
-        .sent_documents
-        .first()
-        .is_some_and(|path| !std::path::Path::new(path).exists()));
+    assert!(
+        records
+            .iter()
+            .any(|event| event == "failed:finalize marker panicked")
+    );
+    assert!(
+        state
+            .lock()
+            .unwrap()
+            .sent_documents
+            .first()
+            .is_some_and(|path| !std::path::Path::new(path).exists())
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -3081,14 +3099,16 @@ async fn zip_primary_and_atmos_progress_reaches_event_consumers() {
         2,
         "primary and Atmos archive rows persist"
     );
-    assert!(st
-        .saved_albums
-        .iter()
-        .any(|album| album.codec == engine::Codec::Alac));
-    assert!(st
-        .saved_albums
-        .iter()
-        .any(|album| album.codec == engine::Codec::Ec3));
+    assert!(
+        st.saved_albums
+            .iter()
+            .any(|album| album.codec == engine::Codec::Alac)
+    );
+    assert!(
+        st.saved_albums
+            .iter()
+            .any(|album| album.codec == engine::Codec::Ec3)
+    );
     drop(st);
 
     let progress = events.upload_progress_snapshot();

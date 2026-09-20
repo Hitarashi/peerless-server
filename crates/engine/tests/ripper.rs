@@ -5,8 +5,8 @@
 use std::{
     path::Path,
     sync::{
-        atomic::{AtomicU32, Ordering},
         Arc, Mutex,
+        atomic::{AtomicU32, Ordering},
     },
 };
 
@@ -15,8 +15,8 @@ use engine::{
     filename::MAX_FILENAME_BYTES,
     orchestrator::types::{RipActivity, TrackLabel},
     ripper::{
-        fetch_artwork_bytes, AlacTrackRipper, RipError, RipOptions, RipProgressCallback, RipStage,
-        RipperConfig, SourceFailureKind,
+        AlacTrackRipper, RipError, RipOptions, RipProgressCallback, RipStage, RipperConfig,
+        SourceFailureKind, fetch_artwork_bytes,
     },
     streaming::{AudioStreamSource, ByteStream, ProgressCallback},
     types::TrackMeta,
@@ -628,11 +628,12 @@ async fn local_io_error_is_non_retryable() {
         RipError::LocalIo { message } if message.contains("disk full")
     ));
     assert_eq!(deps.connect_calls.load(Ordering::SeqCst), 1);
-    assert!(log
-        .lock()
-        .unwrap()
-        .iter()
-        .all(|activity| !matches!(activity, RipActivity::Downloading { .. })));
+    assert!(
+        log.lock()
+            .unwrap()
+            .iter()
+            .all(|activity| !matches!(activity, RipActivity::Downloading { .. }))
+    );
 }
 
 #[tokio::test]

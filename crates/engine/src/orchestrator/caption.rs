@@ -719,8 +719,11 @@ mod tests {
         assert!(html.contains("• <b>Genre:</b> Rock"));
         assert!(html.contains("• <b>Label:</b> Asha Audio"));
         assert!(html.contains("• <b>Quality:</b> Lossless · ALAC"));
-        assert!(html
-            .contains(r#"• <b>Requested by:</b> <a href="https://t.me/sayeed69">@sayeed69</a>"#));
+        assert!(
+            html.contains(
+                r#"• <b>Requested by:</b> <a href="https://t.me/sayeed69">@sayeed69</a>"#
+            )
+        );
         assert!(html.ends_with("</blockquote>"));
     }
 

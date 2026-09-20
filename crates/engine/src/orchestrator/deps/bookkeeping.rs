@@ -57,5 +57,5 @@ pub trait JobBookkeeping: Send + Sync {
     fn settings_snapshot(&self) -> BotSettings;
 
     fn log_request<'a>(&'a self, log: RequestLog)
-        -> BoxFuture<'a, Result<(), JobBookkeepingError>>;
+    -> BoxFuture<'a, Result<(), JobBookkeepingError>>;
 }

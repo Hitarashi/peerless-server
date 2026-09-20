@@ -112,12 +112,11 @@ impl WrapperLiteClient {
             USER_AGENT,
             HeaderValue::from_static("AlacBot/1.0 (wrapper-lite client)"),
         );
-        if let Some(key) = api_key {
-            if !key.trim().is_empty() {
-                if let Ok(val) = HeaderValue::from_str(key.trim()) {
-                    headers.insert("X-API-Key", val);
-                }
-            }
+        if let Some(key) = api_key
+            && !key.trim().is_empty()
+            && let Ok(val) = HeaderValue::from_str(key.trim())
+        {
+            headers.insert("X-API-Key", val);
         }
 
         let client = reqwest::Client::builder()

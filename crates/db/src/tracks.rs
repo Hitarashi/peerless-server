@@ -13,7 +13,7 @@ use diesel_async::RunQueryDsl;
 use engine::orchestrator::deps::{CachedTrack, SaveTrackInput};
 use music::{Codec, Provider, TrackKey};
 
-use crate::{models::NewTrack, schema::tracks, DbError, DbPool, Track};
+use crate::{DbError, DbPool, Track, models::NewTrack, schema::tracks};
 
 fn cached_track(track: Track) -> CachedTrack {
     CachedTrack {

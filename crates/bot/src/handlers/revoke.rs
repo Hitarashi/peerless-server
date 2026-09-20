@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use ferogram::{filters, filters::Dispatcher, InputMessage};
+use ferogram::{InputMessage, filters, filters::Dispatcher};
 
-use super::auth::{resolve_target, TargetResult};
+use super::auth::{TargetResult, resolve_target};
 use crate::{
-    html::{escape, parse_dynamic_html},
     BotState,
+    html::{escape, parse_dynamic_html},
 };
 
 pub fn register(dp: &mut Dispatcher, state: Arc<BotState>) {
