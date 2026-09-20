@@ -27,6 +27,17 @@ pub struct ArtworkQuery {
     pub size: Option<u16>,
 }
 
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct ProviderArtworkQuery {
+    /// Desired square image dimension in pixels (e.g. 300, 600, 1200). Default is 600.
+    #[param(example = 600)]
+    pub size: Option<u16>,
+    /// Track title used when resolving artwork for a provider result not in the database.
+    pub title: Option<String>,
+    /// Track artist used when resolving artwork for a provider result not in the database.
+    pub artist: Option<String>,
+}
+
 #[utoipa::path(
     get,
     path = "/api/v1/assets/tracks/{id}/artwork",
@@ -55,23 +66,110 @@ pub async fn get_artwork(
         .ok_or_else(|| ServerError::NotFound(format!("Track {track_id} not found")))?;
 
     let size = query.size.unwrap_or(600).clamp(100, 3000);
-    let cache_key = (
-        format!("{}:{}", track.provider.as_str(), track.track_id),
+    match resolve_artwork(
+        &state,
+        track.provider,
+        &track.track_id,
+        &track.title,
+        &track.artist,
         size,
-    );
+    )
+    .await
+    {
+        Ok(response) => Ok(response),
+        Err(ServerError::NotFound(_)) => {
+            let Some(isrc) = track.isrc.as_deref().filter(|isrc| !isrc.trim().is_empty()) else {
+                return Err(ServerError::NotFound(format!(
+                    "Artwork not found for track {track_id}"
+                )));
+            };
+            let sibling_tracks = state
+                .tracks_repo
+                .find_tracks_by_isrc(isrc)
+                .await
+                .map_err(|error| ServerError::Internal(error.to_string()))?;
 
+            for sibling in sibling_tracks {
+                if sibling.id == track.id {
+                    continue;
+                }
+                match resolve_artwork(
+                    &state,
+                    sibling.provider,
+                    &sibling.track_id,
+                    &sibling.title,
+                    &sibling.artist,
+                    size,
+                )
+                .await
+                {
+                    Ok(response) => return Ok(response),
+                    Err(ServerError::NotFound(_)) => continue,
+                    Err(error) => return Err(error),
+                }
+            }
+
+            Err(ServerError::NotFound(format!(
+                "Artwork not found for track {track_id} or its provider siblings"
+            )))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/assets/providers/{provider}/tracks/{track_id}/artwork",
+    tag = "assets",
+    summary = "Get Provider Track Artwork (HTTP 307 Redirect)",
+    description = "Resolves artwork for a provider catalog track, including uncached tracks, and redirects to its image URL.",
+    params(
+        ("provider" = String, Path, description = "Provider name: apple or qobuz", example = "qobuz"),
+        ("track_id" = String, Path, description = "Provider catalog track ID", example = "123456"),
+        ProviderArtworkQuery
+    ),
+    responses(
+        (status = 307, description = "Temporary redirect to provider CDN artwork URL"),
+        (status = 400, description = "Unsupported provider"),
+        (status = 404, description = "Artwork unavailable")
+    )
+)]
+pub async fn get_provider_artwork(
+    State(state): State<Arc<ServerState>>,
+    Path((provider_name, provider_track_id)): Path<(String, String)>,
+    Query(query): Query<ProviderArtworkQuery>,
+) -> Result<Response, ServerError> {
+    let provider = provider_name
+        .parse::<music::Provider>()
+        .map_err(ServerError::BadRequest)?;
+    let size = query.size.unwrap_or(600).clamp(100, 3000);
+    resolve_artwork(
+        &state,
+        provider,
+        &provider_track_id,
+        query.title.as_deref().unwrap_or_default(),
+        query.artist.as_deref().unwrap_or_default(),
+        size,
+    )
+    .await
+}
+
+async fn resolve_artwork(
+    state: &ServerState,
+    provider: music::Provider,
+    provider_track_id: &str,
+    title: &str,
+    artist: &str,
+    size: u16,
+) -> Result<Response, ServerError> {
+    let cache_key = (format!("{}:{provider_track_id}", provider.as_str()), size);
     if let Some(cached_url) = ARTWORK_CACHE.get(&cache_key).await {
-        return Response::builder()
-            .status(StatusCode::TEMPORARY_REDIRECT)
-            .header(header::LOCATION, cached_url)
-            .header(header::CACHE_CONTROL, "public, max-age=86400")
-            .body(axum::body::Body::empty())
-            .map_err(|e| ServerError::Internal(e.to_string()));
+        return artwork_redirect(cached_url);
     }
 
     // If track is from Apple or Qobuz, try resolving CDN artwork
     // Apple Music artwork URLs follow standard format or catalog lookup
-    let artwork_url = match track.provider {
+    let artwork_url = match provider {
         music::Provider::Apple => {
             let mut resolved = None;
 
@@ -81,12 +179,12 @@ pub async fn get_artwork(
                 let url = if country.is_empty() {
                     format!(
                         "https://itunes.apple.com/lookup?id={}&entity=song",
-                        track.track_id
+                        provider_track_id
                     )
                 } else {
                     format!(
                         "https://itunes.apple.com/lookup?id={}&entity=song&country={country}",
-                        track.track_id
+                        provider_track_id
                     )
                 };
 
@@ -110,8 +208,8 @@ pub async fn get_artwork(
             }
 
             // 2. Fallback: search iTunes catalog by title and artist
-            if resolved.is_none() {
-                let term = format!("{} {}", track.title, track.artist);
+            if resolved.is_none() && !title.trim().is_empty() && !artist.trim().is_empty() {
+                let term = format!("{title} {artist}");
                 let encoded_term = urlencode(&term);
                 let search_countries = ["in", "us", "gb"];
                 for country in search_countries {
@@ -151,7 +249,7 @@ pub async fn get_artwork(
 
             let mut req = state
                 .http_client
-                .get(format!("{clean_backend_url}/api/track/{}", track.track_id));
+                .get(format!("{clean_backend_url}/api/track/{provider_track_id}"));
             if let Some(ref key) = backend_key {
                 req = req.header("X-API-Key", key);
             }
@@ -206,17 +304,22 @@ pub async fn get_artwork(
 
     if let Some(url) = artwork_url {
         ARTWORK_CACHE.insert(cache_key, url.clone()).await;
-        Ok(Response::builder()
-            .status(StatusCode::TEMPORARY_REDIRECT)
-            .header(header::LOCATION, url)
-            .header(header::CACHE_CONTROL, "public, max-age=86400")
-            .body(axum::body::Body::empty())
-            .map_err(|e| ServerError::Internal(e.to_string()))?)
+        artwork_redirect(url)
     } else {
         Err(ServerError::NotFound(format!(
-            "Artwork not found for track {track_id}"
+            "Artwork not found for {} track {provider_track_id}",
+            provider.as_str()
         )))
     }
+}
+
+fn artwork_redirect(url: String) -> Result<Response, ServerError> {
+    Response::builder()
+        .status(StatusCode::TEMPORARY_REDIRECT)
+        .header(header::LOCATION, url)
+        .header(header::CACHE_CONTROL, "public, max-age=86400")
+        .body(axum::body::Body::empty())
+        .map_err(|e| ServerError::Internal(e.to_string()))
 }
 
 struct ReqwestLyricsHttp(reqwest::Client);

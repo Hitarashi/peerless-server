@@ -45,6 +45,9 @@ pub struct TrackSummaryDto {
     /// Whether this track is cached in Telegram and playable instantly.
     #[schema(example = true)]
     pub is_cached: bool,
+    /// International Standard Recording Code, when known.
+    #[schema(example = "USUM71703861")]
+    pub isrc: Option<String>,
 }
 
 impl From<db::Track> for TrackSummaryDto {
@@ -61,6 +64,7 @@ impl From<db::Track> for TrackSummaryDto {
             bit_depth: Some(t.bit_depth),
             sample_rate: Some(t.sample_rate),
             is_cached: true,
+            isrc: t.isrc,
         }
     }
 }
@@ -655,6 +659,7 @@ pub async fn get_album_tracks(
                         bit_depth: None,
                         sample_rate: None,
                         is_cached: false,
+                        isrc: None,
                     })
                     .collect();
                 return Ok(Json(AlbumDetailsDto {

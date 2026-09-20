@@ -56,6 +56,7 @@ impl Modify for SecurityAddon {
         crate::tasks::create_rip_task,
         crate::tasks::task_events,
         crate::assets::get_artwork,
+        crate::assets::get_provider_artwork,
         crate::assets::get_lyrics,
         crate::library::list_favorites,
         crate::library::add_favorite,

@@ -130,6 +130,16 @@ impl TracksRepository {
             .optional()?)
     }
 
+    pub async fn find_tracks_by_isrc(&self, isrc: &str) -> Result<Vec<Track>, DbError> {
+        let mut connection = self.pool.connection().await?;
+        Ok(tracks::table
+            .filter(tracks::isrc.eq(isrc))
+            .order(tracks::id.asc())
+            .select(Track::as_select())
+            .load::<Track>(&mut *connection)
+            .await?)
+    }
+
     pub async fn find_latest_track(&self) -> Result<Option<Track>, DbError> {
         let mut connection = self.pool.connection().await?;
         Ok(tracks::table

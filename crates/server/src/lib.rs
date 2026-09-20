@@ -191,6 +191,10 @@ pub fn create_router(state: Arc<ServerState>) -> Router {
             "/api/v1/assets/tracks/{id}/artwork",
             get(assets::get_artwork),
         )
+        .route(
+            "/api/v1/assets/providers/{provider}/tracks/{track_id}/artwork",
+            get(assets::get_provider_artwork),
+        )
         .route("/api/v1/assets/tracks/{id}/lyrics", get(assets::get_lyrics))
         // Library
         .route("/api/v1/me/favorites", get(library::list_favorites))
