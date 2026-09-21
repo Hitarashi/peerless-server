@@ -51,6 +51,12 @@ pub async fn stream_command(state: Arc<BotState>, msg: ferogram::update::Incomin
         return;
     }
 
+    // Warm Telegram's peer cache so the authenticated profile API can resolve
+    // this user's current name and profile photo after the OTP is exchanged.
+    if let Err(error) = msg.sender_user().await {
+        tracing::warn!(user_id = sender, error = %error, "could not resolve Telegram profile for /stream");
+    }
+
     let settings = state.rip_deps.settings_snapshot();
     let public_url = settings
         .stream_public_url

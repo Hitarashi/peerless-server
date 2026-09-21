@@ -22,6 +22,53 @@ async fn session_lifecycle_and_sliding_auth() {
         .await
         .expect("create admin login code directly");
     assert_eq!(admin_code.len(), 7);
+    assert_eq!(
+        session_mgr
+            .get_user_name(admin_id)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("Admin")
+    );
+    assert!(
+        !session_mgr
+            .update_user_name_if_changed(admin_id, "Admin")
+            .await
+            .unwrap(),
+        "an unchanged Telegram name must not trigger a database update"
+    );
+    assert!(
+        session_mgr
+            .update_user_name_if_changed(admin_id, "Sayeed Hitarashi")
+            .await
+            .unwrap(),
+        "a changed Telegram name must update the existing user row"
+    );
+    assert_eq!(
+        session_mgr
+            .get_user_name(admin_id)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("Sayeed Hitarashi")
+    );
+    assert!(
+        !session_mgr
+            .update_user_name_if_changed(admin_id, "Sayeed Hitarashi")
+            .await
+            .unwrap(),
+        "rechecking the same name must not trigger another update"
+    );
+    let unknown_user = 999_000_099;
+    assert!(
+        !session_mgr
+            .update_user_name_if_changed(unknown_user, "Unknown")
+            .await
+            .unwrap(),
+        "profile sync must not create an authorized user row"
+    );
+    assert!(!auth.is_authorized(unknown_user, None).await.unwrap());
+
     let admin_tokens = session_mgr
         .exchange_code(
             &admin_code,

@@ -1,271 +1,210 @@
 # Peerless Server
 
-A high-performance Telegram bot for downloading Apple Music lossless (ALAC) audio tracks, albums, and playlists with
-synchronized lyrics, embedded high-resolution artwork, and smart channel caching.
-
-Built in Rust: [ferogram](https://github.com/ankit-chaubey/ferogram) (Telegram MTProto), tokio, and Diesel/PostgreSQL.
-
+> **High-Performance Telegram Lossless Streaming Server & Ripping Engine**  
+> Direct MTProto-backed lossless audio streaming (ALAC, FLAC, Dolby Atmos) with REST API, WebSockets, and Telegram Bot
+> backend in Rust 2024.
 
 ---
 
-## Features
+## Overview
 
-- **True Lossless Audio**: Streams native Apple Lossless Audio Codec (ALAC 16-bit / 24-bit up to 192kHz) directly from
-  decryption mirrors.
-- **Automatic Primary + Atmos Delivery**: `/get` delivers the highest available primary rendition (ALAC, with AAC
-  fallback) plus optional Dolby Atmos (EC-3). Missing Atmos is silent; multi-track albums are delivered as ZIPs and
-  Atmos ZIPs include available tracks only.
-- **Automatic Fallback Engine**: If the primary mirror encounters downtime or timeouts, the bot automatically fails over
-  to a secondary wrapper or custom mirror without interrupting downloads.
-- **Instant Dump Channel Caching**: Every ripped track is indexed with full metadata and stored in a private Telegram
-  dump channel. Cache hits deliver in under 200ms without consuming mirror bandwidth.
-- **Full Album & Playlist Support**:
-    - Individual track URLs.
-    - Full album URLs (`https://music.apple.com/.../album/...`).
-    - Apple Music playlist URLs (`https://music.apple.com/.../playlist/...`).
-    - Upload a `.txt` file containing multiple links for automated batch downloads.
-    - Multi-line commands with multiple URLs.
-- **Group Chat Friendly**: When triggered in a group chat, audio files are delivered directly to the user's private chat
-  (DM) to eliminate spam, keeping only a live progress card in the group.
-- **Interactive Task Cancellation**:
-     - Live `[Cancel Download]` inline button attached to the progress card.
-     - Permission-controlled: only the requester or a bot admin can cancel.
-- **Synced Lyrics Embedding**: Automatically prefetches and embeds word-by-word synced lyrics (TTML -> Enhanced LRC) or
-  line-synced LRC from Apple Music and LRCLIB.
-- **High-Res Metadata & Artwork**: Tags every track with the native Rust media pipeline, embedding high-resolution
-  album cover art, release date, genre, track/disc numbers, and explicit `[E]` flags.
-- **Interactive Catalog Search**: `/search <query>` searches both cached tracks (with pg_trgm fuzzy matching) and Apple
-  Music's catalog with interactive inline button results.
-- **Access Control**: Granular user and group authorization system (`/auth`, `/revoke`, `/authlist`).
-- **Resilient Mirror Architecture**: Automatic mirror manifest resolution, health checks, 30s connection timeout, 45s
-  streaming chunk inactivity reset, and circuit breakers against mirror outages.
-- **Auto-Dump Scheduler**: Daily 24h sweep that discovers new Apple Music releases and archives them straight to the
-  dump channel.
-- **Database Backup & Restore**: Export and import compressed, versioned database archives (`.json.gz`) directly via
-  Telegram DM.
+**Peerless Server** is a unified dual-engine media streaming platform designed to bridge lossless music decryption
+mirrors with native client applications (such as [Peerless KMP](https://github.com/Hitarashi/Peerless)):
+
+1. **Telegram MTProto Ripping & Archiving Bot**: Downloads, tags, and stores bit-perfect Apple Music (ALAC up to
+   24-bit/192kHz, Dolby Atmos EC-3) and Qobuz (FLAC up to 24-bit/192kHz) tracks directly into a private Telegram cloud
+   dump channel with universal ISRC indexing.
+2. **Axum HTTP Lossless Streaming Server (`/api/v1`)**: Delivers bit-perfect HTTP `206 Partial Content` Range audio
+   streams directly from Telegram MTProto chunks with zero disk writes, auxiliary worker pools, in-memory LRU chunk
+   caching, and full-duplex WebSocket playback synchronization.
+
+---
+
+## Architecture & Features
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                   Telegram Ecosystem                     │
+│  [Private Dump Channel]  ◄───►  [Primary Bot / Ripping]   │
+│            ▲                                             │
+└────────────┼─────────────────────────────────────────────┘
+             │ MTProto Chunks (upload.getFile)
+┌────────────┴─────────────────────────────────────────────┐
+│                 Peerless Server (Rust)                   │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │ StreamWorkerPool (Dedicated MTProto Bot Tokens)    │  │
+│  │ ChunkCache (512KB Uniform Blocks, LRU Moka)        │  │
+│  │ StreamPipe (Async Chunk Prefetch & Backpressure)   │  │
+│  └─────────────────────────┬──────────────────────────┘  │
+│                            │ HTTP 206 Partial Content    │
+│  ┌─────────────────────────┴──────────────────────────┐  │
+│  │ Axum Web Server & Playback Sync Hub                │  │
+│  │ - /api/v1/stream (HMAC signed tickets)             │  │
+│  │ - /api/v1/ws/playback (Spotify Connect WebSockets) │  │
+│  │ - /api/v1/search & /catalog (ISRC Canonical DSU)   │  │
+│  │ - /api/v1/assets/lyrics (Multi-Provider Aggregator)│  │
+│  │ - /api/v1/integrations/lastfm (Encrypted AES-GCM)  │  │
+│  │ - /api/docs (OpenAPI 3.1 Scalar UI)                │  │
+│  └─────────────────────────┬──────────────────────────┘  │
+└────────────────────────────┼─────────────────────────────┘
+                             ▼
+               [Peerless Client (Android / iOS / Desktop)]
+```
+
+### Core Subsystems
+
+- **Direct Lossless Passthrough**: Bit-perfect streaming from Telegram MTProto to HTTP `206 Partial Content` with zero
+  CPU transcoding.
+- **Dedicated Stream Worker Pool**: Auxiliary bot tokens (`STREAM_WORKER_BOT_TOKENS`) exclusively fetch MTProto chunks
+  (`upload.getFile`) for HTTP Range streaming, preventing FloodWait on the primary bot.
+- **Worker Circuit Breaker & Least-Loaded Dispatch**: Automatically quarantines workers on FloodWait or network drops,
+  distributing load across healthy tokens.
+- **Uniform Block Chunk Cache**: Fixed 512KB block LRU cache (`moka`) preventing duplicate Telegram downloads on seeks
+  and scrubs.
+- **Spotify Connect-Style WebSockets (`/api/v1/ws/playback`)**: Full-duplex playback synchronization hub fanning out
+  track state, progress, and remote playback commands (<100ms latency) across connected clients.
+- **Multi-Provider Synced Lyrics Engine (`crates/lyrics`)**: Aggregates word-by-word and line-synced lyrics from Apple
+  Music TTML (`amll-ttml-db`), NetEase, QQ Music, Kugou, Musixmatch, Spotify, YouTube Music, Binimum, and LRCLIB.
+- **ISRC Universal Canonical Linkage**: 99.98% coverage across cached tracks, linking Apple Music and Qobuz renditions
+  into unified canonical entities.
+- **Telegram-Gated Authentication & Onboarding**: Single-use OTP code (`/stream`) exchanged for an opaque 256-bit
+  sliding refresh token. Base64 connection payloads allow 1-tap client onboarding.
+- **Interactive OpenAPI 3.1 & Scalar Documentation**: Explore and test all endpoints interactively at `/api/docs`.
+
+---
+
+## API Endpoints Reference (`/api/v1`)
+
+| Group            | Method     | Endpoint                                           | Description                                             |
+|:-----------------|:-----------|:---------------------------------------------------|:--------------------------------------------------------|
+| **Auth**         | `POST`     | `/api/v1/auth/exchange`                            | Exchange one-time Telegram OTP for opaque session token |
+|                  | `POST`     | `/api/v1/auth/refresh`                             | Slide 3-day expiration window forward                   |
+|                  | `POST`     | `/api/v1/auth/logout`                              | Revoke active session token                             |
+|                  | `GET`      | `/api/v1/auth/me`                                  | Fetch authenticated user profile & sessions             |
+| **Streaming**    | `GET/POST` | `/api/v1/tracks/{id}/playback`                     | Acquire short-lived signed stream ticket                |
+|                  | `GET/HEAD` | `/api/v1/stream?ticket=...`                        | HTTP 206 Partial Content Range streaming                |
+|                  | `GET`      | `/api/v1/ws/playback`                              | Full-duplex WebSocket playback synchronization hub      |
+| **Catalog**      | `GET`      | `/api/v1/search?q=...`                             | Hybrid search (cached PostgreSQL + live catalog)        |
+|                  | `GET`      | `/api/v1/tracks/{id}`                              | Complete track metadata and audio specifications        |
+|                  | `GET`      | `/api/v1/albums`                                   | Paginated list of cached albums                         |
+|                  | `GET`      | `/api/v1/albums/{id}`                              | Album tracks with cache resolution                      |
+|                  | `GET`      | `/api/v1/artists/{name}/tracks`                    | All cached tracks by an artist                          |
+| **Tasks**        | `POST`     | `/api/v1/tasks/rip`                                | Enqueue an on-demand ripping task                       |
+|                  | `GET`      | `/api/v1/tasks/{id}/events`                        | Server-Sent Events (SSE) live ripping progress          |
+| **Assets**       | `GET`      | `/api/v1/assets/tracks/{id}/artwork`               | Track album cover art redirect                          |
+|                  | `GET`      | `/api/v1/assets/providers/{p}/tracks/{id}/artwork` | Direct provider cover art proxy                         |
+|                  | `GET`      | `/api/v1/assets/tracks/{id}/lyrics`                | Synced TTML/LRC word-level lyrics                       |
+| **Library**      | `GET/POST` | `/api/v1/me/favorites`                             | List or bookmark favorite tracks                        |
+| **Integrations** | `POST`     | `/api/v1/integrations/lastfm/login`                | Connect Last.fm account (AES-256-GCM encrypted)         |
+| **Docs**         | `GET`      | `/api/docs`                                        | Interactive OpenAPI 3.1 Scalar documentation            |
 
 ---
 
 ## Prerequisites
 
-- [Rust](https://rustup.rs) (stable toolchain; nightly is only needed for `just fmt`)
-- [just](https://github.com/casey/just) (task runner)
-- No external audio tools are required. Audio inspection, tagging, and `/spec` spectrograms are implemented by the
-  native Rust media module.
-- [PostgreSQL](https://www.postgresql.org/) database (with `pg_trgm` extension for fuzzy search — installed
-  automatically by the bot's migrations)
-- **Telegram API Credentials**: `API_ID` & `API_HASH` from [my.telegram.org](https://my.telegram.org), plus a
-  `BOT_TOKEN` from [@BotFather](https://t.me/BotFather)
-- **Telegram Dump Channel**: A private channel where the bot is added as an administrator (to store and cache audio
-  files)
+- [Rust](https://rustup.rs) (stable 1.85+ toolchain; Rust 2024 edition)
+- [just](https://github.com/casey/just) (command task runner)
+- [PostgreSQL](https://www.postgresql.org/) (with `pg_trgm` extension)
+- **Telegram API Credentials**: `API_ID` & `API_HASH` from [my.telegram.org](https://my.telegram.org)
+- **Primary Bot Token**: `BOT_TOKEN` from [@BotFather](https://t.me/BotFather)
+- **Telegram Dump Channel**: Private channel where primary bot and worker tokens are administrators
 
 ---
 
-## Quick Start
-
-### 1. Clone & Configure
-
-```bash
-git clone https://github.com/Hitarashi/peerless-server.git
-cd peerless-server
-cp .env.example .env
-```
-
-Edit `.env` with your credentials:
+## Configuration (`.env`)
 
 ```env
+# Telegram Core Credentials
 API_ID=1234567
 API_HASH=abcdef0123456789abcdef0123456789
 BOT_TOKEN=1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ
 ADMIN_ID=123456789
 DUMP_CHANNEL_ID=-1001234567890
 
-# PostgreSQL Connection
+# Dedicated Streaming Worker Bot Tokens (comma-separated, recommended 3-5 tokens)
+STREAM_WORKER_BOT_TOKENS=bot_token_1,bot_token_2,bot_token_3
+
+# Axum HTTP Streaming Server Port & Security
+STREAM_SERVER_PORT=4444
+APP_KEY=generate_a_secure_32_byte_hex_key_here
+
+# PostgreSQL Database Connection
 DATABASE_URL=postgresql://user:password@localhost:5432/peerless
 
-# Logging (trace | debug | info | warn | error)
+# Tracing Log Level (trace | debug | info | warn | error)
 LOG_LEVEL=info
 
-# (Optional) Primary mirror overrides (defaults to dynamic manifest resolution)
-# ALAC_MIRROR_URL=https://custom-mirror.example.com
-# ALAC_API_KEY=ak_custom_api_key
-
-# (Optional) Secondary wrapper fallback engine (defaults to local wrapper)
+# (Optional) Primary Decryption Mirror & Wrapper Overrides
 ALAC_WRAPPER_URL=http://127.0.0.1:12340
-# ALAC_WRAPPER_API_KEY=ak_wrapper_key
 ```
 
-### 2. Start the Bot
+---
 
-The canonical database migrations run automatically at startup, creating a fresh database and applying pending migrations
-to an existing supported database when applicable.
+## Quick Start
+
+### 1. Build & Run
+
+Database migrations run automatically at startup:
 
 ```bash
-# Development (debug build)
+# Clone repository
+git clone https://github.com/Hitarashi/peerless-server.git
+cd peerless-server
+cp .env.example .env
+
+# Run in development mode
 just run
 
-# Or release mode
-just release && ./target/release/bot
+# Or compile and run release binary
+just release
+./target/release/bot
 ```
 
-### 3. Docker
+### 2. Docker Deployment
 
 ```bash
 docker build -t peerless-server .
 docker run -d --name peerless-server \
   --env-file .env \
+  -p 4444:4444 \
   -v peerless-server-data:/app/bot-data \
   peerless-server
 ```
 
-The container includes only the TLS certificate bundle needed for HTTPS, runs as a non-root user, and persists the
-Telegram session + download scratch in the `/app/bot-data` volume.
+---
+
+## Bot Commands
+
+| Command           | Description                                                                         |
+|:------------------|:------------------------------------------------------------------------------------|
+| `/stream`         | Generate a single-use OTP and Base64 Connection Payload for the Peerless client app |
+| `/get <link>`     | Download and archive track or album; multi-track albums delivered as ZIPs           |
+| `/search <query>` | Interactive search with inline buttons across cached and live catalogs              |
+| `/info <link>`    | Display track metadata, audio codec, and cache availability                         |
+| `/status`         | Active ripping downloads with live cancellation controls                            |
+| `/spec`           | Generate an audiophile FFT spectrogram from replied audio                           |
+| `/settings`       | Operational toggles and dynamic stream URL configuration                            |
+| `/index`          | Reconcile dump channel messages, captions, and ISRCs with PostgreSQL                |
+| `/export`         | Export compressed PostgreSQL backup archive                                         |
 
 ---
 
-## Environment Variables
-
-| Variable               | Description                                                       | Default                  |
-|:-----------------------|:------------------------------------------------------------------|:-------------------------|
-| `API_ID`               | Telegram API ID from [my.telegram.org](https://my.telegram.org)   | *Required*               |
-| `API_HASH`             | Telegram API Hash from [my.telegram.org](https://my.telegram.org) | *Required*               |
-| `BOT_TOKEN`            | Bot token from [@BotFather](https://t.me/BotFather)               | *Required*               |
-| `ADMIN_ID`             | Telegram User ID of the bot owner                                 | *Required*               |
-| `DUMP_CHANNEL_ID`      | Channel ID (`-100...`) used to store cached audio files           | *Required*               |
-| `DATABASE_URL`         | PostgreSQL connection string (required)                           | —                        |
-| `LOG_LEVEL`            | Tracing log level (`trace`, `debug`, `info`, `warn`, `error`)     | `info`                   |
-| `ALAC_MIRROR_URL`      | Optional static mirror URL override                               | Dynamic manifest         |
-| `ALAC_API_KEY`         | Optional static mirror API key override                           | Dynamic manifest         |
-| `ALAC_WRAPPER_URL`     | Secondary decryption wrapper / mirror URL fallback                | `http://127.0.0.1:12340` |
-| `ALAC_WRAPPER_KIND`    | Wrapper deployment flavor: `native` (wrapper-lite relay) or `endpoints` (candidate URLs) | `native` |
-| `ALAC_WRAPPER_API_KEY` | Optional API key for wrapper URL                                  | None                     |
-| `ALAC_MAX_RETRIES`     | Max retries per rip/upload attempt                                | `3`                      |
-| `ALAC_RETRY_BASE_MS`   | Exponential backoff base delay (ms)                               | `2000`                   |
-
----
-
-## Decryption Mirrors & Wrapper Fallback Engine
-
-The bot uses a dual-engine architecture to prevent download failures during public mirror downtime:
-
-1. **Primary Decryption Mirror**: Automatically fetched and refreshed from the dynamic mirror manifest (or overridden
-   with `ALAC_MIRROR_URL`).
-2. **Wrapper Fallback Engine**: Configured via `ALAC_WRAPPER_URL` (defaults to the local wrapper at
-   `http://127.0.0.1:12340`).
-
-If the primary mirror is unreachable, returns HTTP 502/503, or drops the connection mid-handshake, the ripper seamlessly
-switches to the wrapper engine.
-
-### Swapping the Wrapper Engine with Any Link
-
-To swap the local wrapper with an alternative remote wrapper or third-party mirror, simply update `ALAC_WRAPPER_URL` in
-`.env`:
-
-```env
-# Example 1: Local containerized wrapper
-ALAC_WRAPPER_URL=http://127.0.0.1:12340
-
-# Example 2: Remote private wrapper
-ALAC_WRAPPER_URL=https://wrapper.yourdomain.com
-
-# Example 3: Dedicated mirror with API key
-ALAC_WRAPPER_URL=https://custom-mirror.example.com
-ALAC_WRAPPER_API_KEY=your_secret_api_key
-```
-
----
-
-## Command Reference
-
-### General Commands
-
-| Command | Description |
-|:--|:--|
-| `/get <Apple Music link> [-f]` | Download a track or collection; multi-track albums are delivered as primary and optional sparse Atmos ZIPs (`-f` forces re-rip for admins) |
-| `/search <query>` | Search the cached library and Apple Music catalog with text-labelled buttons |
-| `/info <Apple Music link>` | Show track metadata and cache availability |
-| `/status` | Show active downloads and cancellation controls |
-| `/spec` | Generate a spectrogram from replied audio |
-| `/report` | Report a problem with a track |
-| `/help` | Display usage instructions and available commands |
-
-> **Batch Tip**: You can upload a `.txt` document containing one Apple Music link per line with `/get` as the caption to
-> rip an entire batch automatically.
-
----
-
-### Admin Management Commands
-
-| Command | Description |
-|:--|:--|
-| `/settings` | Bot operational settings and ripping toggles |
-| `/dump` | Seed new Apple Music releases into the dump channel |
-| `/random` | Discover and seed a random album |
-| `/delete <Apple Music link>` | Remove a track from cache and the dump channel |
-| `/auth <user_id\|reply>` | Authorize a user or group |
-| `/revoke <user_id\|reply>` | Revoke authorization |
-| `/authlist` | List authorized users and groups |
-| `/stats` | View download and cache statistics |
-| `/clean` | Remove leftover temporary files |
-| `/ping` | Check Telegram, database, and mirror health |
-| `/index` | Reconcile the dump channel with the database |
-| `/export` | Export a compressed PostgreSQL database archive |
-| `/import` | Restore a database archive |
-
----
-
-## Development
-
-Task recipes live in [justfile](justfile) — `just` with no arguments lists them.
+## Testing & Quality Assurance
 
 ```bash
-just fmt          # format (nightly rustfmt: import grouping/sorting)
-just fmt-check    # CI-style format verification
-just check        # fast workspace type-check
-just clippy       # lint with warnings as errors
-just test         # test suite (needs PostgreSQL; set TEST_DATABASE_URL)
-just build        # debug build
-just release      # optimized build
-just run          # build + run with .env
-just docker       # build the container image
-```
+# Type check workspace
+just check
 
-Toolchains: **stable** for build/lint/test — **nightly** only for `fmt`, because rustfmt's import grouping/sorting (see
-`rustfmt.toml`) is a nightly-only option.
-
-Testing requires a PostgreSQL database with the pg_trgm extension available:
-
-```bash
-export TEST_DATABASE_URL=postgresql://admin:password@localhost:5432/peerless_test
+# Run full test suite (requires TEST_DATABASE_URL)
+export TEST_DATABASE_URL=postgresql://user:password@localhost:5432/peerless_test
 just test
+
+# Lint with clippy
+just clippy
+
+# Format code (nightly toolchain)
+just fmt
 ```
-
----
-
-## Database Management
-
-The canonical Diesel migrations are embedded in the binary and run automatically at startup (`db::migrate`), applying
-pending migrations when applicable — no separate migration step is needed.
-
----
-
-## Credits
-
-Special thanks and credit to the [applebruh](https://github.com/avikekkk/applebruh) project for inspiration and
-foundational research on Apple Music ALAC decryption and workflows.
-
----
-
-## Disclaimer
-
-This software is strictly intended for **educational, experimental, and research purposes only**.
-
-- This project is **not affiliated with, associated with, authorized by, endorsed by, or in any way officially connected
-  with Apple Inc.** or any of its subsidiaries or affiliates.
-- "Apple", "Apple Music", and "ALAC" are registered trademarks of Apple Inc.
-- Users are solely responsible for ensuring that their use of this software complies with all applicable local,
-  national, and international laws, as well as the terms of service of any third-party platforms. The authors and
-  maintainers assume no liability or responsibility for any misuse or violation of copyright or terms of service.
 
 ---
 

@@ -133,6 +133,13 @@ async fn test_docs_and_unauthorized_endpoints() {
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 
+    let req = Request::builder()
+        .uri("/api/v1/auth/me/avatar")
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+
     // 5. Test Unauthorized access to /api/v1/tracks/1/playback (GET and POST)
     let req = Request::builder()
         .uri("/api/v1/tracks/1/playback")

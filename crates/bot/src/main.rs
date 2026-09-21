@@ -272,6 +272,7 @@ async fn main() -> Result<()> {
             app_key.clone(),
         )
         .with_catalog_service(apple_catalog)
+        .with_telegram_client(client.clone())
         .with_rip_task_runner(rip_task_runner),
     );
 

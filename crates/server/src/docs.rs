@@ -46,6 +46,7 @@ impl Modify for SecurityAddon {
         crate::auth::refresh,
         crate::auth::logout,
         crate::auth::me,
+        crate::auth::me_avatar,
         crate::streaming::get_playback_info,
         crate::streaming::stream_handler,
         crate::catalog::search_catalog,

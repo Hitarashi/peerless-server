@@ -69,6 +69,8 @@ pub struct ServerState {
     pub settings_store: Arc<db::SettingsStore>,
     pub rip_orchestrator: Arc<engine::orchestrator::RipOrchestrator>,
     pub token_cache: Arc<Cache<String, auth::AuthedUser>>,
+    pub telegram_client: Option<ferogram::Client>,
+    pub avatar_cache: Arc<Cache<i64, Option<Arc<Vec<u8>>>>>,
     pub tasks_tx: broadcast::Sender<tasks::TaskProgressEvent>,
     pub sync_hub: playback_sync::PlaybackSyncHub,
     pub http_client: reqwest::Client,
@@ -96,6 +98,12 @@ impl ServerState {
                 .time_to_live(Duration::from_secs(60))
                 .build(),
         );
+        let avatar_cache = Arc::new(
+            Cache::builder()
+                .max_capacity(500)
+                .time_to_live(Duration::from_secs(15 * 60))
+                .build(),
+        );
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .build()
@@ -115,6 +123,8 @@ impl ServerState {
             settings_store,
             rip_orchestrator,
             token_cache,
+            telegram_client: None,
+            avatar_cache,
             tasks_tx,
             sync_hub: playback_sync::PlaybackSyncHub::default(),
             http_client,
@@ -128,6 +138,11 @@ impl ServerState {
 
     pub fn with_catalog_service(mut self, catalog_service: apple::SharedCatalog) -> Self {
         self.catalog_service = Some(catalog_service);
+        self
+    }
+
+    pub fn with_telegram_client(mut self, telegram_client: ferogram::Client) -> Self {
+        self.telegram_client = Some(telegram_client);
         self
     }
 
@@ -164,6 +179,7 @@ pub fn create_router(state: Arc<ServerState>) -> Router {
         .route("/api/v1/auth/refresh", post(auth::refresh))
         .route("/api/v1/auth/logout", post(auth::logout))
         .route("/api/v1/auth/me", get(auth::me))
+        .route("/api/v1/auth/me/avatar", get(auth::me_avatar))
         // Streaming & Playback
         .route(
             "/api/v1/tracks/{id}/playback",

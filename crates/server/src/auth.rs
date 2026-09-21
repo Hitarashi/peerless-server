@@ -2,8 +2,10 @@ use std::sync::Arc;
 
 use axum::{
     Json,
+    body::Body,
     extract::{FromRef, FromRequestParts, State},
-    http::request::Parts,
+    http::{HeaderValue, header, request::Parts},
+    response::Response,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -106,6 +108,101 @@ pub struct UserDto {
     /// Telegram first name or display name.
     #[schema(example = "Sayeed")]
     pub name: Option<String>,
+    /// Telegram username without the leading `@`, when available.
+    #[schema(example = "sayeed")]
+    pub username: Option<String>,
+    /// Telegram first name, when available.
+    pub first_name: Option<String>,
+    /// Telegram last name, when available.
+    pub last_name: Option<String>,
+}
+
+fn profile_display_name(
+    first_name: Option<&str>,
+    last_name: Option<&str>,
+    username: Option<&str>,
+    stored_name: Option<String>,
+) -> Option<String> {
+    let first_name = first_name.map(str::trim).filter(|name| !name.is_empty());
+    let last_name = last_name.map(str::trim).filter(|name| !name.is_empty());
+    let full_name = [first_name, last_name]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if !full_name.is_empty() {
+        return Some(full_name);
+    }
+
+    if let Some(username) = username.map(str::trim).filter(|name| !name.is_empty()) {
+        return Some(format!("@{username}"));
+    }
+
+    stored_name
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+}
+
+async fn load_user_profile(state: &ServerState, telegram_id: i64) -> UserDto {
+    let stored_name = state
+        .session_mgr
+        .get_user_name(telegram_id)
+        .await
+        .ok()
+        .flatten();
+
+    let telegram_user = if let Some(client) = &state.telegram_client {
+        match client.get_users_by_id(&[telegram_id]).await {
+            Ok(mut users) => users.pop().flatten(),
+            Err(error) => {
+                tracing::warn!(telegram_id, error = %error, "failed to refresh Telegram profile");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let first_name = telegram_user
+        .as_ref()
+        .and_then(|user| user.first_name())
+        .map(str::to_owned);
+    let last_name = telegram_user
+        .as_ref()
+        .and_then(|user| user.last_name())
+        .map(str::to_owned);
+    let username = telegram_user
+        .as_ref()
+        .and_then(|user| user.username())
+        .map(str::to_owned);
+    let telegram_name = profile_display_name(
+        first_name.as_deref(),
+        last_name.as_deref(),
+        username.as_deref(),
+        None,
+    );
+    let name = if let Some(telegram_name) = telegram_name {
+        if stored_name.as_deref() != Some(telegram_name.as_str())
+            && let Err(error) = state
+                .session_mgr
+                .update_user_name_if_changed(telegram_id, &telegram_name)
+                .await
+        {
+            tracing::warn!(telegram_id, error = %error, "failed to sync Telegram display name");
+        }
+        Some(telegram_name)
+    } else {
+        stored_name
+    };
+
+    UserDto {
+        telegram_id,
+        name,
+        username,
+        first_name,
+        last_name,
+    }
 }
 
 /// Token exchange response containing sliding access tokens and user profile.
@@ -236,12 +333,7 @@ pub async fn exchange(
         .insert(session.refresh_token.clone(), authed_user)
         .await;
 
-    let name = state
-        .session_mgr
-        .get_user_name(session.telegram_id)
-        .await
-        .ok()
-        .flatten();
+    let user = load_user_profile(&state, session.telegram_id).await;
 
     let expires_at_unix = session.expires_at.timestamp();
 
@@ -253,10 +345,7 @@ pub async fn exchange(
         expires_in: 259200,
         expires_at: session.expires_at,
         expires_at_unix,
-        user: UserDto {
-            telegram_id: session.telegram_id,
-            name,
-        },
+        user,
     }))
 }
 
@@ -383,18 +472,121 @@ pub async fn me(
         })
         .collect();
 
-    let name = state
-        .session_mgr
-        .get_user_name(user.telegram_id)
-        .await
-        .ok()
-        .flatten();
-
     Ok(Json(MeResponse {
-        user: UserDto {
-            telegram_id: user.telegram_id,
-            name,
-        },
+        user: load_user_profile(&state, user.telegram_id).await,
         sessions,
     }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/auth/me/avatar",
+    tag = "auth",
+    summary = "Get the authenticated Telegram user's profile photo",
+    responses(
+        (status = 200, description = "Telegram profile photo", content_type = "image/jpeg"),
+        (status = 404, description = "No Telegram profile photo is available"),
+        (status = 401, description = "Unauthorized")
+    ),
+    security(("bearer_auth" = []))
+)]
+pub async fn me_avatar(
+    State(state): State<Arc<ServerState>>,
+    user: AuthedUser,
+) -> Result<Response, ServerError> {
+    let Some(client) = &state.telegram_client else {
+        return Err(ServerError::NotFound(
+            "Telegram profile photo is unavailable".into(),
+        ));
+    };
+
+    let avatar = if let Some(cached) = state.avatar_cache.get(&user.telegram_id).await {
+        cached
+    } else {
+        let photos = client
+            .get_profile_photos(ferogram::PeerRef::from(user.telegram_id), 1)
+            .await
+            .map_err(|error| {
+                tracing::warn!(telegram_id = user.telegram_id, error = %error, "failed to fetch Telegram profile photo");
+                ServerError::Internal("Failed to retrieve Telegram profile photo".into())
+            })?;
+
+        let raw_photo = photos.into_iter().next().and_then(|photo| match photo {
+            ferogram::tl::enums::Photo::Photo(photo) => Some(photo),
+            ferogram::tl::enums::Photo::Empty(_) => None,
+        });
+
+        let photo_bytes = if let Some(raw_photo) = raw_photo {
+            let photo = ferogram::media::Photo::from_raw(raw_photo);
+            let thumbnail = photo
+                .thumb("s")
+                .or_else(|| photo.thumb(photo.largest_thumb_type()));
+            if let Some(thumbnail) = thumbnail {
+                let mut bytes = Vec::new();
+                client
+                    .download(&thumbnail, &mut bytes, None)
+                    .await
+                    .map_err(|error| {
+                        tracing::warn!(telegram_id = user.telegram_id, error = %error, "failed to download Telegram profile photo");
+                        ServerError::Internal("Failed to download Telegram profile photo".into())
+                    })?;
+                (!bytes.is_empty()).then(|| Arc::new(bytes))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        state
+            .avatar_cache
+            .insert(user.telegram_id, photo_bytes.clone())
+            .await;
+        photo_bytes
+    };
+
+    let Some(avatar) = avatar else {
+        return Err(ServerError::NotFound(
+            "Telegram profile photo is unavailable".into(),
+        ));
+    };
+
+    let mut response = Response::new(Body::from(avatar.as_ref().clone()));
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static("image/jpeg"));
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=900"),
+    );
+    Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::profile_display_name;
+
+    #[test]
+    fn profile_display_name_prefers_current_telegram_name_over_stored_name() {
+        assert_eq!(
+            profile_display_name(
+                Some("Sayeed"),
+                Some("Hitarashi"),
+                Some("sayeeddev"),
+                Some("Old database name".to_string())
+            ),
+            Some("Sayeed Hitarashi".to_string())
+        );
+    }
+
+    #[test]
+    fn profile_display_name_falls_back_to_username_then_stored_name() {
+        assert_eq!(
+            profile_display_name(None, None, Some("sayeeddev"), Some("Stored".to_string())),
+            Some("@sayeeddev".to_string())
+        );
+        assert_eq!(
+            profile_display_name(None, None, None, Some(" Stored ".to_string())),
+            Some("Stored".to_string())
+        );
+    }
 }

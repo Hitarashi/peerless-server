@@ -28,6 +28,7 @@ cuid2.workspace = true
 md-5 = "0.11"
 
 reqwest = { workspace = true, features = ["json", "form"] }
+ferogram.workspace = true
 
 music = { path = "../music" }
 apple = { path = "../apple" }
@@ -39,7 +40,6 @@ stream = { path = "../stream" }
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 dotenvy.workspace = true
-ferogram.workspace = true
 
 [lints]
 workspace = true

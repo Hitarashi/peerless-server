@@ -346,4 +346,37 @@ impl SessionManager {
             .flatten();
         Ok(name)
     }
+
+    /// Update an existing user's display name only when it has changed.
+    /// This deliberately never inserts a row, so syncing profile metadata
+    /// cannot grant authorization to a user that was removed.
+    pub async fn update_user_name_if_changed(
+        &self,
+        telegram_id: i64,
+        name: &str,
+    ) -> Result<bool, DbError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Ok(false);
+        }
+
+        let mut conn = self.pool.connection().await?;
+        let current_name = users::table
+            .filter(users::telegram_id.eq(telegram_id))
+            .select(users::name)
+            .first::<Option<String>>(&mut *conn)
+            .await
+            .optional()?
+            .flatten();
+
+        if current_name.as_deref() == Some(name) {
+            return Ok(false);
+        }
+
+        let updated = diesel::update(users::table.filter(users::telegram_id.eq(telegram_id)))
+            .set(users::name.eq(name))
+            .execute(&mut *conn)
+            .await?;
+        Ok(updated > 0)
+    }
 }
