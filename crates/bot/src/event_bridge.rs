@@ -259,6 +259,9 @@ async fn refresh_dashboard(state: &BotState, force: bool) {
 /// Created event is emitted after the job is admitted, so this is the first
 /// reliable point at which we can recover without losing the status surface.
 async fn refresh_dashboard_for_job(state: &BotState, job: &ActiveRipJob) {
+    if job.chat_id <= 0 {
+        return;
+    }
     let snapshot = current_snapshot(state).await;
     let manager = dashboard_manager();
     if manager.contains(job.chat_id).await {
@@ -399,6 +402,9 @@ fn zip_delivery_details_html(
 /// command when it still exists; otherwise mention the requester explicitly
 /// so completion remains visible even after message cleanup.
 async fn notify_job_completed(state: &BotState, job: &ActiveRipJob, summary: &RipJobSummary) {
+    if job.chat_id <= 0 {
+        return;
+    }
     let peer = ferogram::PeerRef::from(job.chat_id);
     let reply_id = job
         .reply_to_message_id
@@ -499,7 +505,11 @@ async fn notify_job_completed(state: &BotState, job: &ActiveRipJob, summary: &Ri
     let zip_deliveries = zip_delivery_entries(summary);
     let multiple_renditions = zip_deliveries.len() > 1;
     for zip in zip_deliveries {
-        if !summary.is_cache_only && zip.total_parts > 0 && !zip.photo_delivered {
+        if !summary.is_cache_only
+            && zip.total_parts > 0
+            && !zip.photo_delivered
+            && job.delivery_chat_id > 0
+        {
             let details_html = zip_delivery_details_html(job, zip, multiple_renditions);
             let details_msg = ferogram::InputMessage::html(details_html).no_webpage(true);
             if let Err(error) = state
@@ -543,6 +553,8 @@ mod tests {
     fn job(id: &str) -> ActiveRipJob {
         ActiveRipJob {
             id: id.into(),
+            provider: music::Provider::Apple,
+            source_track_ids: vec!["album_1".into()],
             chat_id: 100,
             delivery_chat_id: 100,
             user_id: 7,

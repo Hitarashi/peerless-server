@@ -742,6 +742,7 @@ fn encode_uri_component(value: &str) -> String {
     encoded
 }
 
+#[allow(dead_code)]
 fn form_encode(value: &str) -> String {
     let mut encoded = String::with_capacity(value.len());
     for byte in value.bytes() {

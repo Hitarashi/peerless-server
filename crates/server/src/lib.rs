@@ -1,7 +1,7 @@
-//! Axum HTTP streaming server and REST/SSE API.
+//! Axum HTTP streaming server and REST API.
 //!
 //! Provides a deep module interface (`run_server`, `create_router`, `ServerState`, `ServerConfig`)
-//! encapsulating all routing, middleware, range streaming, authentication, and SSE adapters.
+//! encapsulating all routing, middleware, range streaming, and authentication.
 
 pub mod assets;
 pub mod auth;
@@ -16,11 +16,11 @@ pub mod playback_sync;
 pub mod streaming;
 pub mod tasks;
 
-use std::{net::IpAddr, sync::Arc, time::Duration};
+use std::{collections::HashMap, net::IpAddr, sync::Arc, time::Duration};
 
 use axum::{
     Router,
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 pub use error::ServerError;
 use moka::future::Cache;
@@ -49,11 +49,13 @@ impl Default for ServerConfig {
 
 pub type RipTaskRunner = Arc<
     dyn Fn(
+            Arc<ServerState>,
             String,
             music::Provider,
             String,
             Option<music::Codec>,
             i64,
+            tokio_util::sync::CancellationToken,
         ) -> tokio::task::JoinHandle<()>
         + Send
         + Sync,
@@ -71,7 +73,9 @@ pub struct ServerState {
     pub token_cache: Arc<Cache<String, auth::AuthedUser>>,
     pub telegram_client: Option<ferogram::Client>,
     pub avatar_cache: Arc<Cache<i64, Option<Arc<Vec<u8>>>>>,
-    pub tasks_tx: broadcast::Sender<tasks::TaskProgressEvent>,
+    pub task_sync_tx: broadcast::Sender<tasks::TaskSyncEvent>,
+    pub active_tasks: Arc<parking_lot::RwLock<HashMap<String, tasks::ServerTaskMeta>>>,
+    pub admin_id: i64,
     pub sync_hub: playback_sync::PlaybackSyncHub,
     pub http_client: reqwest::Client,
     pub catalog_service: Option<apple::SharedCatalog>,
@@ -91,7 +95,12 @@ impl ServerState {
         rip_orchestrator: Arc<engine::orchestrator::RipOrchestrator>,
         app_key: String,
     ) -> Self {
-        let (tasks_tx, _) = broadcast::channel(256);
+        let (task_sync_tx, _) = broadcast::channel(256);
+        let active_tasks = Arc::new(parking_lot::RwLock::new(HashMap::new()));
+        let admin_id = std::env::var("ADMIN_ID")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
         let token_cache = Arc::new(
             Cache::builder()
                 .max_capacity(5000)
@@ -108,10 +117,11 @@ impl ServerState {
             .timeout(Duration::from_secs(10))
             .build()
             .unwrap_or_default();
-        let rip_task_runner: RipTaskRunner =
-            Arc::new(|_task_id, _provider, _track_id, _codec, _user_id| {
+        let rip_task_runner: RipTaskRunner = Arc::new(
+            |_state, _task_id, _provider, _track_id, _codec, _user_id, _controller| {
                 tokio::spawn(async move {})
-            });
+            },
+        );
         let db = tracks_repo.pool().clone();
 
         Self {
@@ -125,7 +135,9 @@ impl ServerState {
             token_cache,
             telegram_client: None,
             avatar_cache,
-            tasks_tx,
+            task_sync_tx,
+            active_tasks,
+            admin_id,
             sync_hub: playback_sync::PlaybackSyncHub::default(),
             http_client,
             catalog_service: None,
@@ -134,6 +146,11 @@ impl ServerState {
             cors_origins: vec!["*".to_string()],
             started_at: std::time::Instant::now(),
         }
+    }
+
+    pub fn with_admin_id(mut self, admin_id: i64) -> Self {
+        self.admin_id = admin_id;
+        self
     }
 
     pub fn with_catalog_service(mut self, catalog_service: apple::SharedCatalog) -> Self {
@@ -154,6 +171,59 @@ impl ServerState {
     pub fn with_cors_origins(mut self, cors_origins: Vec<String>) -> Self {
         self.cors_origins = cors_origins;
         self
+    }
+
+    fn remove_active_task(&self, task_id: &str) -> Option<tasks::ServerTaskMeta> {
+        let task = self.active_tasks.write().remove(task_id)?;
+        let _ = self.task_sync_tx.send(tasks::TaskSyncEvent::Dismissed {
+            task_id: task_id.to_string(),
+        });
+        Some(task)
+    }
+
+    /// Marks a task as successfully completed.
+    pub fn complete_task(&self, task_id: &str) {
+        let _ = self.remove_active_task(task_id);
+    }
+
+    /// Marks a task as failed with an error description.
+    pub fn fail_task(&self, task_id: &str, _error: &str) {
+        let _ = self.remove_active_task(task_id);
+    }
+
+    /// Cancels an in-flight task and notifies all listeners.
+    pub fn cancel_task(&self, task_id: &str, _reason: &str) {
+        let Some(task) = self.remove_active_task(task_id) else {
+            return;
+        };
+        task.controller.cancel();
+        if let Some(job_id) = task.job_id {
+            self.rip_orchestrator.cancel_job(&job_id, Some("user"));
+        }
+    }
+
+    /// Updates current progress for an active task and broadcasts it over the playback WebSocket.
+    pub fn update_task_progress(
+        &self,
+        task_id: &str,
+        stage: &str,
+        percent: Option<f32>,
+        speed: Option<String>,
+    ) {
+        let progress = tasks::RipTaskProgress {
+            stage: stage.to_string(),
+            percent,
+            speed,
+        };
+        let mut tasks = self.active_tasks.write();
+        let Some(task) = tasks.get_mut(task_id) else {
+            return;
+        };
+        task.latest_progress = progress;
+        drop(tasks);
+        let _ = self.task_sync_tx.send(tasks::TaskSyncEvent::Updated {
+            task_id: task_id.to_string(),
+        });
     }
 }
 
@@ -199,9 +269,10 @@ pub fn create_router(state: Arc<ServerState>) -> Router {
             "/api/v1/artists/{name}/tracks",
             get(catalog::get_artist_tracks),
         )
-        // Tasks & SSE
+        // Rip tasks
+        .route("/api/v1/tasks", get(tasks::list_rip_tasks))
         .route("/api/v1/tasks/rip", post(tasks::create_rip_task))
-        .route("/api/v1/tasks/{id}/events", get(tasks::task_events))
+        .route("/api/v1/tasks/{id}", delete(tasks::cancel_rip_task))
         // Assets
         .route(
             "/api/v1/assets/tracks/{id}/artwork",

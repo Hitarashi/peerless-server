@@ -61,6 +61,14 @@ pub enum ServerMessage {
         action: String,
         data: Option<serde_json::Value>,
     },
+    #[serde(rename = "rip_tasks_snapshot")]
+    RipTasksSnapshot {
+        tasks: Vec<crate::tasks::RipTaskSnapshot>,
+    },
+    #[serde(rename = "rip_task_updated")]
+    RipTaskUpdated { task: crate::tasks::RipTaskSnapshot },
+    #[serde(rename = "rip_task_dismissed")]
+    RipTaskDismissed { task_id: String },
 }
 
 pub struct SyncRoom {
@@ -157,6 +165,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServerState>, telegram_id: 
         let room = room_arc.lock().await;
         room.tx.subscribe()
     };
+    let mut task_rx = state.task_sync_tx.subscribe();
 
     let (mut sender, mut receiver) = socket.split();
     let mut my_device_id: Option<String> = None;
@@ -177,6 +186,37 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServerState>, telegram_id: 
                     Err(broadcast::error::RecvError::Closed) => {
                         break;
                     }
+                }
+            }
+            task_event = task_rx.recv() => {
+                let outgoing = match task_event {
+                    Ok(crate::tasks::TaskSyncEvent::Updated { task_id }) if my_device_id.is_some() => {
+                        let tasks = state.active_tasks.read();
+                        tasks.get(&task_id).map(|task| {
+                            let is_owner = task.owner_id == telegram_id;
+                            ServerMessage::RipTaskUpdated {
+                                task: task.snapshot(is_owner),
+                            }
+                        })
+                    }
+                    Ok(crate::tasks::TaskSyncEvent::Dismissed { task_id })
+                        if my_device_id.is_some() =>
+                    {
+                        Some(ServerMessage::RipTaskDismissed { task_id })
+                    }
+                    Ok(_) => None,
+                    Err(broadcast::error::RecvError::Lagged(lag)) => {
+                        tracing::warn!(telegram_id, lag, "WebSocket task subscriber lagged behind");
+                        my_device_id.as_ref().map(|_| ServerMessage::RipTasksSnapshot {
+                            tasks: task_snapshots_for_user(&state, telegram_id),
+                        })
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                };
+                if let Some(server_msg) = outgoing
+                    && let Ok(json_str) = serde_json::to_string(&server_msg)
+                    && sender.send(Message::Text(json_str.into())).await.is_err() {
+                    break;
                 }
             }
             item = receiver.next() => {
@@ -217,6 +257,14 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServerState>, telegram_id: 
                                             snapshot: room.latest_snapshot.clone(),
                                         };
                                         let _ = room.tx.send(room_state);
+                                        drop(room);
+                                        let task_snapshot = ServerMessage::RipTasksSnapshot {
+                                            tasks: task_snapshots_for_user(&state, telegram_id),
+                                        };
+                                        if let Ok(json_str) = serde_json::to_string(&task_snapshot)
+                                            && sender.send(Message::Text(json_str.into())).await.is_err() {
+                                                break;
+                                            }
                                     }
                                     ClientMessage::ReportState { snapshot } => {
                                         let mut room = room_arc.lock().await;
@@ -291,6 +339,25 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServerState>, telegram_id: 
         };
         let _ = room.tx.send(updated_state);
     }
+}
+
+fn task_snapshots_for_user(
+    state: &ServerState,
+    telegram_id: i64,
+) -> Vec<crate::tasks::RipTaskSnapshot> {
+    let tasks = state.active_tasks.read();
+    let mut snapshots = tasks
+        .values()
+        .map(|task| {
+            let is_owner = task.owner_id == telegram_id;
+            (task.created_at, task.snapshot(is_owner))
+        })
+        .collect::<Vec<_>>();
+    snapshots.sort_by_key(|(created_at, _)| std::cmp::Reverse(*created_at));
+    snapshots
+        .into_iter()
+        .map(|(_, snapshot)| snapshot)
+        .collect()
 }
 
 fn remove_device_connection(room: &mut SyncRoom, device_id: &str, connection_id: u64) -> bool {

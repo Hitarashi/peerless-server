@@ -33,7 +33,7 @@ impl Modify for SecurityAddon {
     info(
         title = "ALAC Lossless Media Streaming Server API",
         version = "1.0.0",
-        description = "# Lossless Audio & Media Streaming Engine\n\nHigh-performance lossless audio streaming server powered by Telegram MTProto backend, providing direct bit-perfect ALAC/FLAC streaming, sliding session auth, live catalog discovery, on-demand ripping, and synchronized lyrics.\n\n### Core Workflows\n1. **Authentication**: Users authenticate via the Telegram bot command `/stream` to obtain a single-use OTP code, exchanged at `/api/v1/auth/exchange` for sliding session tokens.\n2. **Bit-Perfect Streaming**: Lossless streams are requested via `/api/v1/tracks/{id}/playback` and served at `/api/v1/stream` with full HTTP 206 Partial Content Range support.\n3. **Catalog & Discovery**: Query cached tracks and live Apple Music catalog items simultaneously via `/api/v1/search`.\n4. **On-Demand Ripping**: Trigger background rip jobs for uncached tracks via `/api/v1/tasks/rip` and monitor real-time progress via Server-Sent Events (SSE).",
+        description = "# Lossless Audio & Media Streaming Engine\n\nHigh-performance lossless audio streaming server powered by Telegram MTProto backend, providing direct bit-perfect ALAC/FLAC streaming, sliding session auth, live catalog discovery, on-demand ripping, and synchronized lyrics.\n\n### Core Workflows\n1. **Authentication**: Users authenticate via the Telegram bot command `/stream` to obtain a single-use OTP code, exchanged at `/api/v1/auth/exchange` for sliding session tokens.\n2. **Bit-Perfect Streaming**: Lossless streams are requested via `/api/v1/tracks/{id}/playback` and served at `/api/v1/stream` with full HTTP 206 Partial Content Range support.\n3. **Catalog & Discovery**: Query cached tracks and live Apple Music catalog items simultaneously via `/api/v1/search`.\n4. **On-Demand Ripping**: Trigger background rip jobs via `/api/v1/tasks/rip`; server-owned snapshots and progress updates are sent over the authenticated playback WebSocket.",
         license(name = "MIT")
     ),
     servers(
@@ -55,7 +55,8 @@ impl Modify for SecurityAddon {
         crate::catalog::get_album_tracks,
         crate::catalog::get_artist_tracks,
         crate::tasks::create_rip_task,
-        crate::tasks::task_events,
+        crate::tasks::list_rip_tasks,
+        crate::tasks::cancel_rip_task,
         crate::assets::get_artwork,
         crate::assets::get_provider_artwork,
         crate::assets::get_lyrics,
@@ -93,7 +94,7 @@ impl Modify for SecurityAddon {
             crate::catalog::AlbumDetailsDto,
             crate::tasks::RipTaskRequest,
             crate::tasks::RipTaskResponse,
-            crate::tasks::TaskProgressEvent,
+            crate::tasks::RipTaskSnapshot,
             crate::assets::LyricsResponse,
             crate::assets::LyricsLineDto,
             crate::assets::LyricsWordDto,
@@ -111,7 +112,7 @@ impl Modify for SecurityAddon {
         (name = "auth", description = "Telegram OTP exchange, sliding session refresh, and user profile management"),
         (name = "stream", description = "Direct bit-perfect lossless audio streaming and HMAC-SHA256 playback ticket generation"),
         (name = "catalog", description = "Music catalog search, track metadata, album tracklists, and artist discographies"),
-        (name = "tasks", description = "On-demand provider ripping and real-time Server-Sent Events (SSE) progress tracking"),
+        (name = "tasks", description = "On-demand provider ripping with server-owned task snapshots and playback WebSocket progress updates"),
         (name = "assets", description = "High-resolution album artwork redirection and synchronized TTML/LRC lyrics resolution"),
         (name = "library", description = "User favorited tracks and custom playlist management"),
         (name = "integrations", description = "Third-party integrations and Last.fm scrobbling authentication"),

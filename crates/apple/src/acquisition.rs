@@ -4,7 +4,7 @@
 //! the Apple mirror policy, wrapper selection, retry ordering, and the native
 //! wrapper path; the engine only sees one `connect_stream` operation.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use engine::{
     orchestrator::types::{RipActivity, TrackLabel},
@@ -21,6 +21,8 @@ use crate::{
     ReqwestMirrorHttp,
     mirror_http::MirrorHttp,
     mirror_policy::{MirrorEndpoint, MirrorPolicyManager},
+    playlist::ReqwestPlaylistHttp,
+    token::DeveloperTokenProvider,
     wrapper::{WrapperEngine, WrapperTrackOutcome, WrapperUnavailableReason},
 };
 
@@ -585,7 +587,9 @@ impl engine::orchestrator::deps::ProviderPresentation for ApplePresentation {
 
 impl AppleProduction {
     pub fn new(config: AppleProductionConfig) -> Self {
-        let catalog = crate::catalog::Catalog::new(crate::catalog::ReqwestTransport::new());
+        let token_provider = Arc::new(DeveloperTokenProvider::new(ReqwestPlaylistHttp::new()));
+        let catalog = crate::catalog::Catalog::new(crate::catalog::ReqwestTransport::new())
+            .with_token_provider(token_provider.clone());
         let mirror_policy =
             MirrorPolicyManager::new(ReqwestMirrorHttp::new(), config.mirror_override);
         let stream_transport =
@@ -600,8 +604,9 @@ impl AppleProduction {
         );
         let ripper_deps = AppleRipperDeps::new(catalog, acquisition);
         Self {
-            playlist: crate::playlist::PlaylistClient::new(
-                crate::playlist::ReqwestPlaylistHttp::new(),
+            playlist: crate::playlist::PlaylistClient::with_token_provider(
+                ReqwestPlaylistHttp::new(),
+                token_provider,
             ),
             ripper_deps,
             mirror_policy,

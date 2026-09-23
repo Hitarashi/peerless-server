@@ -218,11 +218,15 @@ async fn main() -> Result<()> {
     let apple_catalog = Arc::new(apple::Catalog::new(apple::ReqwestTransport::new()));
     let orchestrator_for_tasks = orchestrator.clone();
     let rip_deps_for_tasks = rip_deps.clone();
+    let admin_id = env.admin_id;
     let rip_task_runner: server::RipTaskRunner = Arc::new(
-        move |task_id, provider, track_id, codec, user_id| {
+        move |state, task_id, provider, track_id, codec, user_id, controller| {
             let orchestrator = orchestrator_for_tasks.clone();
             let rip_deps = rip_deps_for_tasks.clone();
             tokio::spawn(async move {
+                if controller.is_cancelled() {
+                    return;
+                }
                 let item = engine::types::ParsedTargetItem {
                     id: track_id.clone(),
                     kind: music::TargetKind::Track,
@@ -235,20 +239,21 @@ async fn main() -> Result<()> {
                     music::Codec::Aac => music::CodecPreference::LosslessCd,
                     _ => music::CodecPreference::HighestQuality,
                 });
+                let is_admin = user_id == admin_id;
                 let options = engine::orchestrator::types::RipJobOptions {
                     provider,
                     chat_id: 0,
                     user_id,
-                    user_name: None,
+                    user_name: Some(task_id.clone()),
                     delivery_chat_id: 0,
                     is_group: false,
                     is_force: false,
-                    is_cache_only: false,
+                    is_cache_only: true,
                     single_storefront: Some("us".to_string()),
                     parsed_items: vec![item],
                     reply_to_message_id: None,
                     status_msg_id: 0,
-                    is_admin: false,
+                    is_admin,
                     codec_preference,
                     rendition_policy: engine::orchestrator::types::RenditionPolicy::PrimaryOnly,
                 };
@@ -256,6 +261,7 @@ async fn main() -> Result<()> {
                 tracing::info!(task_id = %task_id, "Executing background rip task via RipOrchestrator");
                 if let Err(e) = orchestrator.start_job(rip_deps, &options).await {
                     tracing::warn!(task_id = %task_id, error = %e, "Background rip task failed");
+                    state.fail_task(&task_id, &e.to_string());
                 }
             })
         },
@@ -271,10 +277,210 @@ async fn main() -> Result<()> {
             orchestrator.clone(),
             app_key.clone(),
         )
+        .with_admin_id(env.admin_id)
         .with_catalog_service(apple_catalog)
         .with_telegram_client(client.clone())
         .with_rip_task_runner(rip_task_runner),
     );
+
+    // Mirror orchestrator activity into the server-owned live task feed.
+    let server_state_for_events = Arc::clone(&server_state);
+    orchestrator.subscribe(Arc::new(move |event| {
+        use engine::orchestrator::types::{
+            DownloadLane, OrchestratorEvent, RipActivity, UploadLane,
+        };
+
+        let state = &server_state_for_events;
+
+        fn plain_job_title(value: &str) -> String {
+            let mut in_tag = false;
+            let mut plain = String::with_capacity(value.len());
+            for character in value.chars() {
+                match character {
+                    '<' => in_tag = true,
+                    '>' => in_tag = false,
+                    _ if !in_tag => plain.push(character),
+                    _ => {}
+                }
+            }
+            plain.split_whitespace().collect::<Vec<_>>().join(" ")
+        }
+
+        // Match app-created tasks first. Ordinary bot jobs get a server-owned
+        // task record too, so every client sees the same active job feed.
+        let find_task = |job: &engine::orchestrator::types::ActiveRipJob,
+                         register_if_missing: bool|
+         -> Option<server::tasks::ServerTaskMeta> {
+            let mut tasks = state.active_tasks.write();
+            // App rip tasks put their server task ID in user_name.
+            if let Some(task) = job
+                .user_name
+                .as_ref()
+                .and_then(|uname| tasks.get_mut(uname))
+            {
+                if task.job_id.is_none() {
+                    task.job_id = Some(job.id.clone());
+                }
+                return Some(task.clone());
+            }
+            // Repeated orchestrator events resolve through the assigned job ID.
+            for task in tasks.values_mut() {
+                if task.job_id.as_deref() == Some(&job.id) {
+                    if task.task_id.starts_with("bot_") {
+                        task.title = Some(plain_job_title(&job.job_header));
+                        task.artist =
+                            (job.total_tracks > 1).then(|| format!("{} tracks", job.total_tracks));
+                    }
+                    return Some(task.clone());
+                }
+            }
+            // Recover a matching app task if its Created event raced the
+            // orchestrator event bridge.
+            for task in tasks.values_mut() {
+                if task.job_id.is_none()
+                    && (task.owner_id == job.user_id || job.user_id == 0)
+                    && task.provider == job.provider
+                    && job.source_track_ids.iter().any(|id| id == &task.track_id)
+                {
+                    task.job_id = Some(job.id.clone());
+                    return Some(task.clone());
+                }
+            }
+
+            if !register_if_missing {
+                return None;
+            }
+
+            let task_id = format!("bot_{}", job.id);
+            let title = plain_job_title(&job.job_header);
+            let meta = server::tasks::ServerTaskMeta {
+                task_id: task_id.clone(),
+                job_id: Some(job.id.clone()),
+                owner_id: job.user_id,
+                provider: job.provider,
+                track_id: job
+                    .source_track_ids
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| job.id.clone()),
+                codec: None,
+                title: Some(title),
+                artist: (job.total_tracks > 1).then(|| format!("{} tracks", job.total_tracks)),
+                album: None,
+                duration: None,
+                controller: tokio_util::sync::CancellationToken::new(),
+                created_at: std::time::Instant::now(),
+                latest_progress: server::tasks::RipTaskProgress {
+                    stage: "queued".to_string(),
+                    percent: Some(0.0),
+                    speed: None,
+                },
+            };
+            tasks.insert(task_id.clone(), meta.clone());
+            drop(tasks);
+            let _ = state
+                .task_sync_tx
+                .send(server::tasks::TaskSyncEvent::Updated { task_id });
+            Some(meta)
+        };
+
+        match event {
+            OrchestratorEvent::Created(job) => {
+                if let Some(task) = find_task(job, true) {
+                    let task_controller = task.controller.clone();
+                    let job_controller = job.controller.clone();
+                    if task_controller.is_cancelled() {
+                        job_controller.cancel();
+                    } else {
+                        tokio::spawn(async move {
+                            tokio::select! {
+                                _ = task_controller.cancelled() => {
+                                    job_controller.cancel();
+                                }
+                                _ = job_controller.cancelled() => {
+                                    task_controller.cancel();
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+            OrchestratorEvent::Progress(job, progress) => {
+                if let Some(task) = find_task(job, true) {
+                    let mut stage = None;
+                    let mut percent = None;
+
+                    if let Some(UploadLane::Track {
+                        progress: byte_p, ..
+                    }) = &progress.upload
+                    {
+                        stage = Some("uploading_telegram");
+                        percent = byte_p
+                            .total
+                            .map(|tot| (byte_p.completed as f32 / tot as f32) * 100.0);
+                    } else if let Some(DownloadLane::Rip(rip_activity)) = &progress.download {
+                        match rip_activity {
+                            RipActivity::Downloading {
+                                progress: byte_p, ..
+                            } => {
+                                stage = Some("downloading");
+                                percent = byte_p
+                                    .total
+                                    .map(|tot| (byte_p.completed as f32 / tot as f32) * 100.0);
+                            }
+                            RipActivity::Decrypting { .. } => {
+                                stage = Some("decrypting");
+                            }
+                            RipActivity::Tagging { .. } => {
+                                stage = Some("tagging");
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    if let Some(stg) = stage {
+                        let overall_percent = match (percent, job.total_tracks) {
+                            (Some(track_percent), total) if total > 0 => {
+                                let finished =
+                                    job.cached_count + job.ripped_count + job.failed_count;
+                                Some(
+                                    ((finished as f32 + track_percent / 100.0) / total as f32)
+                                        * 100.0,
+                                )
+                            }
+                            _ => percent,
+                        };
+                        state.update_task_progress(&task.task_id, stg, overall_percent, None);
+                    }
+                }
+            }
+            OrchestratorEvent::Completed(job, summary) => {
+                if let Some(task) = find_task(job, false) {
+                    if summary.failed_count > 0 || !summary.failed_tracks.is_empty() {
+                        let error = summary
+                            .failed_tracks
+                            .first()
+                            .map(|failed| failed.error.as_str())
+                            .unwrap_or("One or more tracks failed");
+                        state.fail_task(&task.task_id, error);
+                    } else {
+                        state.complete_task(&task.task_id);
+                    }
+                }
+            }
+            OrchestratorEvent::Cancelled(job, _by) => {
+                if let Some(task) = find_task(job, false) {
+                    state.cancel_task(&task.task_id, "Cancelled by user");
+                }
+            }
+            OrchestratorEvent::Failed(job, err) => {
+                if let Some(task) = find_task(job, false) {
+                    state.fail_task(&task.task_id, err);
+                }
+            }
+            _ => {}
+        }
+    }));
 
     let server_shutdown = tokio_util::sync::CancellationToken::new();
     let server_task = tokio::spawn({

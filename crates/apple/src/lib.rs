@@ -10,6 +10,7 @@ mod mirror_http;
 pub mod mirror_policy;
 pub mod parser;
 pub mod playlist;
+pub mod token;
 pub mod wrapper;
 
 pub use acquisition::{
@@ -34,6 +35,7 @@ pub use playlist::{
     APPLE_USER_AGENT, PlaylistClient, PlaylistError, PlaylistHttp, PlaylistHttpError,
     ReqwestPlaylistHttp,
 };
+pub use token::DeveloperTokenProvider;
 pub use wrapper::{
     AlacStreamInfo, MediaPlaylistInfo, WrapperEngine, WrapperError, WrapperLiteClient,
     WrapperTrackOutcome, WrapperUnavailableReason, parse_master_playlist, parse_media_playlist,

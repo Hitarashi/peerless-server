@@ -1032,6 +1032,12 @@ impl RipOrchestrator {
         let shared: Arc<Mutex<JobShared>> = Arc::new(Mutex::new(JobShared {
             job: ActiveRipJob {
                 id: job_id.clone(),
+                provider: options.provider,
+                source_track_ids: options
+                    .parsed_items
+                    .iter()
+                    .map(|item| item.id.clone())
+                    .collect(),
                 chat_id: options.chat_id,
                 delivery_chat_id: options.delivery_chat_id,
                 user_id: options.user_id,

@@ -130,6 +130,25 @@ impl TracksRepository {
             .optional()?)
     }
 
+    pub async fn get_track_by_provider(
+        &self,
+        provider: Provider,
+        track_id: &str,
+    ) -> Result<Option<Track>, DbError> {
+        let mut connection = self.pool.connection().await?;
+        Ok(tracks::table
+            .filter(
+                tracks::provider
+                    .eq(provider)
+                    .and(tracks::track_id.eq(track_id)),
+            )
+            .order(tracks::id.desc())
+            .select(Track::as_select())
+            .first::<Track>(&mut *connection)
+            .await
+            .optional()?)
+    }
+
     pub async fn find_tracks_by_isrc(&self, isrc: &str) -> Result<Vec<Track>, DbError> {
         let mut connection = self.pool.connection().await?;
         Ok(tracks::table

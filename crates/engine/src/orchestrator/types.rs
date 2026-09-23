@@ -38,6 +38,8 @@ pub type JobTerminalState = TerminalJobState;
 #[derive(Debug, Clone)]
 pub struct ActiveRipJob {
     pub id: String,
+    pub provider: Provider,
+    pub source_track_ids: Vec<String>,
     pub chat_id: i64,
     /// Chat the delivered copies target (group jobs retarget to the user's
     /// DM); the bridge uses it to send ZIP details to the right chat.

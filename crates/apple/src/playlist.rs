@@ -12,8 +12,8 @@
 use std::{
     collections::HashMap,
     future::Future,
-    sync::Mutex,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    sync::Arc,
+    time::{Duration, Instant},
 };
 
 use music::{PlaylistData, PlaylistTrack};
@@ -106,24 +106,11 @@ impl PlaylistHttp for ReqwestPlaylistHttp {
     }
 }
 
-#[derive(Debug, Default)]
-struct TokenCache {
-    token: Option<String>,
-    expires_at_ms: u64,
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-fn ua_header() -> Header {
+pub fn ua_header() -> Header {
     ("User-Agent".to_string(), APPLE_USER_AGENT.to_string())
 }
 
-fn auth_headers(token: &str) -> Vec<Header> {
+pub fn auth_headers(token: &str) -> Vec<Header> {
     vec![
         ua_header(),
         ("Authorization".to_string(), format!("Bearer {token}")),
@@ -131,96 +118,40 @@ fn auth_headers(token: &str) -> Vec<Header> {
     ]
 }
 
+pub use crate::token::DeveloperTokenProvider;
+
 /// Playlist client with the shared token cache (module-level
 /// `cachedToken` variables; one client hands every fetch the same cache).
 #[derive(Debug)]
 pub struct PlaylistClient<H: PlaylistHttp> {
-    http: H,
-    token_cache: Mutex<TokenCache>,
-    token_refresh: tokio::sync::Mutex<()>,
+    pub(crate) http: H,
+    token_provider: Arc<DeveloperTokenProvider<H>>,
 }
 
-impl<H: PlaylistHttp> PlaylistClient<H> {
+impl<H: PlaylistHttp + Clone> PlaylistClient<H> {
     pub fn new(http: H) -> Self {
+        Self::with_token_provider(http.clone(), Arc::new(DeveloperTokenProvider::new(http)))
+    }
+
+    pub fn with_token_provider(http: H, token_provider: Arc<DeveloperTokenProvider<H>>) -> Self {
         Self {
             http,
-            token_cache: Mutex::new(TokenCache::default()),
-            token_refresh: tokio::sync::Mutex::new(()),
+            token_provider,
         }
     }
 
-    /// Retrieves and caches the Apple Music Web Client developer token.
-    ///
-    /// A failed scrape is returned to the caller instead of falling back to a
-    /// committed bearer token. Callers that observe an authentication failure
-    /// should invalidate the cache and retry once.
-    pub async fn get_developer_token(&self) -> Result<String, String> {
-        let refresh_guard = self.token_refresh.lock().await;
-        let _ = &refresh_guard;
-        let now = now_ms();
-        {
-            let cache = self.token_cache.lock().expect("token cache poisoned");
-            if let Some(token) = &cache.token
-                && cache.expires_at_ms > now
-            {
-                return Ok(token.clone());
-            }
-        }
+    pub fn token_provider(&self) -> &Arc<DeveloperTokenProvider<H>> {
+        &self.token_provider
+    }
 
-        match self.scrape_token().await {
-            Ok(token) => {
-                let mut cache = self.token_cache.lock().expect("token cache poisoned");
-                cache.token = Some(token.clone());
-                cache.expires_at_ms = now + 24 * 60 * 60 * 1000;
-                tracing::debug!("Extracted live Apple Music developer token");
-                Ok(token)
-            }
-            Err(err) => Err(err),
-        }
+    /// Retrieves and caches the Apple Music Web Client developer token.
+    pub async fn get_developer_token(&self) -> Result<String, String> {
+        self.token_provider.get_developer_token().await
     }
 
     /// Drops the cached token so the next request performs a fresh scrape.
     pub fn invalidate_developer_token(&self) {
-        let mut cache = self.token_cache.lock().expect("token cache poisoned");
-        cache.token = None;
-        cache.expires_at_ms = 0;
-    }
-
-    /// The live scrape: browse page → index asset → token assignment (or a
-    /// direct JWT anywhere in the asset).
-    async fn scrape_token(&self) -> Result<String, String> {
-        let browse = self
-            .http
-            .get(
-                "https://music.apple.com/us/browse",
-                &[ua_header()],
-                Duration::from_secs(10),
-            )
-            .await
-            .map_err(|e| e.to_string())?;
-
-        let asset = find_asset_path(&browse).ok_or("no index asset in browse page")?;
-        let js = self
-            .http
-            .get(
-                &format!("https://music.apple.com{asset}"),
-                &[ua_header()],
-                Duration::from_secs(10),
-            )
-            .await
-            .map_err(|e| e.to_string())?;
-
-        if let Some(var_name) = find_developer_token_var(&js)
-            && let Some(value) = find_var_assignment(&js, &var_name)
-        {
-            return Ok(value);
-        }
-
-        if let Some(jwt) = find_direct_jwt(&js) {
-            return Ok(jwt);
-        }
-
-        Err("no token found in asset".to_string())
+        self.token_provider.invalidate_developer_token();
     }
 
     /// `fetchPlaylistTracks`: fetch with US-storefront fallback on failure.
@@ -265,7 +196,7 @@ impl<H: PlaylistHttp> PlaylistClient<H> {
             url_encode(playlist_id)
         );
 
-        let start = now_ms();
+        let start = Instant::now();
         let body = match self
             .http
             .get(&initial_url, &auth_headers(&token), Duration::from_secs(20))
@@ -273,7 +204,7 @@ impl<H: PlaylistHttp> PlaylistClient<H> {
         {
             Ok(body) => body,
             Err(PlaylistHttpError::Network(message)) => {
-                let elapsed_ms = now_ms() - start;
+                let elapsed_ms = start.elapsed().as_millis() as u64;
                 tracing::error!(
                     playlist_id,
                     elapsed_ms,
@@ -303,7 +234,7 @@ impl<H: PlaylistHttp> PlaylistClient<H> {
                     .await
                     .map_err(|error| match error {
                         PlaylistHttpError::Network(message) => PlaylistError::TimedOut {
-                            elapsed_ms: now_ms() - start,
+                            elapsed_ms: start.elapsed().as_millis() as u64,
                             message,
                         },
                         PlaylistHttpError::Status(404) => PlaylistError::NotFound {
@@ -521,86 +452,6 @@ fn url_encode(segment: &str) -> String {
     out
 }
 
-/// `/\/assets\/index~[a-zA-Z0-9]+\.js/` — leftmost match, path + ".js".
-fn find_asset_path(html: &str) -> Option<String> {
-    let pat = "/assets/index~";
-    let mut search_from = 0;
-    while let Some(rel) = html[search_from..].find(pat) {
-        let start = search_from + rel;
-        let after = &html[start + pat.len()..];
-        let hash_len = after
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric())
-            .count();
-        if hash_len > 0 {
-            let end = start + pat.len() + hash_len;
-            if html[end..].starts_with(".js") {
-                return Some(html[start..end + 3].to_string());
-            }
-        }
-        search_from = start + 1;
-    }
-    None
-}
-
-/// `/developerToken:([$a-zA-Z0-9_]+)/` — capture group 1.
-fn find_developer_token_var(js: &str) -> Option<String> {
-    let pat = "developerToken:";
-    let rel = js.find(pat)?;
-    let after = &js[rel + pat.len()..];
-    let name: String = after
-        .chars()
-        .take_while(|c| c.is_ascii_alphanumeric() || *c == '$' || *c == '_')
-        .collect();
-    if name.is_empty() { None } else { Some(name) }
-}
-
-/// `${varName}\\s*=\\s*"([^"]+)"` — first assignment of `var_name`.
-fn find_var_assignment(js: &str, var_name: &str) -> Option<String> {
-    let mut search_from = 0;
-    while let Some(rel) = js[search_from..].find(var_name) {
-        let start = search_from + rel;
-        let rest = &js[start + var_name.len()..];
-        let ws_len = rest.chars().take_while(|c| c.is_whitespace()).count();
-        let rest = &rest[ws_len..];
-        if let Some(stripped) = rest.strip_prefix('=') {
-            let ws_len = stripped.chars().take_while(|c| c.is_whitespace()).count();
-            let rest = &stripped[ws_len..];
-            if let Some(after_quote) = rest.strip_prefix('"')
-                && let Some(end) = after_quote.find('"')
-            {
-                return Some(after_quote[..end].to_string());
-            }
-        }
-        search_from = start + 1;
-    }
-    None
-}
-
-/// `/eyJh[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*/` — first JWT-ish
-/// string starting with `eyJh` (two dots, all segments alphanumeric/-/_).
-fn find_direct_jwt(js: &str) -> Option<String> {
-    let start = js.find("eyJh")?;
-    let rest = &js[start..];
-    let mut end = 0;
-    let mut dots = 0;
-    for (i, ch) in rest.char_indices() {
-        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
-            end = i + ch.len_utf8();
-        } else if ch == '.' && dots < 2 {
-            dots += 1;
-            end = i + 1;
-        } else {
-            break;
-        }
-    }
-    if dots == 2 && end > 0 {
-        Some(rest[..end].to_string())
-    } else {
-        None
-    }
-}
-
 #[derive(Debug, Deserialize)]
 struct RawPlaylistResponse {
     #[serde(default)]
@@ -694,22 +545,29 @@ struct RawSongAttributes {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
+    use std::{collections::VecDeque, sync::Mutex};
 
     use super::*;
+    use crate::token::{
+        find_asset_path, find_developer_token_var, find_direct_jwt, find_var_assignment,
+    };
+
+    type RequestLog = Arc<Mutex<Vec<(String, Vec<Header>)>>>;
+    type ResponseQueue = Arc<Mutex<VecDeque<Result<&'static str, PlaylistHttpError>>>>;
 
     /// Serves queued responses strictly in request order (first pop wins);
     /// records every (url, headers) pair for assertions.
+    #[derive(Clone)]
     struct FakeHttp {
-        responses: Mutex<VecDeque<Result<&'static str, PlaylistHttpError>>>,
-        requested: Mutex<Vec<(String, Vec<Header>)>>,
+        responses: ResponseQueue,
+        requested: RequestLog,
     }
 
     impl FakeHttp {
         fn new(responses: Vec<Result<&'static str, PlaylistHttpError>>) -> Self {
             Self {
-                responses: Mutex::new(VecDeque::from(responses)),
-                requested: Mutex::new(Vec::new()),
+                responses: Arc::new(Mutex::new(VecDeque::from(responses))),
+                requested: Arc::new(Mutex::new(Vec::new())),
             }
         }
 

@@ -1,11 +1,10 @@
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use axum::{
     Json,
     extract::{Path, State},
-    response::sse::{Event, KeepAlive, Sse},
+    http::StatusCode,
 };
-use futures_util::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -23,12 +22,17 @@ pub struct RipTaskRequest {
     /// Desired lossless or compressed codec (`alac`, `flac`, `aac`).
     #[schema(example = "alac")]
     pub codec: Option<String>,
+    /// Display metadata retained by the server for task recovery.
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub duration: Option<i32>,
 }
 
 /// Initial response returned when an on-demand rip task is queued.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RipTaskResponse {
-    /// Unique task identifier for subscribing to SSE progress events.
+    /// Unique task identifier used to correlate WebSocket progress updates.
     #[schema(example = "task_01h7xyz...")]
     pub task_id: String,
     /// Initial task status (`queued`).
@@ -36,37 +40,115 @@ pub struct RipTaskResponse {
     pub status: String,
 }
 
-/// Real-time progress event emitted over Server-Sent Events (SSE).
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct TaskProgressEvent {
-    /// Task identifier.
-    #[schema(example = "task_01h7xyz...")]
+/// Thread-safe active task metadata stored in `ServerState::active_tasks`.
+#[derive(Debug, Clone)]
+pub struct ServerTaskMeta {
     pub task_id: String,
-    /// Current pipeline stage (`queued`, `downloading`, `decrypting`, `tagging`, `uploading_telegram`, `completed`, `failed`).
-    #[schema(example = "downloading")]
+    pub job_id: Option<String>,
+    pub owner_id: i64,
+    pub provider: music::Provider,
+    pub track_id: String,
+    pub codec: Option<String>,
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub duration: Option<i32>,
+    pub controller: tokio_util::sync::CancellationToken,
+    pub created_at: std::time::Instant,
+    pub latest_progress: RipTaskProgress,
+}
+
+impl ServerTaskMeta {
+    pub(crate) fn snapshot(&self, is_owner: bool) -> RipTaskSnapshot {
+        let progress = &self.latest_progress;
+        RipTaskSnapshot {
+            task_id: self.task_id.clone(),
+            provider: self.provider.as_str().to_owned(),
+            source_track_id: self.track_id.clone(),
+            codec: self.codec.clone(),
+            title: self.title.clone(),
+            artist: self.artist.clone(),
+            album: self.album.clone(),
+            duration: self.duration,
+            stage: progress.stage.clone(),
+            percent: progress.percent,
+            speed: progress.speed.clone(),
+            result_track_id: None,
+            is_cached: None,
+            completed: false,
+            error: None,
+            is_owner,
+        }
+    }
+}
+
+/// Server-owned task state returned to clients on reconnect and app startup.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
+pub struct RipTaskSnapshot {
+    pub task_id: String,
+    pub provider: String,
+    pub source_track_id: String,
+    pub codec: Option<String>,
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub duration: Option<i32>,
     pub stage: String,
-    /// Download or upload progress percentage (0.0 to 100.0).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[schema(example = 45.2)]
     pub percent: Option<f32>,
-    /// Download/upload throughput speed string (e.g. `8.5 MB/s`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[schema(example = "8.5 MB/s")]
     pub speed: Option<String>,
-    /// Database track ID once ripping and caching completes.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[schema(example = 142)]
-    pub track_id: Option<i32>,
-    /// True when track is cached in Telegram dump channel.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[schema(example = true)]
+    pub result_track_id: Option<i32>,
     pub is_cached: Option<bool>,
-    /// True if the task has concluded.
-    #[schema(example = false)]
     pub completed: bool,
-    /// Error message if the ripping job failed.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    pub is_owner: bool,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/tasks",
+    tag = "tasks",
+    summary = "List Server Rip Tasks",
+    description = "Returns all currently active server-owned rip tasks. Completed, failed, and cancelled tasks are omitted. Live updates are sent over the authenticated playback WebSocket.",
+    responses(
+        (status = 200, description = "Server-owned rip task snapshots", body = [RipTaskSnapshot]),
+        (status = 401, description = "Unauthorized - Missing or invalid Bearer token")
+    ),
+    security(("bearer_auth" = []))
+)]
+pub async fn list_rip_tasks(
+    State(state): State<Arc<ServerState>>,
+    user: AuthedUser,
+) -> Json<Vec<RipTaskSnapshot>> {
+    let tasks = state.active_tasks.read();
+    let mut snapshots = tasks
+        .values()
+        .map(|task| {
+            (
+                task.created_at,
+                task.snapshot(task.owner_id == user.telegram_id),
+            )
+        })
+        .collect::<Vec<_>>();
+    snapshots.sort_by_key(|(created_at, _)| std::cmp::Reverse(*created_at));
+    let snapshots = snapshots
+        .into_iter()
+        .map(|(_, snapshot)| snapshot)
+        .collect();
+    Json(snapshots)
+}
+
+#[derive(Debug, Clone)]
+pub struct RipTaskProgress {
+    pub stage: String,
+    pub percent: Option<f32>,
+    pub speed: Option<String>,
+}
+
+/// Internal notification forwarded to authenticated playback WebSocket clients.
+#[derive(Debug, Clone)]
+pub enum TaskSyncEvent {
+    Updated { task_id: String },
+    Dismissed { task_id: String },
 }
 
 #[utoipa::path(
@@ -74,7 +156,7 @@ pub struct TaskProgressEvent {
     path = "/api/v1/tasks/rip",
     tag = "tasks",
     summary = "Create On-Demand Rip Task",
-    description = "Dispatches an asynchronous background ripping job via RipOrchestrator for uncached provider tracks. Returns a `task_id` for monitoring real-time SSE progress at `/api/v1/tasks/{id}/events`.",
+    description = "Dispatches an asynchronous background ripping job via RipOrchestrator for uncached provider tracks. Returns a `task_id` used to correlate live task snapshots and progress over the authenticated playback WebSocket.",
     request_body = RipTaskRequest,
     responses(
         (status = 200, description = "Rip task queued successfully", body = RipTaskResponse),
@@ -111,20 +193,82 @@ pub async fn create_rip_task(
             _ => music::Codec::Alac,
         });
 
-    let task_id = format!("task_{}", cuid2::create_id());
+    // 1. Fast-path: Check if track is ALREADY cached in database
+    match state
+        .tracks_repo
+        .get_track_by_provider(provider, &payload.track_id)
+        .await
+    {
+        Ok(Some(track)) => {
+            let task_id = format!("task_{}", cuid2::create_id());
+            tracing::info!(
+                task_id = %task_id,
+                user_id = user.telegram_id,
+                track_id = track.id,
+                "Rip task completed via fast-path database cache hit"
+            );
+            return Ok(Json(RipTaskResponse {
+                task_id,
+                status: "completed".to_string(),
+            }));
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to query tracks repo during rip task creation");
+        }
+    }
 
-    // Emit initial event
-    let initial_event = TaskProgressEvent {
-        task_id: task_id.clone(),
+    // 2. In-flight deduplication: If a task for (provider, track_id) is already active, reuse it
+    {
+        let tasks = state.active_tasks.read();
+        if let Some(existing) = tasks
+            .values()
+            .find(|t| t.provider == provider && t.track_id == payload.track_id)
+        {
+            tracing::info!(
+                existing_task_id = %existing.task_id,
+                user_id = user.telegram_id,
+                provider = ?provider,
+                track_id = %payload.track_id,
+                "Reusing existing in-flight rip task"
+            );
+            return Ok(Json(RipTaskResponse {
+                task_id: existing.task_id.clone(),
+                status: "queued".to_string(),
+            }));
+        }
+    }
+
+    // 3. Otherwise, create new background rip task
+    let task_id = format!("task_{}", cuid2::create_id());
+    let controller = tokio_util::sync::CancellationToken::new();
+
+    let initial_progress = RipTaskProgress {
         stage: "queued".to_string(),
         percent: Some(0.0),
         speed: None,
-        track_id: None,
-        is_cached: None,
-        completed: false,
-        error: None,
     };
-    let _ = state.tasks_tx.send(initial_event);
+
+    let meta = ServerTaskMeta {
+        task_id: task_id.clone(),
+        job_id: None,
+        owner_id: user.telegram_id,
+        provider,
+        track_id: payload.track_id.clone(),
+        codec: payload.codec.clone(),
+        title: payload.title.clone(),
+        artist: payload.artist.clone(),
+        album: payload.album.clone(),
+        duration: payload.duration,
+        controller: controller.clone(),
+        created_at: std::time::Instant::now(),
+        latest_progress: initial_progress,
+    };
+    state.active_tasks.write().insert(task_id.clone(), meta);
+
+    let _ = state.task_sync_tx.send(TaskSyncEvent::Updated {
+        task_id: task_id.clone(),
+    });
 
     tracing::info!(
         task_id = %task_id,
@@ -137,11 +281,13 @@ pub async fn create_rip_task(
 
     // Dispatch background ripping via RipOrchestrator runner
     (state.rip_task_runner)(
+        state.clone(),
         task_id.clone(),
         provider,
         payload.track_id.clone(),
         codec,
         user.telegram_id,
+        controller,
     );
 
     Ok(Json(RipTaskResponse {
@@ -151,58 +297,48 @@ pub async fn create_rip_task(
 }
 
 #[utoipa::path(
-    get,
-    path = "/api/v1/tasks/{id}/events",
+    delete,
+    path = "/api/v1/tasks/{id}",
     tag = "tasks",
-    summary = "Stream Task Progress Events (SSE)",
-    description = "Streams real-time Server-Sent Events (SSE) broadcasting downloading, decrypting, tagging, and Telegram upload progress until completion.",
+    summary = "Cancel Rip Task",
+    description = "Cancels an active background rip.",
     params(
         ("id" = String, Path, description = "Task ID returned by /api/v1/tasks/rip", example = "task_01h7xyz...")
     ),
     responses(
-        (status = 200, description = "Real-time Server-Sent Events stream", content_type = "text/event-stream")
+        (status = 200, description = "Task cancelled successfully"),
+        (status = 403, description = "Forbidden - Not task owner or administrator"),
+        (status = 404, description = "Task not found"),
+        (status = 401, description = "Unauthorized - Missing or invalid Bearer token")
+    ),
+    security(
+        ("bearer_auth" = [])
     )
 )]
-pub async fn task_events(
+pub async fn cancel_rip_task(
     State(state): State<Arc<ServerState>>,
-    Path(task_id): Path<String>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let rx = state.tasks_tx.subscribe();
-    let target_id = task_id.clone();
+    user: AuthedUser,
+    Path(id): Path<String>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ServerError> {
+    let task = {
+        let tasks = state.active_tasks.read();
+        tasks.get(&id).cloned()
+    };
+    let Some(task) = task else {
+        return Err(ServerError::NotFound(format!("Active task {id} not found")));
+    };
+    if user.telegram_id != task.owner_id && user.telegram_id != state.admin_id {
+        return Err(ServerError::Forbidden(
+            "Only the task owner or administrator can cancel this rip".to_string(),
+        ));
+    }
 
-    let stream = stream::unfold(
-        (rx, target_id, false),
-        |(mut rx, target_id, finished)| async move {
-            if finished {
-                return None;
-            }
-            loop {
-                match rx.recv().await {
-                    Ok(event) => {
-                        if event.task_id == target_id {
-                            let is_done = event.completed || event.error.is_some();
-                            let json = serde_json::to_string(&event).unwrap_or_default();
-                            return Some((
-                                Ok(Event::default().event("progress").data(json)),
-                                (rx, target_id, is_done),
-                            ));
-                        }
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                        tracing::warn!(task_id = %target_id, skipped, "SSE receiver lagged, continuing");
-                        continue;
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        return None;
-                    }
-                }
-            }
-        },
-    );
-
-    Sse::new(stream).keep_alive(
-        KeepAlive::new()
-            .interval(Duration::from_secs(15))
-            .text("keep-alive"),
-    )
+    state.cancel_task(&id, "Cancelled by user");
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "cancelled",
+            "task_id": id,
+        })),
+    ))
 }

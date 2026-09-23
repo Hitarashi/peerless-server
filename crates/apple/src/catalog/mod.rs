@@ -32,6 +32,8 @@ pub use transport::{
     CHARTS_USER_AGENT, ITUNES_USER_AGENT, ReqwestTransport, Transport, TransportError,
 };
 
+use crate::{playlist::ReqwestPlaylistHttp, token::DeveloperTokenProvider};
+
 /// Regional storefronts tried after `us` in the fallback chain, in order.
 pub const REGIONAL_STOREFRONTS: [&str; 7] = ["jp", "gb", "in", "ca", "de", "fr", "au"];
 
@@ -170,6 +172,315 @@ pub fn artwork_url_at_size(url: &str, size: u16) -> String {
     let re = RE.get_or_init(|| regex::Regex::new(r"\d+x\d+bb").expect("artwork size regex"));
     let replacement = format!("{size}x{size}bb");
     re.replace(url, replacement.as_str()).into_owned()
+}
+
+/// Format an AMP artwork URL template by replacing `{w}x{h}bb.{f}` with `1000x1000bb.jpg`.
+pub fn format_amp_artwork_url(url: Option<&str>) -> String {
+    let Some(url) = url else {
+        return String::new();
+    };
+    url.replace("{w}x{h}bb.{f}", "1000x1000bb.jpg")
+        .replace("{w}", "1000")
+        .replace("{h}", "1000")
+        .replace("{f}", "jpg")
+}
+
+/// Apple Music AMP API artwork object.
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AmpArtwork {
+    pub url: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+}
+
+/// Song attributes returned by Apple Music AMP API.
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AmpSongAttributes {
+    pub name: Option<String>,
+    pub artist_name: Option<String>,
+    pub album_name: Option<String>,
+    pub composer_name: Option<String>,
+    pub genre_names: Vec<String>,
+    pub release_date: Option<String>,
+    pub track_number: Option<i64>,
+    pub disc_number: Option<i64>,
+    pub duration_in_millis: Option<u64>,
+    pub isrc: Option<String>,
+    pub audio_traits: Vec<String>,
+    pub artwork: Option<AmpArtwork>,
+    pub record_label: Option<String>,
+    pub copyright: Option<String>,
+    pub is_streamable: Option<bool>,
+    pub content_rating: Option<String>,
+    pub upc: Option<String>,
+}
+
+/// A resource reference in an AMP item relationship.
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AmpResourceIdentifier {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub item_type: Option<String>,
+}
+
+/// Relationships on an AMP song item.
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AmpSongRelationships {
+    pub albums: Option<AmpSongRelationshipData>,
+    pub artists: Option<AmpSongRelationshipData>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AmpSongRelationshipData {
+    pub data: Vec<AmpResourceIdentifier>,
+}
+
+/// Single song item returned by Apple Music AMP API.
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AmpSongItem {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub item_type: Option<String>,
+    pub attributes: Option<AmpSongAttributes>,
+    pub relationships: Option<AmpSongRelationships>,
+}
+
+/// Response payload from `/v1/catalog/{storefront}/songs/{id}`.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AmpSongResponse {
+    pub data: Vec<AmpSongItem>,
+}
+
+/// Album attributes returned by Apple Music AMP API.
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AmpAlbumAttributes {
+    pub name: Option<String>,
+    pub artist_name: Option<String>,
+    pub artwork: Option<AmpArtwork>,
+    pub genre_names: Vec<String>,
+    pub release_date: Option<String>,
+    pub track_count: Option<i64>,
+    pub record_label: Option<String>,
+    pub copyright: Option<String>,
+    pub upc: Option<String>,
+    pub content_rating: Option<String>,
+}
+
+/// Relationships on an AMP album item, containing child tracks.
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AmpAlbumRelationships {
+    pub tracks: Option<AmpAlbumTracksRelationship>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AmpAlbumTracksRelationship {
+    pub data: Vec<AmpSongItem>,
+}
+
+/// Single album item returned by Apple Music AMP API.
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AmpAlbumItem {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub item_type: Option<String>,
+    pub attributes: Option<AmpAlbumAttributes>,
+    pub relationships: Option<AmpAlbumRelationships>,
+}
+
+/// Response payload from `/v1/catalog/{storefront}/albums/{id}`.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AmpAlbumResponse {
+    pub data: Vec<AmpAlbumItem>,
+}
+
+fn map_amp_song_item(
+    item: &AmpSongItem,
+    fallback_album_id: Option<&str>,
+    fallback_album_title: Option<&str>,
+    fallback_album_artist: Option<&str>,
+    fallback_artwork_url: Option<&str>,
+    fallback_track_count: Option<i64>,
+    fallback_disc_count: Option<i64>,
+) -> TrackMeta {
+    let id = item.id.clone();
+    let attrs = item.attributes.as_ref();
+    let title = attrs.and_then(|a| a.name.clone()).unwrap_or_default();
+    let artist = attrs
+        .and_then(|a| a.artist_name.clone())
+        .unwrap_or_default();
+    let album = attrs
+        .and_then(|a| a.album_name.clone())
+        .or_else(|| fallback_album_title.map(|s| s.to_string()))
+        .unwrap_or_default();
+    let album_artist = attrs
+        .and_then(|a| a.artist_name.clone())
+        .or_else(|| fallback_album_artist.map(|s| s.to_string()))
+        .unwrap_or_default();
+    let genre = attrs.and_then(|a| a.genre_names.first().cloned());
+    let release_date = attrs
+        .and_then(|a| a.release_date.as_deref())
+        .unwrap_or("")
+        .chars()
+        .take(10)
+        .collect();
+    let composer = attrs.and_then(|a| a.composer_name.clone());
+    let track_number = attrs.and_then(|a| a.track_number);
+    let track_count = fallback_track_count;
+    let disc_number = attrs.and_then(|a| a.disc_number);
+    let disc_count = fallback_disc_count;
+    let duration_secs = attrs
+        .and_then(|a| a.duration_in_millis)
+        .map(|ms| ((ms as f64) / 1000.0).round() as i64)
+        .unwrap_or(0);
+    let explicit = attrs
+        .and_then(|a| a.content_rating.as_deref())
+        .map(|r| r == "explicit")
+        .unwrap_or(false);
+    let content_advisory = attrs.and_then(|a| a.content_rating.clone());
+    let mut artwork_url = format_amp_artwork_url(
+        attrs
+            .and_then(|a| a.artwork.as_ref())
+            .and_then(|a| a.url.as_deref()),
+    );
+    if artwork_url.is_empty()
+        && let Some(fallback_url) = fallback_artwork_url
+    {
+        artwork_url = fallback_url.to_string();
+    }
+    let album_id = item
+        .relationships
+        .as_ref()
+        .and_then(|r| r.albums.as_ref())
+        .and_then(|a| a.data.first())
+        .map(|d| d.id.clone())
+        .or_else(|| fallback_album_id.map(|s| s.to_string()));
+    let artist_id = item
+        .relationships
+        .as_ref()
+        .and_then(|r| r.artists.as_ref())
+        .and_then(|a| a.data.first())
+        .map(|d| d.id.clone());
+    let isrc = attrs.and_then(|a| a.isrc.clone()).filter(|s| !s.is_empty());
+    let record_label = attrs
+        .and_then(|a| a.record_label.clone())
+        .filter(|s| !s.is_empty());
+    let copyright = attrs
+        .and_then(|a| a.copyright.clone())
+        .filter(|s| !s.is_empty());
+    let upc = attrs.and_then(|a| a.upc.clone()).filter(|s| !s.is_empty());
+    let is_streamable = attrs.and_then(|a| a.is_streamable);
+
+    TrackMeta {
+        id,
+        title,
+        artist,
+        album,
+        album_artist,
+        genre,
+        release_date,
+        composer,
+        track_number,
+        track_count,
+        disc_number,
+        disc_count,
+        duration_secs,
+        explicit,
+        content_advisory,
+        artwork_url,
+        album_id,
+        artist_id,
+        isrc,
+        record_label,
+        copyright,
+        upc,
+        is_streamable,
+    }
+}
+
+fn map_amp_album(
+    album_item: &AmpAlbumItem,
+    collection_id: &str,
+    tracks: &[TrackMeta],
+) -> TrackMeta {
+    let attrs = album_item.attributes.as_ref();
+    let id = if !album_item.id.is_empty() {
+        album_item.id.clone()
+    } else {
+        collection_id.to_string()
+    };
+    let title = attrs.and_then(|a| a.name.clone()).unwrap_or_default();
+    let artist = attrs
+        .and_then(|a| a.artist_name.clone())
+        .unwrap_or_default();
+    let album = title.clone();
+    let album_artist = artist.clone();
+    let genre = attrs.and_then(|a| a.genre_names.first().cloned());
+    let release_date = attrs
+        .and_then(|a| a.release_date.as_deref())
+        .unwrap_or("")
+        .chars()
+        .take(10)
+        .collect();
+    let track_count = attrs
+        .and_then(|a| a.track_count)
+        .or_else(|| (!tracks.is_empty()).then_some(tracks.len() as i64));
+    let explicit = attrs
+        .and_then(|a| a.content_rating.as_deref())
+        .map(|r| r == "explicit")
+        .unwrap_or(false);
+    let content_advisory = attrs.and_then(|a| a.content_rating.clone());
+    let artwork_url = format_amp_artwork_url(
+        attrs
+            .and_then(|a| a.artwork.as_ref())
+            .and_then(|a| a.url.as_deref()),
+    );
+    let record_label = attrs
+        .and_then(|a| a.record_label.clone())
+        .filter(|s| !s.is_empty());
+    let copyright = attrs
+        .and_then(|a| a.copyright.clone())
+        .filter(|s| !s.is_empty());
+    let upc = attrs.and_then(|a| a.upc.clone()).filter(|s| !s.is_empty());
+
+    let max_disc = tracks.iter().filter_map(|t| t.disc_number).max();
+
+    TrackMeta {
+        id: id.clone(),
+        title,
+        artist,
+        album,
+        album_artist,
+        genre,
+        release_date,
+        composer: None,
+        track_number: None,
+        track_count,
+        disc_number: None,
+        disc_count: max_disc,
+        duration_secs: 0,
+        explicit,
+        content_advisory,
+        artwork_url,
+        album_id: Some(id),
+        artist_id: None,
+        isrc: None,
+        record_label,
+        copyright,
+        upc,
+        is_streamable: None,
+    }
 }
 
 /// Map a raw iTunes item to [`TrackMeta`], retaining both the legacy core
@@ -373,6 +684,7 @@ pub struct Catalog<T: Transport> {
     transport: T,
     cache: Mutex<Cache<CacheValue>>,
     max_cache: usize,
+    token_provider: Option<Arc<DeveloperTokenProvider<ReqwestPlaylistHttp>>>,
 }
 
 impl<T: Transport> Catalog<T> {
@@ -385,7 +697,20 @@ impl<T: Transport> Catalog<T> {
             transport,
             cache: Mutex::new(Cache::new(max_cache, ttl)),
             max_cache,
+            token_provider: None,
         }
+    }
+
+    pub fn with_token_provider(
+        mut self,
+        token_provider: Arc<DeveloperTokenProvider<ReqwestPlaylistHttp>>,
+    ) -> Self {
+        self.token_provider = Some(token_provider);
+        self
+    }
+
+    pub fn token_provider(&self) -> Option<&Arc<DeveloperTokenProvider<ReqwestPlaylistHttp>>> {
+        self.token_provider.as_ref()
     }
 
     /// Cache capacity.
@@ -514,6 +839,148 @@ impl<T: Transport> Catalog<T> {
         Ok(meta)
     }
 
+    pub fn parse_amp_song_body(body: &str, track_id: &str) -> Result<TrackMeta, CatalogError> {
+        let response: AmpSongResponse = serde_json::from_str(body)?;
+        let item = response.data.into_iter().next().ok_or_else(|| {
+            CatalogError::Message(format!("AMP found no song matching track ID {track_id}"))
+        })?;
+        let meta = map_amp_song_item(&item, None, None, None, None, None, None);
+        Ok(meta)
+    }
+
+    pub fn parse_amp_album_body(
+        body: &str,
+        collection_id: &str,
+    ) -> Result<AlbumTracks, CatalogError> {
+        let response: AmpAlbumResponse = serde_json::from_str(body)?;
+        let album_item = response.data.into_iter().next().ok_or_else(|| {
+            CatalogError::Message(format!(
+                "AMP found no album matching collection ID {collection_id}"
+            ))
+        })?;
+        let raw_tracks = album_item
+            .relationships
+            .as_ref()
+            .and_then(|r| r.tracks.as_ref())
+            .map(|t| t.data.as_slice())
+            .unwrap_or_default();
+
+        if raw_tracks.is_empty() {
+            return Err(CatalogError::Message(format!(
+                "AMP found no tracks for collection {collection_id}"
+            )));
+        }
+
+        let album_attrs = album_item.attributes.as_ref();
+        let album_title = album_attrs.and_then(|a| a.name.as_deref());
+        let album_artist = album_attrs.and_then(|a| a.artist_name.as_deref());
+        let album_artwork_url = format_amp_artwork_url(
+            album_attrs
+                .and_then(|a| a.artwork.as_ref())
+                .and_then(|a| a.url.as_deref()),
+        );
+        let track_count = album_attrs
+            .and_then(|a| a.track_count)
+            .or_else(|| (!raw_tracks.is_empty()).then_some(raw_tracks.len() as i64));
+        let max_disc = raw_tracks
+            .iter()
+            .filter_map(|t| t.attributes.as_ref().and_then(|a| a.disc_number))
+            .max();
+
+        let tracks: Vec<TrackMeta> = raw_tracks
+            .iter()
+            .map(|t| {
+                map_amp_song_item(
+                    t,
+                    Some(collection_id),
+                    album_title,
+                    album_artist,
+                    if album_artwork_url.is_empty() {
+                        None
+                    } else {
+                        Some(&album_artwork_url)
+                    },
+                    track_count,
+                    max_disc,
+                )
+            })
+            .collect();
+
+        let album_meta = if album_attrs.is_some() {
+            map_amp_album(&album_item, collection_id, &tracks)
+        } else {
+            tracks.first().expect("checked non-empty").clone()
+        };
+
+        Ok(AlbumTracks {
+            album: album_meta,
+            tracks,
+        })
+    }
+
+    async fn do_fetch_track_meta_amp(
+        &self,
+        provider: &DeveloperTokenProvider<ReqwestPlaylistHttp>,
+        track_id: &str,
+        sf: &str,
+    ) -> Result<TrackMeta, CatalogError> {
+        info_span!("amp_track", track_id, storefront = sf)
+            .in_scope(|| debug!("Querying Apple Music AMP API for song..."));
+        let url = format!(
+            "https://amp-api.music.apple.com/v1/catalog/{}/songs/{}",
+            urlencode(sf),
+            urlencode(track_id)
+        );
+        let start = Instant::now();
+        let body = provider
+            .fetch_amp(&url, TRACK_TIMEOUT)
+            .await
+            .map_err(|err| CatalogError::Message(format!("AMP track fetch failed: {err}")))?;
+
+        let meta = Self::parse_amp_song_body(&body, track_id)?;
+        info!(
+            track_id,
+            artist = %meta.artist,
+            title = %meta.title,
+            duration = meta.duration_secs,
+            isrc = meta.isrc.as_deref().unwrap_or(""),
+            elapsed_ms = start.elapsed().as_millis() as u64,
+            "AMP track metadata resolved"
+        );
+        Ok(meta)
+    }
+
+    async fn do_fetch_album_tracks_amp(
+        &self,
+        provider: &DeveloperTokenProvider<ReqwestPlaylistHttp>,
+        collection_id: &str,
+        sf: &str,
+    ) -> Result<AlbumTracks, CatalogError> {
+        info_span!("amp_album", collection_id, storefront = sf)
+            .in_scope(|| debug!("Querying Apple Music AMP API for album..."));
+        let url = format!(
+            "https://amp-api.music.apple.com/v1/catalog/{}/albums/{}",
+            urlencode(sf),
+            urlencode(collection_id)
+        );
+        let start = Instant::now();
+        let body = provider
+            .fetch_amp(&url, ALBUM_TIMEOUT)
+            .await
+            .map_err(|err| CatalogError::Message(format!("AMP album fetch failed: {err}")))?;
+
+        let album_tracks = Self::parse_amp_album_body(&body, collection_id)?;
+        info!(
+            collection_id,
+            album = %album_tracks.album.album,
+            artist = %album_tracks.album.artist,
+            track_count = album_tracks.tracks.len(),
+            elapsed_ms = start.elapsed().as_millis() as u64,
+            "AMP album collection resolved"
+        );
+        Ok(album_tracks)
+    }
+
     /// Fetch a single track's metadata with storefront fallback.
     pub async fn fetch_track_meta(
         &self,
@@ -523,6 +990,31 @@ impl<T: Transport> Catalog<T> {
         let sf = normalize_storefront(storefront);
         let cache_key = format!("track:{sf}:{track_id}");
         type R = TrackMeta;
+
+        if let Some(value) = self
+            .get_cached(&cache_key)
+            .and_then(|cached| R::from_value(&cached))
+        {
+            return Ok(value);
+        }
+
+        if let Some(provider) = &self.token_provider {
+            match self.do_fetch_track_meta_amp(provider, track_id, &sf).await {
+                Ok(meta) => {
+                    self.set_cached(&cache_key, meta.clone().into_value());
+                    return Ok(meta);
+                }
+                Err(err) => {
+                    debug!(
+                        track_id,
+                        storefront = %sf,
+                        error = %err,
+                        "AMP track lookup failed, falling back to iTunes"
+                    );
+                }
+            }
+        }
+
         with_fallback!(
             self,
             cache_key,
@@ -648,6 +1140,34 @@ impl<T: Transport> Catalog<T> {
         let sf = normalize_storefront(storefront);
         let cache_key = format!("album:{sf}:{collection_id}");
         type R = AlbumTracks;
+
+        if let Some(value) = self
+            .get_cached(&cache_key)
+            .and_then(|cached| R::from_value(&cached))
+        {
+            return Ok(value);
+        }
+
+        if let Some(provider) = &self.token_provider {
+            match self
+                .do_fetch_album_tracks_amp(provider, collection_id, &sf)
+                .await
+            {
+                Ok(album_tracks) => {
+                    self.set_cached(&cache_key, album_tracks.clone().into_value());
+                    return Ok(album_tracks);
+                }
+                Err(err) => {
+                    debug!(
+                        collection_id,
+                        storefront = %sf,
+                        error = %err,
+                        "AMP album lookup failed, falling back to iTunes"
+                    );
+                }
+            }
+        }
+
         with_fallback!(
             self,
             cache_key,
@@ -1129,4 +1649,204 @@ pub async fn fetch_discovery_album_tracks(
         .filter(is_track_item)
         .map(|item| map_itunes_item(&item))
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_amp_artwork_url_replaces_placeholders() {
+        let template =
+            "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/xx/yy/zz/{w}x{h}bb.{f}";
+        assert_eq!(
+            format_amp_artwork_url(Some(template)),
+            "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/xx/yy/zz/1000x1000bb.jpg"
+        );
+        assert_eq!(format_amp_artwork_url(None), "");
+    }
+
+    #[test]
+    fn parse_amp_song_body_extracts_all_fields() {
+        let json = r#"{
+            "data": [{
+                "id": "1440871441",
+                "type": "songs",
+                "attributes": {
+                    "name": "Starboy (feat. Daft Punk)",
+                    "artistName": "The Weeknd",
+                    "albumName": "Starboy",
+                    "composerName": "Abel Tesfaye, Thomas Bangalter & Guy-Manuel de Homem-Christo",
+                    "genreNames": ["R&B/Soul", "Music"],
+                    "releaseDate": "2016-09-21T07:00:00Z",
+                    "trackNumber": 1,
+                    "discNumber": 1,
+                    "durationInMillis": 230453,
+                    "isrc": "USUM71607007",
+                    "audioTraits": ["lossless", "spatial", "atmos"],
+                    "artwork": {
+                        "width": 3000,
+                        "height": 3000,
+                        "url": "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/7c/49/a1/mzi.x/{w}x{h}bb.{f}"
+                    },
+                    "recordLabel": "Universal Republic Records",
+                    "copyright": "℗ 2016 The Weeknd XO, Inc.",
+                    "isStreamable": true,
+                    "contentRating": "explicit"
+                },
+                "relationships": {
+                    "albums": {
+                        "data": [{"id": "1440871434", "type": "albums"}]
+                    },
+                    "artists": {
+                        "data": [{"id": "1234567", "type": "artists"}]
+                    }
+                }
+            }]
+        }"#;
+
+        let meta = Catalog::<ReqwestTransport>::parse_amp_song_body(json, "1440871441").unwrap();
+        assert_eq!(meta.id, "1440871441");
+        assert_eq!(meta.title, "Starboy (feat. Daft Punk)");
+        assert_eq!(meta.artist, "The Weeknd");
+        assert_eq!(meta.album, "Starboy");
+        assert_eq!(meta.album_artist, "The Weeknd");
+        assert_eq!(meta.genre.as_deref(), Some("R&B/Soul"));
+        assert_eq!(meta.release_date, "2016-09-21");
+        assert_eq!(
+            meta.composer.as_deref(),
+            Some("Abel Tesfaye, Thomas Bangalter & Guy-Manuel de Homem-Christo")
+        );
+        assert_eq!(meta.track_number, Some(1));
+        assert_eq!(meta.disc_number, Some(1));
+        assert_eq!(meta.duration_secs, 230);
+        assert!(meta.explicit);
+        assert_eq!(meta.content_advisory.as_deref(), Some("explicit"));
+        assert_eq!(
+            meta.artwork_url,
+            "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/7c/49/a1/mzi.x/1000x1000bb.jpg"
+        );
+        assert_eq!(meta.isrc.as_deref(), Some("USUM71607007"));
+        assert_eq!(
+            meta.record_label.as_deref(),
+            Some("Universal Republic Records")
+        );
+        assert_eq!(
+            meta.copyright.as_deref(),
+            Some("℗ 2016 The Weeknd XO, Inc.")
+        );
+        assert_eq!(meta.is_streamable, Some(true));
+        assert_eq!(meta.album_id.as_deref(), Some("1440871434"));
+        assert_eq!(meta.artist_id.as_deref(), Some("1234567"));
+    }
+
+    #[test]
+    fn parse_amp_album_body_extracts_album_and_tracks_with_isrc() {
+        let json = r#"{
+            "data": [{
+                "id": "1499378108",
+                "type": "albums",
+                "attributes": {
+                    "name": "After Hours",
+                    "artistName": "The Weeknd",
+                    "artwork": {
+                        "width": 3000,
+                        "height": 3000,
+                        "url": "https://is1-ssl.mzstatic.com/image/thumb/Music125/v4/4a/5b/6c/mzi.y/{w}x{h}bb.{f}"
+                    },
+                    "genreNames": ["R&B/Soul"],
+                    "releaseDate": "2020-03-20",
+                    "trackCount": 2,
+                    "recordLabel": "Republic Records",
+                    "copyright": "℗ 2020 The Weeknd XO, Inc.",
+                    "upc": "00602508824578"
+                },
+                "relationships": {
+                    "tracks": {
+                        "data": [
+                            {
+                                "id": "1499378607",
+                                "type": "songs",
+                                "attributes": {
+                                    "name": "Alone Again",
+                                    "artistName": "The Weeknd",
+                                    "trackNumber": 1,
+                                    "discNumber": 1,
+                                    "durationInMillis": 250000,
+                                    "isrc": "USUG12000658",
+                                    "isStreamable": true
+                                }
+                            },
+                            {
+                                "id": "1499378610",
+                                "type": "songs",
+                                "attributes": {
+                                    "name": "Too Late",
+                                    "artistName": "The Weeknd",
+                                    "trackNumber": 2,
+                                    "discNumber": 1,
+                                    "durationInMillis": 239000,
+                                    "isrc": "USUG12000659",
+                                    "isStreamable": true
+                                }
+                            }
+                        ]
+                    }
+                }
+            }]
+        }"#;
+
+        let res = Catalog::<ReqwestTransport>::parse_amp_album_body(json, "1499378108").unwrap();
+        assert_eq!(res.album.id, "1499378108");
+        assert_eq!(res.album.title, "After Hours");
+        assert_eq!(res.album.artist, "The Weeknd");
+        assert_eq!(res.album.album, "After Hours");
+        assert_eq!(res.album.genre.as_deref(), Some("R&B/Soul"));
+        assert_eq!(res.album.release_date, "2020-03-20");
+        assert_eq!(res.album.track_count, Some(2));
+        assert_eq!(res.album.upc.as_deref(), Some("00602508824578"));
+        assert_eq!(res.album.record_label.as_deref(), Some("Republic Records"));
+        assert_eq!(
+            res.album.artwork_url,
+            "https://is1-ssl.mzstatic.com/image/thumb/Music125/v4/4a/5b/6c/mzi.y/1000x1000bb.jpg"
+        );
+
+        assert_eq!(res.tracks.len(), 2);
+        assert_eq!(res.tracks[0].id, "1499378607");
+        assert_eq!(res.tracks[0].title, "Alone Again");
+        assert_eq!(res.tracks[0].album, "After Hours");
+        assert_eq!(res.tracks[0].isrc.as_deref(), Some("USUG12000658"));
+        assert_eq!(res.tracks[0].track_number, Some(1));
+        assert_eq!(res.tracks[0].track_count, Some(2));
+        assert_eq!(res.tracks[0].duration_secs, 250);
+
+        assert_eq!(res.tracks[1].id, "1499378610");
+        assert_eq!(res.tracks[1].title, "Too Late");
+        assert_eq!(res.tracks[1].album, "After Hours");
+        assert_eq!(res.tracks[1].isrc.as_deref(), Some("USUG12000659"));
+        assert_eq!(res.tracks[1].track_number, Some(2));
+        assert_eq!(res.tracks[1].track_count, Some(2));
+        assert_eq!(res.tracks[1].duration_secs, 239);
+    }
+
+    #[test]
+    fn parse_amp_album_no_tracks_fails() {
+        let json = r#"{
+            "data": [{
+                "id": "1499378108",
+                "type": "albums",
+                "attributes": {
+                    "name": "After Hours"
+                },
+                "relationships": {
+                    "tracks": {
+                        "data": []
+                    }
+                }
+            }]
+        }"#;
+
+        let res = Catalog::<ReqwestTransport>::parse_amp_album_body(json, "1499378108");
+        assert!(res.is_err());
+    }
 }

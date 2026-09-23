@@ -290,6 +290,11 @@ impl Delivery for FerogramTelegramSink {
                     reply_to,
                     silent,
                 } => {
+                    if destination.id() == 0 {
+                        return Err(DeliveryError::Unavailable(
+                            "destination chat id cannot be 0".to_string(),
+                        ));
+                    }
                     let source_id = i32::try_from(source.id()).map_err(|error| {
                         DeliveryError::LocalIo(format!("source message id out of range: {error}"))
                     })?;
@@ -339,6 +344,11 @@ impl Delivery for FerogramTelegramSink {
                     caption_html,
                     on_upload_progress,
                 } => {
+                    if destination.id() == 0 {
+                        return Err(DeliveryError::Unavailable(
+                            "destination chat id cannot be 0".to_string(),
+                        ));
+                    }
                     let media = self
                         .upload_zip_media(
                             &file_path,
@@ -363,6 +373,11 @@ impl Delivery for FerogramTelegramSink {
                     image_bytes,
                     caption_html,
                 } => {
+                    if destination.id() == 0 {
+                        return Err(DeliveryError::Unavailable(
+                            "destination chat id cannot be 0".to_string(),
+                        ));
+                    }
                     let uploaded = self
                         .client
                         .upload(std::io::Cursor::new(image_bytes), "cover.jpg")
