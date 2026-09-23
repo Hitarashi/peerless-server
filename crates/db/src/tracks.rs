@@ -270,9 +270,10 @@ impl TracksRepository {
                 .await?);
         }
         let pattern = format!("%{trimmed}%");
-        Ok(sql_query("SELECT * FROM tracks WHERE (provider = 'apple' AND track_id = $1) OR title ILIKE $2 OR artist ILIKE $2 OR album ILIKE $2 OR word_similarity($1, title || ' ' || artist || ' ' || album) >= 0.35 ORDER BY CASE WHEN provider = 'apple' AND track_id = $1 THEN 3 WHEN (title ILIKE $2 OR artist ILIKE $2 OR album ILIKE $2) THEN 2 ELSE 1 END DESC, word_similarity($1, title || ' ' || artist || ' ' || album) DESC LIMIT $3")
+        Ok(sql_query("SELECT * FROM tracks WHERE (provider = 'apple' AND track_id = $1) OR title ILIKE $2 OR artist ILIKE $2 OR album ILIKE $2 OR word_similarity($1, title || ' ' || artist || ' ' || album) >= 0.35 ORDER BY CASE WHEN provider = 'apple' AND track_id = $1 THEN 0 WHEN title ILIKE $1 THEN 1 WHEN title ILIKE $3 THEN 2 WHEN artist ILIKE $1 THEN 3 WHEN artist ILIKE $3 THEN 4 WHEN album ILIKE $1 THEN 5 WHEN album ILIKE $3 THEN 6 WHEN title ILIKE $2 THEN 7 WHEN artist ILIKE $2 THEN 8 WHEN album ILIKE $2 THEN 9 ELSE 10 END, GREATEST(similarity($1, title), similarity($1, artist), similarity($1, album)) DESC, word_similarity($1, title || ' ' || artist || ' ' || album) DESC, id ASC LIMIT $4")
             .bind::<Text, _>(trimmed)
             .bind::<Text, _>(&pattern)
+            .bind::<Text, _>(&format!("{trimmed}%"))
             .bind::<Integer, _>(limit)
             .load::<Track>(&mut *connection)
             .await?)
