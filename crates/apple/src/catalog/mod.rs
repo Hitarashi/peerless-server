@@ -201,6 +201,7 @@ pub struct AmpSongAttributes {
     pub name: Option<String>,
     pub artist_name: Option<String>,
     pub album_name: Option<String>,
+    pub album_artist_name: Option<String>,
     pub composer_name: Option<String>,
     pub genre_names: Vec<String>,
     pub release_date: Option<String>,
@@ -230,8 +231,14 @@ pub struct AmpResourceIdentifier {
 #[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AmpSongRelationships {
-    pub albums: Option<AmpSongRelationshipData>,
+    pub albums: Option<AmpAlbumRelationshipData>,
     pub artists: Option<AmpSongRelationshipData>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AmpAlbumRelationshipData {
+    pub data: Vec<AmpAlbumItem>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
@@ -316,16 +323,26 @@ fn map_amp_song_item(
 ) -> TrackMeta {
     let id = item.id.clone();
     let attrs = item.attributes.as_ref();
+    let album_item = item
+        .relationships
+        .as_ref()
+        .and_then(|r| r.albums.as_ref())
+        .and_then(|a| a.data.first());
+    let album_attrs = album_item.and_then(|a| a.attributes.as_ref());
+
     let title = attrs.and_then(|a| a.name.clone()).unwrap_or_default();
     let artist = attrs
         .and_then(|a| a.artist_name.clone())
         .unwrap_or_default();
     let album = attrs
         .and_then(|a| a.album_name.clone())
+        .or_else(|| album_attrs.and_then(|a| a.name.clone()))
         .or_else(|| fallback_album_title.map(|s| s.to_string()))
         .unwrap_or_default();
     let album_artist = attrs
-        .and_then(|a| a.artist_name.clone())
+        .and_then(|a| a.album_artist_name.clone())
+        .or_else(|| album_attrs.and_then(|a| a.artist_name.clone()))
+        .or_else(|| attrs.and_then(|a| a.artist_name.clone()))
         .or_else(|| fallback_album_artist.map(|s| s.to_string()))
         .unwrap_or_default();
     let genre = attrs.and_then(|a| a.genre_names.first().cloned());
@@ -337,7 +354,7 @@ fn map_amp_song_item(
         .collect();
     let composer = attrs.and_then(|a| a.composer_name.clone());
     let track_number = attrs.and_then(|a| a.track_number);
-    let track_count = fallback_track_count;
+    let track_count = fallback_track_count.or_else(|| album_attrs.and_then(|a| a.track_count));
     let disc_number = attrs.and_then(|a| a.disc_number);
     let disc_count = fallback_disc_count;
     let duration_secs = attrs
@@ -359,11 +376,7 @@ fn map_amp_song_item(
     {
         artwork_url = fallback_url.to_string();
     }
-    let album_id = item
-        .relationships
-        .as_ref()
-        .and_then(|r| r.albums.as_ref())
-        .and_then(|a| a.data.first())
+    let album_id = album_item
         .map(|d| d.id.clone())
         .or_else(|| fallback_album_id.map(|s| s.to_string()));
     let artist_id = item
@@ -375,11 +388,28 @@ fn map_amp_song_item(
     let isrc = attrs.and_then(|a| a.isrc.clone()).filter(|s| !s.is_empty());
     let record_label = attrs
         .and_then(|a| a.record_label.clone())
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            album_attrs
+                .and_then(|a| a.record_label.clone())
+                .filter(|s| !s.is_empty())
+        });
     let copyright = attrs
         .and_then(|a| a.copyright.clone())
-        .filter(|s| !s.is_empty());
-    let upc = attrs.and_then(|a| a.upc.clone()).filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            album_attrs
+                .and_then(|a| a.copyright.clone())
+                .filter(|s| !s.is_empty())
+        });
+    let upc = attrs
+        .and_then(|a| a.upc.clone())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            album_attrs
+                .and_then(|a| a.upc.clone())
+                .filter(|s| !s.is_empty())
+        });
     let is_streamable = attrs.and_then(|a| a.is_streamable);
 
     TrackMeta {
@@ -927,7 +957,7 @@ impl<T: Transport> Catalog<T> {
         info_span!("amp_track", track_id, storefront = sf)
             .in_scope(|| debug!("Querying Apple Music AMP API for song..."));
         let url = format!(
-            "https://amp-api.music.apple.com/v1/catalog/{}/songs/{}",
+            "https://amp-api.music.apple.com/v1/catalog/{}/songs/{}?include=albums",
             urlencode(sf),
             urlencode(track_id)
         );
@@ -1000,7 +1030,12 @@ impl<T: Transport> Catalog<T> {
 
         if let Some(provider) = &self.token_provider {
             match self.do_fetch_track_meta_amp(provider, track_id, &sf).await {
-                Ok(meta) => {
+                Ok(mut meta) => {
+                    if meta.track_count.is_none()
+                        && let Ok(itunes_meta) = self.do_fetch_track_meta(track_id, &sf).await
+                    {
+                        meta.track_count = itunes_meta.track_count;
+                    }
                     self.set_cached(&cache_key, meta.clone().into_value());
                     return Ok(meta);
                 }
@@ -1738,6 +1773,52 @@ mod tests {
         assert_eq!(meta.is_streamable, Some(true));
         assert_eq!(meta.album_id.as_deref(), Some("1440871434"));
         assert_eq!(meta.artist_id.as_deref(), Some("1234567"));
+    }
+
+    #[test]
+    fn parse_amp_song_body_extracts_track_count_from_album_relationship() {
+        let json = r#"{
+            "data": [{
+                "id": "1440871441",
+                "type": "songs",
+                "attributes": {
+                    "name": "Starboy (feat. Daft Punk)",
+                    "artistName": "The Weeknd"
+                },
+                "relationships": {
+                    "albums": {
+                        "data": [{
+                            "id": "1440871434",
+                            "type": "albums",
+                            "attributes": {
+                                "name": "Starboy",
+                                "artistName": "The Weeknd",
+                                "trackCount": 18,
+                                "upc": "00602557211438",
+                                "recordLabel": "Universal Republic Records",
+                                "copyright": "℗ 2016 The Weeknd XO, Inc."
+                            }
+                        }]
+                    }
+                }
+            }]
+        }"#;
+
+        let meta = Catalog::<ReqwestTransport>::parse_amp_song_body(json, "1440871441").unwrap();
+        assert_eq!(meta.id, "1440871441");
+        assert_eq!(meta.track_count, Some(18));
+        assert_eq!(meta.album, "Starboy");
+        assert_eq!(meta.album_artist, "The Weeknd");
+        assert_eq!(meta.album_id.as_deref(), Some("1440871434"));
+        assert_eq!(meta.upc.as_deref(), Some("00602557211438"));
+        assert_eq!(
+            meta.record_label.as_deref(),
+            Some("Universal Republic Records")
+        );
+        assert_eq!(
+            meta.copyright.as_deref(),
+            Some("℗ 2016 The Weeknd XO, Inc.")
+        );
     }
 
     #[test]

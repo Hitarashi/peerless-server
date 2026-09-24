@@ -423,4 +423,52 @@ impl TracksRepository {
         .await?;
         Ok(updated)
     }
+
+    pub async fn update_track_count(&self, id: i32, track_count: i32) -> Result<usize, DbError> {
+        let mut connection = self.pool.connection().await?;
+        let updated = diesel::update(tracks::table.filter(tracks::id.eq(id)))
+            .set((
+                tracks::track_count.eq(track_count),
+                tracks::updated_at.eq(diesel::dsl::now),
+            ))
+            .execute(&mut *connection)
+            .await?;
+        Ok(updated)
+    }
+
+    pub async fn find_all_by_provider_track_id(
+        &self,
+        provider: Provider,
+        track_id: &str,
+    ) -> Result<Vec<Track>, DbError> {
+        let mut connection = self.pool.connection().await?;
+        Ok(tracks::table
+            .filter(
+                tracks::provider
+                    .eq(provider)
+                    .and(tracks::track_id.eq(track_id)),
+            )
+            .order(tracks::id.asc())
+            .select(Track::as_select())
+            .load::<Track>(&mut *connection)
+            .await?)
+    }
+
+    pub async fn find_tracks_with_suspect_track_count(
+        &self,
+        provider: Provider,
+        after_id: i32,
+        limit: i64,
+    ) -> Result<Vec<Track>, DbError> {
+        let mut connection = self.pool.connection().await?;
+        Ok(tracks::table
+            .filter(tracks::provider.eq(provider))
+            .filter(tracks::track_count.eq(1))
+            .filter(tracks::id.gt(after_id))
+            .order(tracks::id.asc())
+            .select(Track::as_select())
+            .limit(limit)
+            .load::<Track>(&mut *connection)
+            .await?)
+    }
 }

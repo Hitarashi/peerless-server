@@ -66,7 +66,9 @@ pub enum ServerMessage {
         tasks: Vec<crate::tasks::RipTaskSnapshot>,
     },
     #[serde(rename = "rip_task_updated")]
-    RipTaskUpdated { task: crate::tasks::RipTaskSnapshot },
+    RipTaskUpdated {
+        task: Box<crate::tasks::RipTaskSnapshot>,
+    },
     #[serde(rename = "rip_task_dismissed")]
     RipTaskDismissed { task_id: String },
 }
@@ -195,7 +197,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServerState>, telegram_id: 
                         tasks.get(&task_id).map(|task| {
                             let is_owner = task.owner_id == telegram_id;
                             ServerMessage::RipTaskUpdated {
-                                task: task.snapshot(is_owner),
+                                task: Box::new(task.snapshot(is_owner)),
                             }
                         })
                     }

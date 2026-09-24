@@ -210,14 +210,59 @@ impl ServerState {
         percent: Option<f32>,
         speed: Option<String>,
     ) {
-        let progress = tasks::RipTaskProgress {
-            stage: stage.to_string(),
-            percent,
-            speed,
-        };
+        self.update_task_progress_extended(
+            task_id, stage, percent, speed, None, None, None, None, None,
+        );
+    }
+
+    /// Extended task progress update including album / multi-track context.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_task_progress_extended(
+        &self,
+        task_id: &str,
+        stage: &str,
+        percent: Option<f32>,
+        speed: Option<String>,
+        current_track_title: Option<String>,
+        current_track_artist: Option<String>,
+        current_track_index: Option<u32>,
+        total_tracks: Option<u32>,
+        completed_tracks: Option<u32>,
+    ) {
         let mut tasks = self.active_tasks.write();
         let Some(task) = tasks.get_mut(task_id) else {
             return;
+        };
+        let is_archive_stage = stage == "packaging_zip" || stage == "uploading_zip";
+        let progress = tasks::RipTaskProgress {
+            stage: stage.to_string(),
+            percent,
+            speed: speed.or_else(|| task.latest_progress.speed.clone()),
+            current_track_title: if current_track_title.is_some() {
+                current_track_title
+            } else if is_archive_stage {
+                Some("Album ZIP archive".to_string())
+            } else {
+                task.latest_progress.current_track_title.clone()
+            },
+            current_track_artist: if current_track_artist.is_some() {
+                current_track_artist
+            } else if is_archive_stage {
+                None
+            } else {
+                task.latest_progress.current_track_artist.clone()
+            },
+            current_track_index: if is_archive_stage {
+                None
+            } else {
+                current_track_index.or(task.latest_progress.current_track_index)
+            },
+            total_tracks: total_tracks.or(task.latest_progress.total_tracks),
+            completed_tracks: if is_archive_stage {
+                total_tracks.or(task.latest_progress.total_tracks)
+            } else {
+                completed_tracks.or(task.latest_progress.completed_tracks)
+            },
         };
         task.latest_progress = progress;
         drop(tasks);

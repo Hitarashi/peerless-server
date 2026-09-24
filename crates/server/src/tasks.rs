@@ -56,6 +56,7 @@ pub struct ServerTaskMeta {
     pub controller: tokio_util::sync::CancellationToken,
     pub created_at: std::time::Instant,
     pub latest_progress: RipTaskProgress,
+    pub is_album: bool,
 }
 
 impl ServerTaskMeta {
@@ -78,6 +79,12 @@ impl ServerTaskMeta {
             completed: false,
             error: None,
             is_owner,
+            is_album: self.is_album,
+            current_track_title: progress.current_track_title.clone(),
+            current_track_artist: progress.current_track_artist.clone(),
+            current_track_index: progress.current_track_index,
+            total_tracks: progress.total_tracks,
+            completed_tracks: progress.completed_tracks,
         }
     }
 }
@@ -101,6 +108,18 @@ pub struct RipTaskSnapshot {
     pub completed: bool,
     pub error: Option<String>,
     pub is_owner: bool,
+    #[serde(default)]
+    pub is_album: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_track_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_track_artist: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_track_index: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tracks: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_tracks: Option<u32>,
 }
 
 #[utoipa::path(
@@ -142,6 +161,11 @@ pub struct RipTaskProgress {
     pub stage: String,
     pub percent: Option<f32>,
     pub speed: Option<String>,
+    pub current_track_title: Option<String>,
+    pub current_track_artist: Option<String>,
+    pub current_track_index: Option<u32>,
+    pub total_tracks: Option<u32>,
+    pub completed_tracks: Option<u32>,
 }
 
 /// Internal notification forwarded to authenticated playback WebSocket clients.
@@ -247,6 +271,11 @@ pub async fn create_rip_task(
         stage: "queued".to_string(),
         percent: Some(0.0),
         speed: None,
+        current_track_title: None,
+        current_track_artist: None,
+        current_track_index: None,
+        total_tracks: None,
+        completed_tracks: None,
     };
 
     let meta = ServerTaskMeta {
@@ -263,6 +292,7 @@ pub async fn create_rip_task(
         controller: controller.clone(),
         created_at: std::time::Instant::now(),
         latest_progress: initial_progress,
+        is_album: false,
     };
     state.active_tasks.write().insert(task_id.clone(), meta);
 

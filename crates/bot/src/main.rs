@@ -287,7 +287,7 @@ async fn main() -> Result<()> {
     let server_state_for_events = Arc::clone(&server_state);
     orchestrator.subscribe(Arc::new(move |event| {
         use engine::orchestrator::types::{
-            DownloadLane, OrchestratorEvent, RipActivity, UploadLane,
+            DownloadLane, JobActivity, OrchestratorEvent, RipActivity, UploadLane,
         };
 
         let state = &server_state_for_events;
@@ -306,12 +306,28 @@ async fn main() -> Result<()> {
             plain.split_whitespace().collect::<Vec<_>>().join(" ")
         }
 
+        fn parse_job_title_and_artist(value: &str, is_album: bool) -> (String, Option<String>) {
+            let plain = plain_job_title(value);
+            if is_album {
+                let trimmed = plain.strip_prefix("Album: ").unwrap_or(&plain);
+                if let Some((album, artist)) = trimmed.split_once(" by ") {
+                    return (album.trim().to_string(), Some(artist.trim().to_string()));
+                }
+                return (trimmed.trim().to_string(), None);
+            }
+            (plain, None)
+        }
+
         // Match app-created tasks first. Ordinary bot jobs get a server-owned
         // task record too, so every client sees the same active job feed.
         let find_task = |job: &engine::orchestrator::types::ActiveRipJob,
                          register_if_missing: bool|
          -> Option<server::tasks::ServerTaskMeta> {
             let mut tasks = state.active_tasks.write();
+            let is_album = job.total_tracks > 1;
+            let (parsed_title, parsed_artist) =
+                parse_job_title_and_artist(&job.job_header, is_album);
+
             // App rip tasks put their server task ID in user_name.
             if let Some(task) = job
                 .user_name
@@ -321,15 +337,20 @@ async fn main() -> Result<()> {
                 if task.job_id.is_none() {
                     task.job_id = Some(job.id.clone());
                 }
+                if is_album {
+                    task.is_album = true;
+                }
                 return Some(task.clone());
             }
             // Repeated orchestrator events resolve through the assigned job ID.
             for task in tasks.values_mut() {
                 if task.job_id.as_deref() == Some(&job.id) {
                     if task.task_id.starts_with("bot_") {
-                        task.title = Some(plain_job_title(&job.job_header));
-                        task.artist =
-                            (job.total_tracks > 1).then(|| format!("{} tracks", job.total_tracks));
+                        task.is_album = is_album;
+                        task.title = Some(parsed_title.clone());
+                        task.artist = parsed_artist
+                            .clone()
+                            .or_else(|| is_album.then(|| format!("{} tracks", job.total_tracks)));
                     }
                     return Some(task.clone());
                 }
@@ -343,6 +364,9 @@ async fn main() -> Result<()> {
                     && job.source_track_ids.iter().any(|id| id == &task.track_id)
                 {
                     task.job_id = Some(job.id.clone());
+                    if is_album {
+                        task.is_album = true;
+                    }
                     return Some(task.clone());
                 }
             }
@@ -352,7 +376,6 @@ async fn main() -> Result<()> {
             }
 
             let task_id = format!("bot_{}", job.id);
-            let title = plain_job_title(&job.job_header);
             let meta = server::tasks::ServerTaskMeta {
                 task_id: task_id.clone(),
                 job_id: Some(job.id.clone()),
@@ -364,8 +387,9 @@ async fn main() -> Result<()> {
                     .cloned()
                     .unwrap_or_else(|| job.id.clone()),
                 codec: None,
-                title: Some(title),
-                artist: (job.total_tracks > 1).then(|| format!("{} tracks", job.total_tracks)),
+                title: Some(parsed_title),
+                artist: parsed_artist
+                    .or_else(|| is_album.then(|| format!("{} tracks", job.total_tracks))),
                 album: None,
                 duration: None,
                 controller: tokio_util::sync::CancellationToken::new(),
@@ -374,7 +398,13 @@ async fn main() -> Result<()> {
                     stage: "queued".to_string(),
                     percent: Some(0.0),
                     speed: None,
+                    current_track_title: None,
+                    current_track_artist: None,
+                    current_track_index: None,
+                    total_tracks: is_album.then_some(job.total_tracks as u32),
+                    completed_tracks: is_album.then_some(0),
                 },
+                is_album,
             };
             tasks.insert(task_id.clone(), meta.clone());
             drop(tasks);
@@ -409,48 +439,165 @@ async fn main() -> Result<()> {
                 if let Some(task) = find_task(job, true) {
                     let mut stage = None;
                     let mut percent = None;
+                    let mut current_track_title = None;
+                    let mut current_track_artist = None;
 
-                    if let Some(UploadLane::Track {
-                        progress: byte_p, ..
-                    }) = &progress.upload
-                    {
-                        stage = Some("uploading_telegram");
-                        percent = byte_p
-                            .total
-                            .map(|tot| (byte_p.completed as f32 / tot as f32) * 100.0);
+                    let mut speed_info = None;
+                    let mut is_archive = false;
+
+                    if let Some(upload_lane) = &progress.upload {
+                        match upload_lane {
+                            UploadLane::Track {
+                                track,
+                                progress: byte_p,
+                                ..
+                            } => {
+                                stage = Some("uploading_telegram");
+                                percent = byte_p
+                                    .total
+                                    .map(|tot| (byte_p.completed as f32 / tot as f32) * 100.0);
+                                current_track_title = Some(track.title.clone());
+                                current_track_artist = Some(track.artist.clone());
+                                if let Some(tot) = byte_p.total {
+                                    if tot > 0 {
+                                        speed_info = Some(format!(
+                                            "{:.1}/{:.1} MB",
+                                            byte_p.completed as f64 / 1_048_576.0,
+                                            tot as f64 / 1_048_576.0
+                                        ));
+                                    }
+                                }
+                            }
+                            UploadLane::ArchiveBuild { progress: byte_p, .. } => {
+                                stage = Some("packaging_zip");
+                                percent = byte_p
+                                    .total
+                                    .map(|tot| (byte_p.completed as f32 / tot as f32) * 100.0);
+                                current_track_title = Some("Album ZIP archive".to_string());
+                                current_track_artist = None;
+                                is_archive = true;
+                                if let Some(tot) = byte_p.total {
+                                    if tot > 0 {
+                                        speed_info = Some(format!(
+                                            "{:.1}/{:.1} MB",
+                                            byte_p.completed as f64 / 1_048_576.0,
+                                            tot as f64 / 1_048_576.0
+                                        ));
+                                    }
+                                }
+                            }
+                            UploadLane::ArchiveUpload { progress: byte_p, .. } => {
+                                stage = Some("uploading_zip");
+                                percent = byte_p
+                                    .total
+                                    .map(|tot| (byte_p.completed as f32 / tot as f32) * 100.0);
+                                current_track_title = Some("Album ZIP archive".to_string());
+                                current_track_artist = None;
+                                is_archive = true;
+                                if let Some(tot) = byte_p.total {
+                                    if tot > 0 {
+                                        speed_info = Some(format!(
+                                            "{:.1}/{:.1} MB",
+                                            byte_p.completed as f64 / 1_048_576.0,
+                                            tot as f64 / 1_048_576.0
+                                        ));
+                                    }
+                                }
+                            }
+                        }
                     } else if let Some(DownloadLane::Rip(rip_activity)) = &progress.download {
                         match rip_activity {
                             RipActivity::Downloading {
-                                progress: byte_p, ..
+                                track,
+                                progress: byte_p,
                             } => {
                                 stage = Some("downloading");
                                 percent = byte_p
                                     .total
                                     .map(|tot| (byte_p.completed as f32 / tot as f32) * 100.0);
+                                current_track_title = Some(track.title.clone());
+                                current_track_artist = Some(track.artist.clone());
                             }
-                            RipActivity::Decrypting { .. } => {
+                            RipActivity::Decrypting { track } => {
                                 stage = Some("decrypting");
+                                current_track_title = Some(track.title.clone());
+                                current_track_artist = Some(track.artist.clone());
                             }
-                            RipActivity::Tagging { .. } => {
+                            RipActivity::Tagging { track } => {
                                 stage = Some("tagging");
+                                current_track_title = Some(track.title.clone());
+                                current_track_artist = Some(track.artist.clone());
                             }
+                            RipActivity::Connecting { track } => {
+                                stage = Some("connecting");
+                                current_track_title = Some(track.title.clone());
+                                current_track_artist = Some(track.artist.clone());
+                            }
+                            RipActivity::ResolvingMetadata => {
+                                stage = Some("resolving");
+                            }
+                        }
+                    } else if let Some(DownloadLane::CachedDelivery { track }) = &progress.download
+                    {
+                        stage = Some("cached_delivery");
+                        current_track_title = Some(track.title.clone());
+                        current_track_artist = Some(track.artist.clone());
+                    }
+
+                    if stage.is_none()
+                        && let Some(job_act) = &progress.job_activity
+                    {
+                        match job_act {
+                            JobActivity::Resolving => stage = Some("resolving"),
+                            JobActivity::CheckingCache { .. } => stage = Some("checking_cache"),
+                            JobActivity::Queued { .. } => stage = Some("queued"),
                             _ => {}
                         }
                     }
 
                     if let Some(stg) = stage {
-                        let overall_percent = match (percent, job.total_tracks) {
-                            (Some(track_percent), total) if total > 0 => {
-                                let finished =
-                                    job.cached_count + job.ripped_count + job.failed_count;
-                                Some(
-                                    ((finished as f32 + track_percent / 100.0) / total as f32)
-                                        * 100.0,
-                                )
+                        let is_album = job.total_tracks > 1;
+
+                        let overall_percent = if is_archive {
+                            percent
+                        } else {
+                            match (percent, job.total_tracks) {
+                                (Some(track_percent), total) if total > 0 => {
+                                    let finished =
+                                        job.cached_count + job.ripped_count + job.failed_count;
+                                    Some(
+                                        ((finished as f32 + track_percent / 100.0) / total as f32)
+                                            * 100.0,
+                                    )
+                                }
+                                _ => percent,
                             }
-                            _ => percent,
                         };
-                        state.update_task_progress(&task.task_id, stg, overall_percent, None);
+
+                        let (current_track_index, total_tracks, completed_tracks) = if is_album {
+                            let total = job.total_tracks as u32;
+                            if is_archive {
+                                (None, Some(total), Some(total))
+                            } else {
+                                let finished = (job.cached_count + job.ripped_count) as u32;
+                                let current_idx = (finished + 1).min(total);
+                                (Some(current_idx), Some(total), Some(finished))
+                            }
+                        } else {
+                            (None, None, None)
+                        };
+
+                        state.update_task_progress_extended(
+                            &task.task_id,
+                            stg,
+                            overall_percent,
+                            speed_info,
+                            current_track_title,
+                            current_track_artist,
+                            current_track_index,
+                            total_tracks,
+                            completed_tracks,
+                        );
                     }
                 }
             }
