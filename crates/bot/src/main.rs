@@ -147,14 +147,17 @@ async fn main() -> Result<()> {
         .connect()
         .await
         .context("connect to Telegram")?;
-    client
-        .bot_sign_in(&env.bot_token)
-        .await
-        .context("sign in bot")?;
-    client
-        .save_session()
-        .await
-        .context("save Telegram session")?;
+    let is_authorized = client.is_authorized().await.unwrap_or(false);
+    if !is_authorized {
+        client
+            .bot_sign_in(&env.bot_token)
+            .await
+            .context("sign in bot")?;
+        client
+            .save_session()
+            .await
+            .context("save Telegram session")?;
+    }
     let me = client.get_me().await.context("get bot identity")?;
     info!(username = ?me.username, bot_id = me.id, dump_channel = env.dump_channel_id, "Bot started successfully");
 
