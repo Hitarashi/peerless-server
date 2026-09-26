@@ -2479,6 +2479,7 @@ where
                 let track = match &activity {
                     RipActivity::Connecting { track }
                     | RipActivity::Downloading { track, .. }
+                    | RipActivity::MaterializingCachedMedia { track, .. }
                     | RipActivity::Decrypting { track }
                     | RipActivity::Tagging { track } => Some(track),
                     RipActivity::ResolvingMetadata => None,
@@ -2824,11 +2825,38 @@ where
             cached.codec.as_str(),
         );
         let destination = state.dir.join(&filename);
+        let track = TrackLabel::new(cached.title.clone(), cached.artist.clone());
+        bus.set_download(
+            shared,
+            Some(DownloadLane::Rip(RipActivity::MaterializingCachedMedia {
+                track: track.clone(),
+                progress: ByteProgress {
+                    completed: 0,
+                    total: None,
+                },
+            })),
+        );
+        bus.emit_progress(shared);
+        let progress_bus = bus.clone();
+        let progress_shared = Arc::clone(shared);
+        let materialization_progress: UploadProgressCallback = Arc::new(move |completed, total| {
+            progress_bus.set_download(
+                &progress_shared,
+                Some(DownloadLane::Rip(RipActivity::MaterializingCachedMedia {
+                    track: track.clone(),
+                    progress: ByteProgress {
+                        completed,
+                        total: (total > 0).then_some(total),
+                    },
+                })),
+            );
+            progress_bus.emit_progress(&progress_shared);
+        });
         let download_result = tokio::select! {
             result = deps.materialize_cached(
                 DumpMessageRef::new(cached.message_id),
                 &destination,
-                None,
+                Some(&materialization_progress),
             ) => result,
             _ = job_controller.cancelled() => {
                 let _ = tokio::fs::remove_file(&destination).await;

@@ -1,4 +1,8 @@
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result, anyhow};
 use bot::{BotState, handlers};
@@ -6,6 +10,107 @@ use ferogram::{Client, InputMessage, PeerRef, filters::Dispatcher};
 use tokio::{signal, sync::Semaphore};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
+
+const PROGRESS_UPDATE_INTERVAL: Duration = Duration::from_millis(250);
+
+#[derive(Default)]
+struct ProgressThrottle {
+    last_emitted_at: Option<Instant>,
+    last_progress: Option<server::tasks::RipTaskProgress>,
+}
+
+impl ProgressThrottle {
+    fn should_emit(&mut self, now: Instant, progress: &server::tasks::RipTaskProgress) -> bool {
+        let Some(previous) = &self.last_progress else {
+            self.last_emitted_at = Some(now);
+            self.last_progress = Some(progress.clone());
+            return true;
+        };
+
+        let phase_changed = !same_progress_phase(previous, progress);
+        let progress_changed = previous != progress;
+        let interval_elapsed = self
+            .last_emitted_at
+            .is_some_and(|last| now.saturating_duration_since(last) >= PROGRESS_UPDATE_INTERVAL);
+        if phase_changed || (progress_changed && interval_elapsed) {
+            self.last_emitted_at = Some(now);
+            self.last_progress = Some(progress.clone());
+            true
+        } else {
+            false
+        }
+    }
+}
+
+fn same_progress_phase(
+    previous: &server::tasks::RipTaskProgress,
+    current: &server::tasks::RipTaskProgress,
+) -> bool {
+    fn same_download_phase(
+        previous: &Option<server::tasks::RipTaskDownloadLane>,
+        current: &Option<server::tasks::RipTaskDownloadLane>,
+    ) -> bool {
+        match (previous, current) {
+            (Some(previous), Some(current)) => {
+                previous.stage == current.stage
+                    && previous.title == current.title
+                    && previous.artist == current.artist
+            }
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
+    fn same_upload_phase(
+        previous: &Option<server::tasks::RipTaskUploadLane>,
+        current: &Option<server::tasks::RipTaskUploadLane>,
+    ) -> bool {
+        match (previous, current) {
+            (Some(previous), Some(current)) => {
+                previous.stage == current.stage
+                    && previous.title == current.title
+                    && previous.artist == current.artist
+            }
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
+    same_download_phase(&previous.download, &current.download)
+        && same_upload_phase(&previous.upload, &current.upload)
+        && previous.job_stage == current.job_stage
+        && previous.current_track_title == current.current_track_title
+        && previous.current_track_artist == current.current_track_artist
+        && previous.current_track_index == current.current_track_index
+        && previous.total_tracks == current.total_tracks
+        && previous.completed_tracks == current.completed_tracks
+}
+
+fn lane_byte_values(
+    progress: &engine::orchestrator::types::ByteProgress,
+) -> (Option<u64>, Option<u64>, Option<f32>) {
+    let bytes_done = Some(progress.completed);
+    let bytes_total = progress.total;
+    let percent = server::tasks::lane_percent(bytes_done, bytes_total);
+    (bytes_done, bytes_total, percent)
+}
+
+fn map_job_stage(
+    activity: Option<&engine::orchestrator::types::JobActivity>,
+) -> Option<server::tasks::RipTaskJobStage> {
+    use engine::orchestrator::types::JobActivity;
+    use server::tasks::RipTaskJobStage as Stage;
+
+    match activity? {
+        JobActivity::Resolving => Some(Stage::Resolving),
+        JobActivity::CheckingCache { .. } => Some(Stage::CheckingCache),
+        JobActivity::Queued { .. } => Some(Stage::Queued),
+        JobActivity::SkippingUncached => Some(Stage::SkippingUncached),
+        JobActivity::CachedDelivered => Some(Stage::CachedDelivered),
+        JobActivity::ProcessingNext => Some(Stage::ProcessingNext),
+        JobActivity::WaitingDuplicate { .. } => Some(Stage::WaitingDuplicate),
+    }
+}
 
 #[derive(Debug)]
 struct Env {
@@ -288,9 +393,10 @@ async fn main() -> Result<()> {
 
     // Mirror orchestrator activity into the server-owned live task feed.
     let server_state_for_events = Arc::clone(&server_state);
+    let progress_throttles = Mutex::new(HashMap::<String, ProgressThrottle>::new());
     orchestrator.subscribe(Arc::new(move |event| {
         use engine::orchestrator::types::{
-            DownloadLane, JobActivity, OrchestratorEvent, RipActivity, UploadLane,
+            DownloadLane, OrchestratorEvent, RipActivity, UploadLane,
         };
 
         let state = &server_state_for_events;
@@ -398,9 +504,10 @@ async fn main() -> Result<()> {
                 controller: tokio_util::sync::CancellationToken::new(),
                 created_at: std::time::Instant::now(),
                 latest_progress: server::tasks::RipTaskProgress {
-                    stage: "queued".to_string(),
+                    job_stage: Some(server::tasks::RipTaskJobStage::Queued),
+                    download: None,
+                    upload: None,
                     percent: Some(0.0),
-                    speed: None,
                     current_track_title: None,
                     current_track_artist: None,
                     current_track_index: None,
@@ -440,176 +547,221 @@ async fn main() -> Result<()> {
             }
             OrchestratorEvent::Progress(job, progress) => {
                 if let Some(task) = find_task(job, true) {
-                    let mut stage = None;
-                    let mut percent = None;
-                    let mut current_track_title = None;
-                    let mut current_track_artist = None;
+                    let download = progress.download.as_ref().map(|download_lane| {
+                        use server::tasks::RipTaskDownloadStage as Stage;
 
-                    let mut speed_info = None;
-                    let mut is_archive = false;
+                        match download_lane {
+                            DownloadLane::Rip(activity) => match activity {
+                                RipActivity::ResolvingMetadata => {
+                                    server::tasks::RipTaskDownloadLane {
+                                        stage: Stage::ResolvingMetadata,
+                                        title: None,
+                                        artist: None,
+                                        bytes_done: None,
+                                        bytes_total: None,
+                                        percent: None,
+                                    }
+                                }
+                                RipActivity::Connecting { track } => {
+                                    server::tasks::RipTaskDownloadLane {
+                                        stage: Stage::Connecting,
+                                        title: Some(track.title.clone()),
+                                        artist: Some(track.artist.clone()),
+                                        bytes_done: None,
+                                        bytes_total: None,
+                                        percent: None,
+                                    }
+                                }
+                                RipActivity::Downloading { track, progress } => {
+                                    let (bytes_done, bytes_total, percent) =
+                                        lane_byte_values(progress);
+                                    server::tasks::RipTaskDownloadLane {
+                                        stage: Stage::Downloading,
+                                        title: Some(track.title.clone()),
+                                        artist: Some(track.artist.clone()),
+                                        bytes_done,
+                                        bytes_total,
+                                        percent,
+                                    }
+                                }
+                                RipActivity::MaterializingCachedMedia { track, progress } => {
+                                    let (bytes_done, bytes_total, percent) =
+                                        lane_byte_values(progress);
+                                    server::tasks::RipTaskDownloadLane {
+                                        stage: Stage::MaterializingCachedMedia,
+                                        title: Some(track.title.clone()),
+                                        artist: Some(track.artist.clone()),
+                                        bytes_done,
+                                        bytes_total,
+                                        percent,
+                                    }
+                                }
+                                RipActivity::Decrypting { track } => {
+                                    server::tasks::RipTaskDownloadLane {
+                                        stage: Stage::Decrypting,
+                                        title: Some(track.title.clone()),
+                                        artist: Some(track.artist.clone()),
+                                        bytes_done: None,
+                                        bytes_total: None,
+                                        percent: None,
+                                    }
+                                }
+                                RipActivity::Tagging { track } => {
+                                    server::tasks::RipTaskDownloadLane {
+                                        stage: Stage::Tagging,
+                                        title: Some(track.title.clone()),
+                                        artist: Some(track.artist.clone()),
+                                        bytes_done: None,
+                                        bytes_total: None,
+                                        percent: None,
+                                    }
+                                }
+                            },
+                            DownloadLane::CachedDelivery { track } => {
+                                server::tasks::RipTaskDownloadLane {
+                                    stage: Stage::CachedDelivery,
+                                    title: Some(track.title.clone()),
+                                    artist: Some(track.artist.clone()),
+                                    bytes_done: None,
+                                    bytes_total: None,
+                                    percent: None,
+                                }
+                            }
+                        }
+                    });
 
-                    if let Some(upload_lane) = &progress.upload {
+                    let upload = progress.upload.as_ref().map(|upload_lane| {
+                        use server::tasks::RipTaskUploadStage as Stage;
+
                         match upload_lane {
                             UploadLane::Track {
                                 track,
-                                progress: byte_p,
+                                progress: byte_progress,
                                 ..
                             } => {
-                                stage = Some("uploading_telegram");
-                                percent = byte_p
-                                    .total
-                                    .map(|tot| (byte_p.completed as f32 / tot as f32) * 100.0);
-                                current_track_title = Some(track.title.clone());
-                                current_track_artist = Some(track.artist.clone());
-                                if let Some(tot) = byte_p.total
-                                    && tot > 0
-                                {
-                                    speed_info = Some(format!(
-                                        "{:.1}/{:.1} MB",
-                                        byte_p.completed as f64 / 1_048_576.0,
-                                        tot as f64 / 1_048_576.0
-                                    ));
+                                let (bytes_done, bytes_total, percent) =
+                                    lane_byte_values(byte_progress);
+                                server::tasks::RipTaskUploadLane {
+                                    stage: Stage::UploadingTrack,
+                                    title: Some(track.title.clone()),
+                                    artist: Some(track.artist.clone()),
+                                    bytes_done,
+                                    bytes_total,
+                                    percent,
                                 }
                             }
                             UploadLane::ArchiveBuild {
-                                progress: byte_p, ..
+                                progress: byte_progress,
+                                ..
                             } => {
-                                stage = Some("packaging_zip");
-                                percent = byte_p
-                                    .total
-                                    .map(|tot| (byte_p.completed as f32 / tot as f32) * 100.0);
-                                current_track_title = Some("Album ZIP archive".to_string());
-                                current_track_artist = None;
-                                is_archive = true;
-                                if let Some(tot) = byte_p.total
-                                    && tot > 0
-                                {
-                                    speed_info = Some(format!(
-                                        "{:.1}/{:.1} MB",
-                                        byte_p.completed as f64 / 1_048_576.0,
-                                        tot as f64 / 1_048_576.0
-                                    ));
+                                let (bytes_done, bytes_total, percent) =
+                                    lane_byte_values(byte_progress);
+                                server::tasks::RipTaskUploadLane {
+                                    stage: Stage::BuildingArchive,
+                                    title: Some("Album ZIP archive".to_owned()),
+                                    artist: None,
+                                    bytes_done,
+                                    bytes_total,
+                                    percent,
                                 }
                             }
                             UploadLane::ArchiveUpload {
-                                progress: byte_p, ..
+                                progress: byte_progress,
+                                ..
                             } => {
-                                stage = Some("uploading_zip");
-                                percent = byte_p
-                                    .total
-                                    .map(|tot| (byte_p.completed as f32 / tot as f32) * 100.0);
-                                current_track_title = Some("Album ZIP archive".to_string());
-                                current_track_artist = None;
-                                is_archive = true;
-                                if let Some(tot) = byte_p.total
-                                    && tot > 0
-                                {
-                                    speed_info = Some(format!(
-                                        "{:.1}/{:.1} MB",
-                                        byte_p.completed as f64 / 1_048_576.0,
-                                        tot as f64 / 1_048_576.0
-                                    ));
+                                let (bytes_done, bytes_total, percent) =
+                                    lane_byte_values(byte_progress);
+                                server::tasks::RipTaskUploadLane {
+                                    stage: Stage::UploadingArchive,
+                                    title: Some("Album ZIP archive".to_owned()),
+                                    artist: None,
+                                    bytes_done,
+                                    bytes_total,
+                                    percent,
                                 }
                             }
                         }
-                    } else if let Some(DownloadLane::Rip(rip_activity)) = &progress.download {
-                        match rip_activity {
-                            RipActivity::Downloading {
-                                track,
-                                progress: byte_p,
-                            } => {
-                                stage = Some("downloading");
-                                percent = byte_p
-                                    .total
-                                    .map(|tot| (byte_p.completed as f32 / tot as f32) * 100.0);
-                                current_track_title = Some(track.title.clone());
-                                current_track_artist = Some(track.artist.clone());
+                    });
+
+                    let is_archive = upload.as_ref().is_some_and(|lane| {
+                        matches!(
+                            lane.stage,
+                            server::tasks::RipTaskUploadStage::BuildingArchive
+                                | server::tasks::RipTaskUploadStage::UploadingArchive
+                        )
+                    });
+                    let lane_percent = upload
+                        .as_ref()
+                        .and_then(|lane| lane.percent)
+                        .or_else(|| download.as_ref().and_then(|lane| lane.percent));
+                    let overall_percent = if is_archive {
+                        lane_percent
+                    } else {
+                        match (lane_percent, job.total_tracks) {
+                            (Some(track_percent), total) if total > 0 => {
+                                let finished =
+                                    job.cached_count + job.ripped_count + job.failed_count;
+                                Some(
+                                    ((finished as f32 + track_percent / 100.0) / total as f32)
+                                        * 100.0,
+                                )
                             }
-                            RipActivity::Decrypting { track } => {
-                                stage = Some("decrypting");
-                                current_track_title = Some(track.title.clone());
-                                current_track_artist = Some(track.artist.clone());
-                            }
-                            RipActivity::Tagging { track } => {
-                                stage = Some("tagging");
-                                current_track_title = Some(track.title.clone());
-                                current_track_artist = Some(track.artist.clone());
-                            }
-                            RipActivity::Connecting { track } => {
-                                stage = Some("connecting");
-                                current_track_title = Some(track.title.clone());
-                                current_track_artist = Some(track.artist.clone());
-                            }
-                            RipActivity::ResolvingMetadata => {
-                                stage = Some("resolving");
-                            }
+                            _ => lane_percent,
                         }
-                    } else if let Some(DownloadLane::CachedDelivery { track }) = &progress.download
-                    {
-                        stage = Some("cached_delivery");
-                        current_track_title = Some(track.title.clone());
-                        current_track_artist = Some(track.artist.clone());
-                    }
+                    };
 
-                    if stage.is_none()
-                        && let Some(job_act) = &progress.job_activity
-                    {
-                        match job_act {
-                            JobActivity::Resolving => stage = Some("resolving"),
-                            JobActivity::CheckingCache { .. } => stage = Some("checking_cache"),
-                            JobActivity::Queued { .. } => stage = Some("queued"),
-                            _ => {}
+                    let (current_track_title, current_track_artist) = if is_archive {
+                        (Some("Album ZIP archive".to_owned()), None)
+                    } else if let Some(upload) = &upload {
+                        (upload.title.clone(), upload.artist.clone())
+                    } else if let Some(download) = &download {
+                        (download.title.clone(), download.artist.clone())
+                    } else {
+                        (None, None)
+                    };
+
+                    let is_album = job.total_tracks > 1;
+                    let (current_track_index, total_tracks, completed_tracks) = if is_album {
+                        let total = job.total_tracks as u32;
+                        if is_archive {
+                            (None, Some(total), Some(total))
+                        } else {
+                            let finished = (job.cached_count + job.ripped_count) as u32;
+                            let current_idx = (finished + 1).min(total);
+                            (Some(current_idx), Some(total), Some(finished))
                         }
-                    }
+                    } else {
+                        (None, None, None)
+                    };
 
-                    if let Some(stg) = stage {
-                        let is_album = job.total_tracks > 1;
-
-                        let overall_percent = if is_archive {
-                            percent
-                        } else {
-                            match (percent, job.total_tracks) {
-                                (Some(track_percent), total) if total > 0 => {
-                                    let finished =
-                                        job.cached_count + job.ripped_count + job.failed_count;
-                                    Some(
-                                        ((finished as f32 + track_percent / 100.0) / total as f32)
-                                            * 100.0,
-                                    )
-                                }
-                                _ => percent,
-                            }
-                        };
-
-                        let (current_track_index, total_tracks, completed_tracks) = if is_album {
-                            let total = job.total_tracks as u32;
-                            if is_archive {
-                                (None, Some(total), Some(total))
-                            } else {
-                                let finished = (job.cached_count + job.ripped_count) as u32;
-                                let current_idx = (finished + 1).min(total);
-                                (Some(current_idx), Some(total), Some(finished))
-                            }
-                        } else {
-                            (None, None, None)
-                        };
-
-                        state.update_task_progress_extended(
-                            &task.task_id,
-                            stg,
-                            overall_percent,
-                            speed_info,
-                            current_track_title,
-                            current_track_artist,
-                            current_track_index,
-                            total_tracks,
-                            completed_tracks,
-                        );
+                    let next_progress = server::tasks::RipTaskProgress {
+                        job_stage: map_job_stage(progress.job_activity.as_ref()),
+                        download,
+                        upload,
+                        percent: overall_percent,
+                        current_track_title,
+                        current_track_artist,
+                        current_track_index,
+                        total_tracks,
+                        completed_tracks,
+                    };
+                    let should_emit = progress_throttles
+                        .lock()
+                        .expect("progress throttle map poisoned")
+                        .entry(task.task_id.clone())
+                        .or_default()
+                        .should_emit(Instant::now(), &next_progress);
+                    if should_emit {
+                        state.update_task_progress_extended(&task.task_id, next_progress);
                     }
                 }
             }
             OrchestratorEvent::Completed(job, summary) => {
                 if let Some(task) = find_task(job, false) {
+                    progress_throttles
+                        .lock()
+                        .expect("progress throttle map poisoned")
+                        .remove(&task.task_id);
                     if summary.failed_count > 0 || !summary.failed_tracks.is_empty() {
                         let error = summary
                             .failed_tracks
@@ -624,11 +776,19 @@ async fn main() -> Result<()> {
             }
             OrchestratorEvent::Cancelled(job, _by) => {
                 if let Some(task) = find_task(job, false) {
+                    progress_throttles
+                        .lock()
+                        .expect("progress throttle map poisoned")
+                        .remove(&task.task_id);
                     state.cancel_task(&task.task_id, "Cancelled by user");
                 }
             }
             OrchestratorEvent::Failed(job, err) => {
                 if let Some(task) = find_task(job, false) {
+                    progress_throttles
+                        .lock()
+                        .expect("progress throttle map poisoned")
+                        .remove(&task.task_id);
                     state.fail_task(&task.task_id, err);
                 }
             }
@@ -714,4 +874,73 @@ async fn main() -> Result<()> {
     server_shutdown.cancel();
     let _ = server_task.await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use server::tasks::{
+        RipTaskDownloadLane, RipTaskDownloadStage, RipTaskProgress,
+    };
+
+    fn progress(stage: RipTaskDownloadStage, bytes_done: u64) -> RipTaskProgress {
+        RipTaskProgress {
+            job_stage: None,
+            download: Some(RipTaskDownloadLane {
+                stage,
+                title: Some("Track".to_owned()),
+                artist: Some("Artist".to_owned()),
+                bytes_done: Some(bytes_done),
+                bytes_total: Some(100),
+                percent: Some(bytes_done as f32),
+            }),
+            upload: None,
+            percent: Some(bytes_done as f32),
+            current_track_title: Some("Track".to_owned()),
+            current_track_artist: Some("Artist".to_owned()),
+            current_track_index: Some(1),
+            total_tracks: Some(1),
+            completed_tracks: Some(0),
+        }
+    }
+
+    #[test]
+    fn unknown_byte_total_keeps_completed_bytes_and_null_percent() {
+        let (bytes_done, bytes_total, percent) = lane_byte_values(
+            &engine::orchestrator::types::ByteProgress {
+                completed: 512,
+                total: None,
+            },
+        );
+
+        assert_eq!(bytes_done, Some(512));
+        assert_eq!(bytes_total, None);
+        assert_eq!(percent, None);
+    }
+
+    #[test]
+    fn progress_throttle_emits_at_the_250ms_boundary_and_on_phase_changes() {
+        let started = Instant::now();
+        let mut throttle = ProgressThrottle::default();
+        assert!(throttle.should_emit(
+            started,
+            &progress(RipTaskDownloadStage::Downloading, 1)
+        ));
+        assert!(!throttle.should_emit(
+            started + Duration::from_millis(249),
+            &progress(RipTaskDownloadStage::Downloading, 2)
+        ));
+        assert!(throttle.should_emit(
+            started + Duration::from_millis(250),
+            &progress(RipTaskDownloadStage::Downloading, 2)
+        ));
+        assert!(!throttle.should_emit(
+            started + Duration::from_millis(500),
+            &progress(RipTaskDownloadStage::Downloading, 2)
+        ));
+        assert!(throttle.should_emit(
+            started + Duration::from_millis(501),
+            &progress(RipTaskDownloadStage::Decrypting, 0)
+        ));
+    }
 }

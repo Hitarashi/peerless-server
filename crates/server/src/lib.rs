@@ -13,6 +13,7 @@ pub mod health;
 pub mod integrations;
 pub mod library;
 pub mod playback_sync;
+pub mod rip_task_rpc;
 pub mod streaming;
 pub mod tasks;
 
@@ -20,7 +21,7 @@ use std::{collections::HashMap, net::IpAddr, sync::Arc, time::Duration};
 
 use axum::{
     Router,
-    routing::{delete, get, post},
+    routing::{get, post},
 };
 pub use error::ServerError;
 use moka::future::Cache;
@@ -203,67 +204,48 @@ impl ServerState {
     }
 
     /// Updates current progress for an active task and broadcasts it over the playback WebSocket.
-    pub fn update_task_progress(
-        &self,
-        task_id: &str,
-        stage: &str,
-        percent: Option<f32>,
-        speed: Option<String>,
-    ) {
-        self.update_task_progress_extended(
-            task_id, stage, percent, speed, None, None, None, None, None,
-        );
+    pub fn update_task_progress(&self, task_id: &str, progress: tasks::RipTaskProgress) {
+        self.update_task_progress_extended(task_id, progress);
     }
 
-    /// Extended task progress update including album / multi-track context.
-    #[allow(clippy::too_many_arguments)]
+    /// Extended task progress update including both independent lanes and album context.
     pub fn update_task_progress_extended(
         &self,
         task_id: &str,
-        stage: &str,
-        percent: Option<f32>,
-        speed: Option<String>,
-        current_track_title: Option<String>,
-        current_track_artist: Option<String>,
-        current_track_index: Option<u32>,
-        total_tracks: Option<u32>,
-        completed_tracks: Option<u32>,
+        mut progress: tasks::RipTaskProgress,
     ) {
         let mut tasks = self.active_tasks.write();
         let Some(task) = tasks.get_mut(task_id) else {
             return;
         };
-        let is_archive_stage = stage == "packaging_zip" || stage == "uploading_zip";
-        let progress = tasks::RipTaskProgress {
-            stage: stage.to_string(),
-            percent,
-            speed: speed.or_else(|| task.latest_progress.speed.clone()),
-            current_track_title: if current_track_title.is_some() {
-                current_track_title
-            } else if is_archive_stage {
-                Some("Album ZIP archive".to_string())
-            } else {
-                task.latest_progress.current_track_title.clone()
-            },
-            current_track_artist: if current_track_artist.is_some() {
-                current_track_artist
-            } else if is_archive_stage {
-                None
-            } else {
-                task.latest_progress.current_track_artist.clone()
-            },
-            current_track_index: if is_archive_stage {
-                None
-            } else {
-                current_track_index.or(task.latest_progress.current_track_index)
-            },
-            total_tracks: total_tracks.or(task.latest_progress.total_tracks),
-            completed_tracks: if is_archive_stage {
-                total_tracks.or(task.latest_progress.total_tracks)
-            } else {
-                completed_tracks.or(task.latest_progress.completed_tracks)
-            },
-        };
+        let previous = &task.latest_progress;
+        let is_archive_stage = progress.upload.as_ref().is_some_and(|lane| {
+            matches!(
+                lane.stage,
+                tasks::RipTaskUploadStage::BuildingArchive
+                    | tasks::RipTaskUploadStage::UploadingArchive
+            )
+        });
+        progress.total_tracks = progress.total_tracks.or(previous.total_tracks);
+        if is_archive_stage {
+            if progress.current_track_title.is_none() {
+                progress.current_track_title = Some("Album ZIP archive".to_owned());
+            }
+            progress.current_track_artist = None;
+            progress.current_track_index = None;
+            progress.completed_tracks = progress.total_tracks;
+        } else {
+            progress.current_track_title = progress
+                .current_track_title
+                .or_else(|| previous.current_track_title.clone());
+            progress.current_track_artist = progress
+                .current_track_artist
+                .or_else(|| previous.current_track_artist.clone());
+            progress.current_track_index = progress
+                .current_track_index
+                .or(previous.current_track_index);
+            progress.completed_tracks = progress.completed_tracks.or(previous.completed_tracks);
+        }
         task.latest_progress = progress;
         drop(tasks);
         let _ = self.task_sync_tx.send(tasks::TaskSyncEvent::Updated {
@@ -314,10 +296,6 @@ pub fn create_router(state: Arc<ServerState>) -> Router {
             "/api/v1/artists/{name}/tracks",
             get(catalog::get_artist_tracks),
         )
-        // Rip tasks
-        .route("/api/v1/tasks", get(tasks::list_rip_tasks))
-        .route("/api/v1/tasks/rip", post(tasks::create_rip_task))
-        .route("/api/v1/tasks/{id}", delete(tasks::cancel_rip_task))
         // Assets
         .route(
             "/api/v1/assets/tracks/{id}/artwork",

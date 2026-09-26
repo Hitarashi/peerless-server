@@ -5,7 +5,7 @@
 
 use chrono::{DateTime, Duration, Utc};
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use rand::Rng;
 use sha2::{Digest, Sha256};
 
@@ -216,6 +216,50 @@ impl SessionManager {
         raw_refresh_token: &str,
     ) -> Result<SessionIdentity, DbError> {
         let mut conn = self.pool.connection().await?;
+        let session = self
+            .verify_session_record(raw_refresh_token, &mut conn, true)
+            .await?;
+
+        let new_expires_at = Utc::now() + Duration::days(3);
+        diesel::update(user_sessions::table.filter(user_sessions::id.eq(&session.id)))
+            .set((
+                user_sessions::last_active_at.eq(Utc::now()),
+                user_sessions::expires_at.eq(new_expires_at),
+            ))
+            .execute(&mut *conn)
+            .await?;
+
+        Ok(SessionIdentity {
+            session_id: session.id,
+            telegram_id: session.telegram_id,
+            expires_at: new_expires_at,
+        })
+    }
+
+    /// Verifies the refresh token hash, expiry, revocation status, and current user
+    /// authorization without changing the session's expiry or activity timestamp.
+    pub async fn verify_session(
+        &self,
+        raw_refresh_token: &str,
+    ) -> Result<SessionIdentity, DbError> {
+        let mut conn = self.pool.connection().await?;
+        let session = self
+            .verify_session_record(raw_refresh_token, &mut conn, false)
+            .await?;
+
+        Ok(SessionIdentity {
+            session_id: session.id,
+            telegram_id: session.telegram_id,
+            expires_at: session.expires_at,
+        })
+    }
+
+    async fn verify_session_record(
+        &self,
+        raw_refresh_token: &str,
+        conn: &mut AsyncPgConnection,
+        revoke_unauthorized_user: bool,
+    ) -> Result<UserSession, DbError> {
         let hash = Self::hash_token(raw_refresh_token.trim());
 
         let session = user_sessions::table
@@ -240,10 +284,12 @@ impl SessionManager {
                 .optional()?;
 
             if user_exists.is_none() {
-                diesel::update(user_sessions::table.filter(user_sessions::id.eq(&session.id)))
-                    .set(user_sessions::revoked.eq(true))
-                    .execute(&mut *conn)
-                    .await?;
+                if revoke_unauthorized_user {
+                    diesel::update(user_sessions::table.filter(user_sessions::id.eq(&session.id)))
+                        .set(user_sessions::revoked.eq(true))
+                        .execute(&mut *conn)
+                        .await?;
+                }
                 return Err(DbError::Unauthorized(format!(
                     "User {} access has been revoked",
                     session.telegram_id
@@ -251,20 +297,7 @@ impl SessionManager {
             }
         }
 
-        let new_expires_at = Utc::now() + Duration::days(3);
-        diesel::update(user_sessions::table.filter(user_sessions::id.eq(&session.id)))
-            .set((
-                user_sessions::last_active_at.eq(Utc::now()),
-                user_sessions::expires_at.eq(new_expires_at),
-            ))
-            .execute(&mut *conn)
-            .await?;
-
-        Ok(SessionIdentity {
-            session_id: session.id,
-            telegram_id: session.telegram_id,
-            expires_at: new_expires_at,
-        })
+        Ok(session)
     }
 
     /// Marks a session as revoked.
@@ -378,5 +411,106 @@ impl SessionManager {
             .execute(&mut *conn)
             .await?;
         Ok(updated > 0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{Duration, Utc};
+
+    use super::*;
+
+    async fn create_test_session() -> Option<(SessionManager, SessionTokens)> {
+        let pool = match crate::connect_test_isolated().await {
+            Ok(pool) => pool,
+            Err(_) => {
+                eprintln!("Skipping session verification test: TEST_DATABASE_URL not set");
+                return None;
+            }
+        };
+        crate::migrate(&pool).await.expect("database migrations");
+
+        let admin_id = 999_000_101;
+        let session_manager = SessionManager::new(pool, admin_id);
+        let code = session_manager
+            .create_login_code(admin_id)
+            .await
+            .expect("create admin login code");
+        let tokens = session_manager
+            .exchange_code(&code, ClientMetadata::default())
+            .await
+            .expect("exchange admin login code");
+
+        Some((session_manager, tokens))
+    }
+
+    async fn stored_expiry(session_manager: &SessionManager, session_id: &str) -> DateTime<Utc> {
+        let mut conn = session_manager
+            .pool
+            .connection()
+            .await
+            .expect("database connection");
+        user_sessions::table
+            .filter(user_sessions::id.eq(session_id))
+            .select(user_sessions::expires_at)
+            .first(&mut *conn)
+            .await
+            .expect("stored session expiry")
+    }
+
+    #[tokio::test]
+    async fn verify_session_succeeds_without_extending_expiry() {
+        let Some((session_manager, tokens)) = create_test_session().await else {
+            return;
+        };
+        let stored_expiry_before = stored_expiry(&session_manager, &tokens.session_id).await;
+
+        let identity = session_manager
+            .verify_session(&tokens.refresh_token)
+            .await
+            .expect("verify valid session");
+
+        let stored_expiry_after = stored_expiry(&session_manager, &tokens.session_id).await;
+        assert_eq!(identity.session_id, tokens.session_id);
+        assert_eq!(identity.telegram_id, tokens.telegram_id);
+        assert_eq!(identity.expires_at, stored_expiry_before);
+        assert_eq!(stored_expiry_after, stored_expiry_before);
+    }
+
+    #[tokio::test]
+    async fn verify_session_rejects_expired_session() {
+        let Some((session_manager, tokens)) = create_test_session().await else {
+            return;
+        };
+        let mut conn = session_manager
+            .pool
+            .connection()
+            .await
+            .expect("database connection");
+        diesel::update(user_sessions::table.filter(user_sessions::id.eq(&tokens.session_id)))
+            .set(user_sessions::expires_at.eq(Utc::now() - Duration::seconds(1)))
+            .execute(&mut *conn)
+            .await
+            .expect("expire session");
+        drop(conn);
+
+        let result = session_manager.verify_session(&tokens.refresh_token).await;
+        assert!(result.is_err(), "expired session must be rejected");
+    }
+
+    #[tokio::test]
+    async fn verify_session_rejects_revoked_session() {
+        let Some((session_manager, tokens)) = create_test_session().await else {
+            return;
+        };
+        assert!(
+            session_manager
+                .revoke(&tokens.refresh_token)
+                .await
+                .expect("revoke session")
+        );
+
+        let result = session_manager.verify_session(&tokens.refresh_token).await;
+        assert!(result.is_err(), "revoked session must be rejected");
     }
 }

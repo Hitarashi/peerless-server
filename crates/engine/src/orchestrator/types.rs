@@ -167,6 +167,10 @@ pub enum RipActivity {
         track: TrackLabel,
         progress: ByteProgress,
     },
+    MaterializingCachedMedia {
+        track: TrackLabel,
+        progress: ByteProgress,
+    },
     Decrypting {
         track: TrackLabel,
     },

@@ -102,15 +102,12 @@ mirrors with native client applications (such as [Peerless KMP](https://github.c
 |                  | `GET`      | `/api/v1/auth/me/avatar`                                        | Fetch the authenticated user's Telegram avatar          |
 | **Streaming**    | `GET/POST` | `/api/v1/tracks/{id}/playback`                                  | Acquire short-lived signed stream ticket                |
 |                  | `GET/HEAD` | `/api/v1/stream?ticket=...`                                     | HTTP byte-range streaming (206 for Range requests)      |
-|                  | `GET`      | `/api/v1/ws/playback`                                           | Full-duplex WebSocket playback synchronization hub      |
+|                  | `GET`      | `/api/v1/ws/playback`                                           | Playback sync; create, cancel, and observe rip tasks     |
 | **Catalog**      | `GET`      | `/api/v1/search?q=...`                                          | Hybrid search (cached PostgreSQL + live catalog)        |
 |                  | `GET`      | `/api/v1/tracks/{id}`                                           | Complete track metadata and audio specifications        |
 |                  | `GET`      | `/api/v1/albums`                                                | Paginated list of cached albums                         |
 |                  | `GET`      | `/api/v1/albums/{id}`                                           | Album tracks with cache resolution                      |
 |                  | `GET`      | `/api/v1/artists/{name}/tracks`                                 | All cached tracks by an artist                          |
-| **Tasks**        | `POST`     | `/api/v1/tasks/rip`                                             | Enqueue an on-demand ripping task                       |
-|                  | `GET`      | `/api/v1/tasks`                                                 | List active server-owned rip tasks                      |
-|                  | `DELETE`   | `/api/v1/tasks/{id}`                                            | Cancel an active rip task                               |
 | **Assets**       | `GET`      | `/api/v1/assets/tracks/{id}/artwork`                            | Track album cover art redirect                          |
 |                  | `GET`      | `/api/v1/assets/providers/{provider}/tracks/{track_id}/artwork` | Direct provider cover art proxy                         |
 |                  | `GET`      | `/api/v1/assets/tracks/{id}/lyrics`                             | Synced TTML/LRC word-level lyrics                       |
@@ -129,6 +126,66 @@ mirrors with native client applications (such as [Peerless KMP](https://github.c
 |                  | `GET`      | `/api/v1/docs.yaml`                                             | OpenAPI document in YAML format                         |
 | **Other**        | `GET`      | `/open`                                                         | Open the client connection gateway                      |
 |                  | `GET`      | `/api/v1/health`                                                | Health check                                            |
+
+---
+
+## Rip Tasks over the Playback WebSocket
+
+Rip-task creation, cancellation, and listing have moved from REST to the authenticated `GET /api/v1/ws/playback`
+WebSocket. This is a breaking change for clients using the removed `POST /api/v1/tasks/rip`, `GET /api/v1/tasks`, or
+`DELETE /api/v1/tasks/{id}` endpoints. Messages use a `type` and `payload` JSON envelope. The authoritative contract is
+[`/api/v1/docs-ws.json`](/api/v1/docs-ws.json); the rendered reference is available at [`/api/v1/docs`](/api/v1/docs).
+
+After connecting, send `hello` to register the client; the server sends `rip_tasks_snapshot`, the authoritative list of
+currently active rip tasks. There is deliberately no list RPC. To create a rip, send `create_rip_task` with
+`{ request_id, request }`; the direct `rip_task_created` reply contains `{ request_id, task_id, status, result_track_id,
+task }`, where `task` is the initial snapshot or null when no active task exists. A cache hit replies with
+`status: "completed"`, an **empty** `task_id`, the actual `result_track_id`, and a null `task`, so there is nothing to
+cancel. Duplicate requests for the same provider, track, and codec coalesce onto the in-flight task. To cancel, send
+`cancel_rip_task` with `{ request_id, task_id }`; the direct reply is `rip_task_cancelled`.
+
+Failures arrive as one `error` message containing `request_id` (nullable if it cannot be recovered), `code` (`validation`,
+`not_found`, `not_authorized`, `unavailable`, or `internal`), `message`, and `retryable`. Task progress is delivered
+asynchronously as `rip_task_updated`, with task removal reported as `rip_task_dismissed`; creation publishes an update
+before its direct reply, so another connected client may receive the update before the initiating connection receives
+`rip_task_created`.
+
+### Progress snapshots
+
+Every task snapshot in `rip_task_updated`, `rip_tasks_snapshot`, and the `task` field of `rip_task_created` has nullable
+`download`, `upload`, and `job_stage` fields. All three may be populated at once. **Download and upload can run
+simultaneously: render both lanes independently; do not treat them as mutually exclusive.** The download lane is
+independent; the upload lane is a single serialized lane, not an array of concurrent uploads.
+
+Each lane has a stable snake_case `stage` enum. The complete vocabularies are:
+
+- `download.stage`: `resolving_metadata`, `connecting`, `downloading`, `decrypting`, `tagging`, `cached_delivery`,
+  `materializing_cached_media`.
+- `upload.stage`: `uploading_track`, `building_archive`, `uploading_archive`.
+- `job_stage`: `resolving`, `checking_cache`, `queued`, `skipping_uncached`, `cached_delivered`, `processing_next`,
+  `waiting_duplicate`.
+
+Lane `bytes_done` and `bytes_total` are numeric-or-null; lane `percent` is derived from the bytes and is phase-local.
+The server does not compute a rate; derive one from observed byte deltas. A null `bytes_total` means the total is
+unknown and `percent` is null; `bytes_done` can still contain the observed count. Activity-only stages such as
+`decrypting` and `tagging` have null byte fields and percentage. Handle null as unknown/no counter, never as zero. The
+`materializing_cached_media` stage reports the Telegram cached-media download into the local archive workspace,
+including byte progress when available.
+
+Byte-driven updates are throttled to at most one per 250 ms per task (4 updates/second/task). Real lane, stage, and
+album-track transitions are emitted immediately, adding one event per distinct transition. Animate smoothly between
+events rather than expecting per-byte updates.
+
+For albums, per-track download, processing, and track-upload phases repeat `total_tracks` times, followed once by archive
+build and archive upload. During either archive phase, `current_track_index` is omitted on the wire and
+`completed_tracks == total_tracks`; use that pair to distinguish archive work from the repeating per-track phases.
+
+Clients should correlate concurrent requests by `request_id` and process task events independently of RPC replies.
+
+The socket re-verifies the session without sliding it before every create or cancel, and periodically checks the session
+again to detect revocation. Retry-safety comes from the database cache check plus in-process active-task deduplication,
+not an exactly-once or idempotency guarantee: if the server restarts while a rip is in flight, the track can be ripped
+again.
 
 ---
 

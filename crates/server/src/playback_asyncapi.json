@@ -1,9 +1,9 @@
 {
-  "asyncapi": "3.0.0",
+  "asyncapi": "3.1.0",
   "info": {
     "title": "Playback Synchronization WebSocket",
     "version": "1.0.0",
-    "description": "The playback synchronization hub is a full-duplex WebSocket API for coordinating playback state, commands, devices, and live rip-task progress. It is separate from the REST API: clients send JSON messages to the server and receive JSON messages back on the same connection. Every application message uses the adjacent-tagged shape `{\"type\": \"variant_name\", \"payload\": { ... }}`. Both `type` and `payload` are required. The complete HTTP upgrade handshake is `GET /api/v1/ws/playback`; this AsyncAPI document describes the messages exchanged after that handshake.\n\n**Authentication:** Prefer `Authorization: Bearer <session-token>` during the handshake. A `token` query parameter is also accepted for clients that cannot set headers. Query tokens are exposed in URLs, proxy/access logs, and browser history, so avoid them when the Authorization header is available. A non-blank query token takes precedence; a blank or whitespace-only query value falls back to the Authorization header. An empty Bearer value is rejected.\n\n**Rooms and device lifecycle:** Rooms are keyed by the authenticated account's `telegram_id`, so all of that account's devices share one room. After connecting, send `hello` to register this connection as a device. The first device to send `hello` becomes `active_device_id` when the room has no active device. A newly registered device receives a `rip_tasks_snapshot` immediately. Rip-task update and dismissal events are gated on `hello`: connect and send `hello` before expecting any task messages. `report_state` is accepted only from the active device; reports from inactive or unregistered connections are silently discarded. `command` is broadcast to the whole room, including the sending connection, so the sender receives its own `execute_command` message. `transfer_playback` changes the active device and broadcasts a new `room_state`. If the active device disconnects, the server selects a remaining device from an internal HashMap; this is effectively arbitrary, not round-robin or least-recently-used. Clients should tolerate the active device changing unexpectedly.\n\n**State and recovery:** The server treats every playback `snapshot` as opaque JSON: it does not parse or validate the value, but stores it as the latest room snapshot and rebroadcasts it. The room broadcast queue has capacity 128. If a room-message subscriber falls behind, the server logs a warning and drops missed room/state messages without sending a resync frame. By contrast, if the task-event subscriber falls behind, after `hello` the server sends a full `rip_tasks_snapshot` resync. A client that may have missed room or playback-state updates must obtain fresh state through its own application-level recovery; task lag is repaired by the task snapshot.\n\n**Frames and errors:** Application messages are JSON in WebSocket text frames. Malformed JSON is logged and discarded; the connection remains open and no error/NACK frame is sent, so a client cannot detect a malformed send except by the absence of an expected response. Non-text data frames are ignored. WebSocket Ping control frames are answered with Pong; other unhandled control/data frames are ignored, and a Close frame ends the connection."
+    "description": "The playback synchronization hub is a full-duplex WebSocket API for coordinating playback state, commands, devices, and live rip-task progress. Rip-task create and cancel operations are correlated RPCs on this WebSocket; active-task listing remains the existing push snapshot: clients send JSON messages to the server and receive JSON messages back on the same connection. Every application message uses the adjacent-tagged shape `{\"type\": \"variant_name\", \"payload\": { ... }}`. Both `type` and `payload` are required. The complete HTTP upgrade handshake is `GET /api/v1/ws/playback`; this AsyncAPI document describes the messages exchanged after that handshake.\n\n**Authentication:** Prefer `Authorization: Bearer <session-token>` during the handshake. A `token` query parameter is also accepted for clients that cannot set headers. Query tokens are exposed in URLs, proxy/access logs, and browser history, so avoid them when the Authorization header is available. A non-blank query token takes precedence; a blank or whitespace-only query value falls back to the Authorization header. An empty Bearer value is rejected.\n\n**Rooms and device lifecycle:** Rooms are keyed by the authenticated account's `telegram_id`, so all of that account's devices share one room. After connecting, send `hello` to register this connection as a device. The first device to send `hello` becomes `active_device_id` when the room has no active device. A newly registered device receives a `rip_tasks_snapshot` immediately. Rip-task update and dismissal events are gated on `hello`: connect and send `hello` before expecting any task messages. `report_state` is accepted only from the active device; reports from inactive or unregistered connections are silently discarded. `command` is broadcast to the whole room, including the sending connection, so the sender receives its own `execute_command` message. `transfer_playback` changes the active device and broadcasts a new `room_state`. If the active device disconnects, the server selects a remaining device from an internal HashMap; this is effectively arbitrary, not round-robin or least-recently-used. Clients should tolerate the active device changing unexpectedly.\n\n**State and recovery:** The server treats every playback `snapshot` as opaque JSON: it does not parse or validate the value, but stores it as the latest room snapshot and rebroadcasts it. The room broadcast queue has capacity 128. If a room-message subscriber falls behind, the server logs a warning and drops missed room/state messages without sending a resync frame. By contrast, if the task-event subscriber falls behind, after `hello` the server sends a full `rip_tasks_snapshot` resync. A client that may have missed room or playback-state updates must obtain fresh state through its own application-level recovery; task lag is repaired by the task snapshot.\n\n**Frames and errors:** Application messages are JSON in WebSocket text frames. Malformed JSON is logged and discarded; the connection remains open and no error/NACK frame is sent, so a client cannot detect a malformed send except by the absence of an expected response. Non-text data frames are ignored. WebSocket Ping control frames are answered with Pong; other unhandled control/data frames are ignored, and a Close frame ends the connection.\n\n**Rip-task RPC lifecycle:** Create/cancel operations re-verify the session immediately before handling and idle sockets re-check every 30 seconds. In-flight tasks are deduplicated by provider, track id, and codec; matching cached tracks skip ripping. Task progress remains on the push feed and may arrive before the correlated create reply, which is sent only to its originating socket.\n\n**Rip-task progress visualization:** Each task snapshot contains independent nullable `download` and `upload` lane objects. Download and upload may be active simultaneously; the upload lane is singular because uploads are serialized. Each lane has a typed snake_case stage enum, phase-local percentage, `bytes_done`, and `bytes_total`. A byte total and lane percentage are null when the total is unknown; stages without byte counters have null byte fields. No rate is sent: clients may derive one from observed byte deltas. During a stable phase, byte-driven updates are emitted at most once per 250 ms: the worst-case steady-state rate is 4 updates/second/task. A real lane, stage, or album-track boundary change emits one immediate transition update, so total rate is bounded by 4 byte updates/second/task plus one event per distinct transition. Unchanged snapshots are suppressed.\n\n**Album pipeline:** For an album, per-track download, processing, and track-upload phases repeat for `total_tracks` tracks, followed once by archive-build and archive-upload phases. During either archive phase, `current_track_index` is omitted from JSON (its model value is null) and `completed_tracks` equals `total_tracks`; clients can use this pair to distinguish the final archive work from the repeating per-track phases. `is_album` remains true for album tasks."
   },
   "servers": {
     "production": {
@@ -22,7 +22,7 @@
     "playback": {
       "address": "/api/v1/ws/playback",
       "title": "Playback room connection",
-      "description": "A single authenticated connection to the caller's playback room. The optional `token` query parameter is an alternate handshake authentication route; prefer the Authorization: Bearer header because query-string tokens can leak through URLs, proxy/access logs, and browser history. Blank or whitespace-only query values fall back to the header.",
+      "description": "A single authenticated connection to the caller's playback room. The optional `token` query parameter is an alternate handshake authentication route; prefer the Authorization: Bearer header because query-string tokens can leak through URLs, proxy/access logs, and browser history. Blank or whitespace-only query values fall back to the header. Create/cancel RPCs re-verify the session without sliding it immediately before handling; idle sockets also re-check every 30 seconds and close when verification fails. Revocation may therefore take up to 30 seconds to close an idle connection.",
       "servers": [
         {
           "$ref": "#/servers/production"
@@ -55,6 +55,12 @@
         "transfer_playback": {
           "$ref": "#/components/messages/transfer_playback"
         },
+        "create_rip_task": {
+          "$ref": "#/components/messages/create_rip_task"
+        },
+        "cancel_rip_task": {
+          "$ref": "#/components/messages/cancel_rip_task"
+        },
         "room_state": {
           "$ref": "#/components/messages/room_state"
         },
@@ -72,6 +78,15 @@
         },
         "rip_task_dismissed": {
           "$ref": "#/components/messages/rip_task_dismissed"
+        },
+        "rip_task_created": {
+          "$ref": "#/components/messages/rip_task_created"
+        },
+        "rip_task_cancelled": {
+          "$ref": "#/components/messages/rip_task_cancelled"
+        },
+        "error": {
+          "$ref": "#/components/messages/error"
         }
       }
     }
@@ -84,7 +99,7 @@
       },
       "title": "Client to server",
       "summary": "Receive playback and device messages from a client",
-      "description": "Send these messages as JSON text frames. Send `hello` soon after connecting to register the device and enable rip-task updates. `report_state` is silently ignored unless this connection is the active device. `command` is broadcast back to every room connection including its sender. Malformed messages receive no error frame or NACK.",
+      "description": "Send these messages as JSON text frames. Send `hello` soon after connecting to register the device and enable rip-task updates. `report_state` is silently ignored unless this connection is the active device. `command` is broadcast back to every room connection including its sender. Create/cancel requests carry a `request_id`; each RPC is verified against the non-sliding session record immediately before the operation, independently of the 60-second identity cache. List active tasks through `rip_tasks_snapshot` after hello and on task-feed lag; there is no list RPC. Equivalent in-flight tasks are reused by provider + source track id + requested codec. A matching cached track skips the rip; explicit codec requests only match cached rows of that codec, while an omitted codec accepts any cached codec. The cache lookup covers all rows for the provider and source track id. Malformed messages receive an `error` message with a recovered request id when possible.",
       "messages": [
         {
           "$ref": "#/channels/playback/messages/hello"
@@ -97,6 +112,12 @@
         },
         {
           "$ref": "#/channels/playback/messages/transfer_playback"
+        },
+        {
+          "$ref": "#/channels/playback/messages/create_rip_task"
+        },
+        {
+          "$ref": "#/channels/playback/messages/cancel_rip_task"
         }
       ]
     },
@@ -107,7 +128,7 @@
       },
       "title": "Server to client",
       "summary": "Send room state, commands, and rip-task updates to a client",
-      "description": "These messages arrive as JSON text frames. Room and state messages may be dropped if this connection falls behind the room broadcast queue; task-event lag instead triggers a full `rip_tasks_snapshot` resync after the client has sent `hello`.",
+      "description": "These messages arrive as JSON text frames. Room and state messages may be dropped if this connection falls behind the room broadcast queue; task-event lag instead triggers a full `rip_tasks_snapshot` resync after the client has sent `hello`. `rip_task_created`, `rip_task_cancelled`, and `error` are direct replies sent only to the connection that issued the request, never through the room broadcast. Creating a task publishes a task update, so a client may receive `rip_task_updated` before its correlated `rip_task_created` reply. Task progress continues on the existing push feed. A cache-hit create is completed immediately with an empty `task_id` (there is no cancellable task) and the real database id in `result_track_id`.",
       "messages": [
         {
           "$ref": "#/channels/playback/messages/room_state"
@@ -126,6 +147,15 @@
         },
         {
           "$ref": "#/channels/playback/messages/rip_task_dismissed"
+        },
+        {
+          "$ref": "#/channels/playback/messages/rip_task_created"
+        },
+        {
+          "$ref": "#/channels/playback/messages/rip_task_cancelled"
+        },
+        {
+          "$ref": "#/channels/playback/messages/error"
         }
       ]
     }
@@ -315,6 +345,159 @@
           }
         }
       },
+      "create_rip_task": {
+        "name": "create_rip_task",
+        "title": "Create rip task",
+        "summary": "Request an on-demand provider rip over the correlated RPC channel",
+        "contentType": "application/json",
+        "payload": {
+          "type": "object",
+          "required": [
+            "type",
+            "payload"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "create_rip_task"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "request_id",
+                "request"
+              ],
+              "properties": {
+                "request_id": {
+                  "type": "string",
+                  "description": "Client-generated correlation id echoed by the direct reply."
+                },
+                "request": {
+                  "type": "object",
+                  "required": [
+                    "provider",
+                    "track_id"
+                  ],
+                  "properties": {
+                    "provider": {
+                      "type": "string",
+                      "enum": [
+                        "apple",
+                        "qobuz"
+                      ]
+                    },
+                    "track_id": {
+                      "type": "string",
+                      "description": "Provider-native track identifier."
+                    },
+                    "codec": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Desired codec. Unsupported values fall back to ALAC."
+                    },
+                    "title": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "artist": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "album": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "duration": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "format": "int32"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "examples": [
+          {
+            "name": "create rip task",
+            "payload": {
+              "type": "create_rip_task",
+              "payload": {
+                "request_id": "create-1",
+                "request": {
+                  "provider": "apple",
+                  "track_id": "1440857781",
+                  "codec": "alac",
+                  "title": "Example track"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "cancel_rip_task": {
+        "name": "cancel_rip_task",
+        "title": "Cancel rip task",
+        "summary": "Cancel an active rip task owned by this user or by an administrator",
+        "contentType": "application/json",
+        "payload": {
+          "type": "object",
+          "required": [
+            "type",
+            "payload"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "cancel_rip_task"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "request_id",
+                "task_id"
+              ],
+              "properties": {
+                "request_id": {
+                  "type": "string",
+                  "description": "Client-generated correlation id echoed by the direct reply."
+                },
+                "task_id": {
+                  "type": "string",
+                  "description": "Active task id returned by a queued create response."
+                }
+              }
+            }
+          }
+        },
+        "examples": [
+          {
+            "name": "cancel rip task",
+            "payload": {
+              "type": "cancel_rip_task",
+              "payload": {
+                "request_id": "cancel-1",
+                "task_id": "task_01h7xyz"
+              }
+            }
+          }
+        ]
+      },
       "room_state": {
         "name": "room_state",
         "title": "Room state",
@@ -440,7 +623,7 @@
       "rip_tasks_snapshot": {
         "name": "rip_tasks_snapshot",
         "title": "Rip-task snapshot",
-        "summary": "Full active rip-task state sent after hello and to repair task-event lag",
+        "summary": "Full active rip-task snapshots, including independent download/upload lanes, sent after hello and to repair task-event lag",
         "contentType": "application/json",
         "payload": {
           "type": "object",
@@ -470,12 +653,13 @@
               }
             }
           }
-        }
+        },
+        "description": "Each task uses the RipTaskSnapshot schema: download and upload are independently nullable lanes, and album tasks follow the documented per-track-then-archive pipeline."
       },
       "rip_task_updated": {
         "name": "rip_task_updated",
         "title": "Rip task updated",
-        "summary": "Updated server-owned snapshot for one rip task",
+        "summary": "Updated server-owned snapshot for one rip task, including both independent progress lanes",
         "contentType": "application/json",
         "payload": {
           "type": "object",
@@ -502,7 +686,8 @@
               }
             }
           }
-        }
+        },
+        "description": "The task field uses RipTaskSnapshot, with typed stage enums and independent download and upload lanes."
       },
       "rip_task_dismissed": {
         "name": "rip_task_dismissed",
@@ -530,6 +715,165 @@
               "properties": {
                 "task_id": {
                   "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "rip_task_created": {
+        "name": "rip_task_created",
+        "title": "Rip task create reply",
+        "summary": "Correlated create-rip-task result, including the initial lane snapshot when a task remains active",
+        "contentType": "application/json",
+        "payload": {
+          "type": "object",
+          "required": [
+            "type",
+            "payload"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "rip_task_created"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "request_id",
+                "task_id",
+                "status",
+                "result_track_id",
+                "task"
+              ],
+              "properties": {
+                "request_id": {
+                  "type": "string"
+                },
+                "task_id": {
+                  "type": "string",
+                  "description": "Active task id for queued results. Empty when a cached result completes immediately; that result has no cancellable task."
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "queued",
+                    "completed"
+                  ]
+                },
+                "result_track_id": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32",
+                  "description": "Database track id for an immediate cache hit; otherwise null."
+                },
+                "task": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/RipTaskSnapshot"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Initial active-task snapshot, including both lane objects; null when there is no active task."
+                }
+              }
+            }
+          }
+        },
+        "description": "Queued results include the current RipTaskSnapshot and its independent download/upload lanes; task is null for an immediate cache hit or when the task ended before the reply was assembled."
+      },
+      "rip_task_cancelled": {
+        "name": "rip_task_cancelled",
+        "title": "Rip task cancel reply",
+        "summary": "Correlated result of a cancel-rip-task RPC",
+        "contentType": "application/json",
+        "payload": {
+          "type": "object",
+          "required": [
+            "type",
+            "payload"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "rip_task_cancelled"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "request_id",
+                "task_id"
+              ],
+              "properties": {
+                "request_id": {
+                  "type": "string"
+                },
+                "task_id": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "error": {
+        "name": "error",
+        "title": "RPC or message error",
+        "summary": "A sanitized protocol error correlated to a request when possible",
+        "contentType": "application/json",
+        "payload": {
+          "type": "object",
+          "required": [
+            "type",
+            "payload"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "error"
+              ]
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "request_id",
+                "code",
+                "message",
+                "retryable"
+              ],
+              "properties": {
+                "request_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Null only when a malformed frame contained no recoverable request id."
+                },
+                "code": {
+                  "type": "string",
+                  "enum": [
+                    "validation",
+                    "not_found",
+                    "not_authorized",
+                    "unavailable",
+                    "internal"
+                  ]
+                },
+                "message": {
+                  "type": "string",
+                  "description": "Sanitized client-facing message; never contains database errors or credentials."
+                },
+                "retryable": {
+                  "type": "boolean"
                 }
               }
             }
@@ -571,9 +915,10 @@
           "artist",
           "album",
           "duration",
-          "stage",
+          "job_stage",
+          "download",
+          "upload",
           "percent",
-          "speed",
           "result_track_id",
           "is_cached",
           "completed",
@@ -622,21 +967,13 @@
             ],
             "format": "int32"
           },
-          "stage": {
-            "type": "string"
-          },
           "percent": {
             "type": [
               "number",
               "null"
             ],
-            "format": "float"
-          },
-          "speed": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "format": "float",
+            "description": "Overall task/album percentage; use lane percentages for phase-local progress."
           },
           "result_track_id": {
             "type": [
@@ -666,30 +1003,275 @@
           },
           "is_album": {
             "type": "boolean",
-            "description": "Whether this task processes an album rather than a single track."
+            "description": "True for album tasks. Each track repeats its download/processing/track-upload phases, then archive build/upload run once."
           },
           "current_track_title": {
             "type": "string",
-            "description": "Current track title when a multi-track task is in progress; omitted when unavailable."
+            "description": "Current display title. Lane objects carry independent titles when download and upload concern different tracks."
           },
           "current_track_artist": {
             "type": "string",
-            "description": "Current track artist when a multi-track task is in progress; omitted when unavailable."
+            "description": "Current display artist. Lane objects carry independent artists when download and upload concern different tracks."
           },
           "current_track_index": {
             "type": "integer",
             "format": "uint32",
-            "description": "Current track index; omitted when unavailable."
+            "description": "One-based current track index during per-track album phases; omitted during archive build/upload (the model value is null)."
           },
           "total_tracks": {
             "type": "integer",
             "format": "uint32",
-            "description": "Total tracks in an album task; omitted when unavailable."
+            "description": "Total tracks in an album task; null for a single-track task."
           },
           "completed_tracks": {
             "type": "integer",
             "format": "uint32",
-            "description": "Completed tracks in an album task; omitted when unavailable."
+            "description": "Completed per-track items. During archive build/upload this equals total_tracks."
+          },
+          "job_stage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RipTaskJobStage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional orchestration activity; it may coexist with either active lane."
+          },
+          "download": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RipTaskDownloadLane"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Download/cache-materialization lane, independent of upload."
+          },
+          "upload": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RipTaskUploadLane"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The single serialized Telegram upload/archive lane, independent of download."
+          }
+        }
+      },
+      "RipTaskJobStage": {
+        "description": "Stable orchestration-stage vocabulary, serialized in snake_case.",
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "resolving",
+            "description": "Resolve the requested job or its track metadata."
+          },
+          {
+            "type": "string",
+            "const": "checking_cache",
+            "description": "Look up requested tracks in the local cache before media work begins."
+          },
+          {
+            "type": "string",
+            "const": "queued",
+            "description": "Wait for a position in the orchestrator work queue."
+          },
+          {
+            "type": "string",
+            "const": "skipping_uncached",
+            "description": "Skip a requested track that is unavailable in cache-only mode."
+          },
+          {
+            "type": "string",
+            "const": "cached_delivered",
+            "description": "Reuse and deliver a track that was already cached."
+          },
+          {
+            "type": "string",
+            "const": "processing_next",
+            "description": "Advance to the next item in a multi-track job."
+          },
+          {
+            "type": "string",
+            "const": "waiting_duplicate",
+            "description": "Wait for another in-flight job that owns the same requested work."
+          }
+        ]
+      },
+      "RipTaskDownloadStage": {
+        "description": "Stable download-lane stage vocabulary, serialized in snake_case.",
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "resolving_metadata",
+            "description": "Resolve provider metadata needed to identify the source track."
+          },
+          {
+            "type": "string",
+            "const": "connecting",
+            "description": "Establish the provider connection before receiving source bytes."
+          },
+          {
+            "type": "string",
+            "const": "downloading",
+            "description": "Receive source audio bytes from the provider."
+          },
+          {
+            "type": "string",
+            "const": "decrypting",
+            "description": "Decrypt downloaded source audio after transfer completes."
+          },
+          {
+            "type": "string",
+            "const": "tagging",
+            "description": "Write metadata/tags into the downloaded audio file."
+          },
+          {
+            "type": "string",
+            "const": "cached_delivery",
+            "description": "Reuse a cached track for the current delivery or archive item."
+          },
+          {
+            "type": "string",
+            "const": "materializing_cached_media",
+            "description": "Download cached Telegram media into the local archive workspace; byte progress is reported when available."
+          }
+        ]
+      },
+      "RipTaskUploadStage": {
+        "description": "Stable upload-lane stage vocabulary, serialized in snake_case.",
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "uploading_track",
+            "description": "Send one processed track to Telegram."
+          },
+          {
+            "type": "string",
+            "const": "building_archive",
+            "description": "Build the album ZIP archive from its processed track files."
+          },
+          {
+            "type": "string",
+            "const": "uploading_archive",
+            "description": "Send the completed album ZIP archive to Telegram."
+          }
+        ]
+      },
+      "RipTaskDownloadLane": {
+        "type": "object",
+        "required": [
+          "stage",
+          "title",
+          "artist",
+          "bytes_done",
+          "bytes_total",
+          "percent"
+        ],
+        "properties": {
+          "stage": {
+            "$ref": "#/components/schemas/RipTaskDownloadStage"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Track title associated with this download activity, when known."
+          },
+          "artist": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Track artist associated with this download activity, when known."
+          },
+          "bytes_done": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0,
+            "description": "Bytes processed so far. Null when the stage has no byte counter."
+          },
+          "bytes_total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0,
+            "description": "Expected bytes. Null when unknown or when the stage has no byte counter."
+          },
+          "percent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "Phase-local percentage; null whenever bytes_total is unknown."
+          }
+        }
+      },
+      "RipTaskUploadLane": {
+        "type": "object",
+        "required": [
+          "stage",
+          "title",
+          "artist",
+          "bytes_done",
+          "bytes_total",
+          "percent"
+        ],
+        "properties": {
+          "stage": {
+            "$ref": "#/components/schemas/RipTaskUploadStage"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Track or archive title associated with this upload activity, when known."
+          },
+          "artist": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Track artist associated with this upload activity, when known."
+          },
+          "bytes_done": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0,
+            "description": "Bytes processed so far. Null when the stage has no byte counter."
+          },
+          "bytes_total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0,
+            "description": "Expected bytes. Null when unknown or when the stage has no byte counter."
+          },
+          "percent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "Phase-local percentage; null whenever bytes_total is unknown."
           }
         }
       }

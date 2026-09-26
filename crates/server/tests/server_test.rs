@@ -7,9 +7,64 @@ use axum::{
 use ferogram::PeerRef;
 use server::{
     ServerState,
+    rip_task_rpc::{
+        AuthenticatedIdentity, RipTaskRpcErrorCode, RipTaskRpcRequest, RipTaskRpcStatus,
+        RipTaskRpcSuccess,
+    },
     streaming::{StreamTicket, create_stream_ticket, verify_stream_ticket},
 };
 use tower::ServiceExt;
+
+async fn handle_rpc_as(
+    session_mgr: &db::SessionManager,
+    state: Arc<ServerState>,
+    token: &str,
+    expected_user_id: i64,
+    request: RipTaskRpcRequest,
+) -> Result<RipTaskRpcSuccess, server::rip_task_rpc::RipTaskRpcError> {
+    // Match the WebSocket dispatcher: verify the live session immediately before each RPC.
+    // verify_session is deliberately non-sliding and does not extend activity or expiry.
+    let session = session_mgr
+        .verify_session(token)
+        .await
+        .expect("RPC session must remain valid");
+    assert_eq!(session.telegram_id, expected_user_id);
+
+    server::rip_task_rpc::handle_request(
+        AuthenticatedIdentity {
+            telegram_id: session.telegram_id,
+        },
+        request,
+        state,
+    )
+    .await
+}
+
+fn create_rip_rpc_request(
+    request_id: &str,
+    track_id: &str,
+    codec: Option<&str>,
+) -> RipTaskRpcRequest {
+    RipTaskRpcRequest::Create {
+        request_id: request_id.to_owned(),
+        request: server::tasks::RipTaskRequest {
+            provider: "apple".to_owned(),
+            track_id: track_id.to_owned(),
+            codec: codec.map(str::to_owned),
+            title: None,
+            artist: None,
+            album: None,
+            duration: None,
+        },
+    }
+}
+
+fn cancel_rip_rpc_request(request_id: &str, task_id: &str) -> RipTaskRpcRequest {
+    RipTaskRpcRequest::Cancel {
+        request_id: request_id.to_owned(),
+        task_id: task_id.to_owned(),
+    }
+}
 
 #[tokio::test]
 async fn test_playback_ticket_cryptography() {
@@ -517,11 +572,21 @@ async fn test_auth_and_library_lifecycle() {
 #[tokio::test]
 async fn test_tasks_rip_create_and_cancel_lifecycle() {
     let _ = dotenvy::from_filename(".env");
-    let database_url = match std::env::var("DATABASE_URL") {
-        Ok(url) => url,
-        Err(_) => return,
+    let Ok(database_url) =
+        std::env::var("DATABASE_URL").or_else(|_| std::env::var("TEST_DATABASE_URL"))
+    else {
+        eprintln!(
+            "Skipping database lifecycle test: neither DATABASE_URL nor TEST_DATABASE_URL is set"
+        );
+        return;
     };
-    let pool = db::connect(&database_url).await.unwrap();
+    let pool = match db::connect(&database_url).await {
+        Ok(pool) => pool,
+        Err(e) => {
+            eprintln!("Skipping test: cannot connect to {database_url}: {e}");
+            return;
+        }
+    };
     let worker_pool = stream::StreamWorkerPool::empty();
     let stream_engine = Arc::new(stream::StreamEngine::new(
         worker_pool,
@@ -554,13 +619,14 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
         .with_admin_id(admin_id),
     );
 
+    // Keep the existing database-backed authentication fixture. The RPC service is called
+    // directly below, but every operation first verifies its live session as the WebSocket
+    // dispatcher does.
     let app = server::create_router(state.clone());
-
     let auth = db::Auth::new(pool.clone(), admin_id);
     auth.authorize(owner_id, Some("Owner")).await.unwrap();
     auth.authorize(other_id, Some("Other")).await.unwrap();
 
-    // Helper to exchange OTP for auth token
     let get_token_for = |user_id: i64| {
         let session_mgr = session_mgr.clone();
         let app = app.clone();
@@ -586,41 +652,49 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
     let owner_token = get_token_for(owner_id).await;
     let other_token = get_token_for(other_id).await;
     let admin_token = get_token_for(admin_id).await;
-
-    // 1. Owner creates a rip task
     let mut task_sync_events = state.task_sync_tx.subscribe();
-    let rip_payload = serde_json::json!({
-        "provider": "apple",
-        "track_id": "1440857781",
-        "codec": "alac"
-    });
-    let req = Request::builder()
-        .method("POST")
-        .uri("/api/v1/tasks/rip")
-        .header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(serde_json::to_vec(&rip_payload).unwrap()))
-        .unwrap();
-    let res = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let rip_res: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(rip_res["status"], "queued");
-    let task_id = rip_res["task_id"].as_str().unwrap().to_string();
+    let unique_suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock is after the Unix epoch")
+        .as_nanos();
+    let owner_track_id = format!("lifecycle_owner_{unique_suffix}");
 
-    // Verify task is registered in active_tasks
-    {
+    // 1. Owner creates a new queued task through the typed RPC service.
+    let created = handle_rpc_as(
+        &session_mgr,
+        state.clone(),
+        &owner_token,
+        owner_id,
+        create_rip_rpc_request("create-owner", &owner_track_id, Some("alac")),
+    )
+    .await
+    .expect("owner create succeeds");
+    let task_id = match created {
+        RipTaskRpcSuccess::Created {
+            request_id,
+            task_id,
+            status,
+            result_track_id,
+        } => {
+            assert_eq!(request_id, "create-owner");
+            assert_eq!(status, RipTaskRpcStatus::Queued);
+            assert_eq!(result_track_id, None);
+            assert!(!task_id.is_empty());
+            task_id
+        }
+        other => panic!("expected created response, got {other:?}"),
+    };
+
+    let controller = {
         let tasks = state.active_tasks.read();
         let meta = tasks.get(&task_id).expect("task must be in active_tasks");
         assert_eq!(meta.task_id, task_id);
         assert_eq!(meta.owner_id, owner_id);
-        assert_eq!(meta.track_id, "1440857781");
+        assert_eq!(meta.track_id, owner_track_id);
+        assert_eq!(meta.codec.as_deref(), Some("alac"));
         assert!(!meta.controller.is_cancelled());
-    }
-
-    // Verify the WebSocket task feed was notified.
+        meta.controller.clone()
+    };
     match task_sync_events.recv().await.unwrap() {
         server::tasks::TaskSyncEvent::Updated {
             task_id: updated_id,
@@ -630,121 +704,224 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
         other => panic!("expected task update, got {other:?}"),
     }
 
-    // 2. Non-owner (other user) tries to cancel -> 403 Forbidden
-    let req = Request::builder()
-        .method("DELETE")
-        .uri(format!("/api/v1/tasks/{task_id}"))
-        .header(header::AUTHORIZATION, format!("Bearer {other_token}"))
-        .body(Body::empty())
-        .unwrap();
-    let res = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    // 2. A non-owner/non-admin cannot cancel the task; it remains live and emits no feed event.
+    let error = handle_rpc_as(
+        &session_mgr,
+        state.clone(),
+        &other_token,
+        other_id,
+        cancel_rip_rpc_request("cancel-forbidden", &task_id),
+    )
+    .await
+    .expect_err("non-owner cancel must be rejected");
+    assert_eq!(error.request_id.as_deref(), Some("cancel-forbidden"));
+    assert_eq!(error.code, RipTaskRpcErrorCode::NotAuthorized);
+    assert!(state.active_tasks.read().contains_key(&task_id));
+    assert!(!controller.is_cancelled());
+    assert!(matches!(
+        task_sync_events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
 
-    // 3. Cancel non-existent task -> 404 Not Found
-    let req = Request::builder()
-        .method("DELETE")
-        .uri("/api/v1/tasks/task_nonexistent_12345")
-        .header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
-        .body(Body::empty())
-        .unwrap();
-    let res = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    // 3. Cancelling a task id that does not exist returns NotFound.
+    let error = handle_rpc_as(
+        &session_mgr,
+        state.clone(),
+        &owner_token,
+        owner_id,
+        cancel_rip_rpc_request("cancel-missing", "task_nonexistent_12345"),
+    )
+    .await
+    .expect_err("missing task cancel must fail");
+    assert_eq!(error.request_id.as_deref(), Some("cancel-missing"));
+    assert_eq!(error.code, RipTaskRpcErrorCode::NotFound);
+    assert!(matches!(
+        task_sync_events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
 
-    // 4. Owner cancels their task -> 200 OK and task feed dismissal
-    let req = Request::builder()
-        .method("DELETE")
-        .uri(format!("/api/v1/tasks/{task_id}"))
-        .header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
-        .body(Body::empty())
-        .unwrap();
-    let res = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+    // 4. Owner cancels their task and the task feed reports its dismissal.
+    assert_eq!(
+        handle_rpc_as(
+            &session_mgr,
+            state.clone(),
+            &owner_token,
+            owner_id,
+            cancel_rip_rpc_request("cancel-owner", &task_id),
+        )
         .await
-        .unwrap();
-    let cancel_res: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(cancel_res["status"], "cancelled");
-    assert_eq!(cancel_res["task_id"], task_id);
-
+        .expect("owner cancel succeeds"),
+        RipTaskRpcSuccess::Cancelled {
+            request_id: "cancel-owner".to_owned(),
+            task_id: task_id.clone(),
+        }
+    );
     assert!(matches!(
         task_sync_events.recv().await.unwrap(),
         server::tasks::TaskSyncEvent::Dismissed { task_id: dismissed_id }
             if dismissed_id == task_id
     ));
+    assert!(controller.is_cancelled());
     assert!(!state.active_tasks.read().contains_key(&task_id));
 
-    // 5. Admin can cancel any task
-    let req = Request::builder()
-        .method("POST")
-        .uri("/api/v1/tasks/rip")
-        .header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(serde_json::to_vec(&rip_payload).unwrap()))
-        .unwrap();
-    let res = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let rip_res2: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let task_id2 = rip_res2["task_id"].as_str().unwrap().to_string();
-
-    let req = Request::builder()
-        .method("DELETE")
-        .uri(format!("/api/v1/tasks/{task_id2}"))
-        .header(header::AUTHORIZATION, format!("Bearer {admin_token}"))
-        .body(Body::empty())
-        .unwrap();
-    let res = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-
-    // 6. In-flight task deduplication
-    let dedup_payload = serde_json::json!({
-        "provider": "apple",
-        "track_id": "dedup_track_123",
-        "codec": "alac"
-    });
-    let req1 = Request::builder()
-        .method("POST")
-        .uri("/api/v1/tasks/rip")
-        .header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(serde_json::to_vec(&dedup_payload).unwrap()))
-        .unwrap();
-    let res1 = app.clone().oneshot(req1).await.unwrap();
-    assert_eq!(res1.status(), StatusCode::OK);
-    let body1 = axum::body::to_bytes(res1.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let res1_json: serde_json::Value = serde_json::from_slice(&body1).unwrap();
-    let task_id_dedup1 = res1_json["task_id"].as_str().unwrap().to_string();
-
-    // Submit identical track rip while first is still active
-    let req2 = Request::builder()
-        .method("POST")
-        .uri("/api/v1/tasks/rip")
-        .header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(serde_json::to_vec(&dedup_payload).unwrap()))
-        .unwrap();
-    let res2 = app.clone().oneshot(req2).await.unwrap();
-    assert_eq!(res2.status(), StatusCode::OK);
-    let body2 = axum::body::to_bytes(res2.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let res2_json: serde_json::Value = serde_json::from_slice(&body2).unwrap();
-    let task_id_dedup2 = res2_json["task_id"].as_str().unwrap().to_string();
-
+    // 5. Admins can cancel a task owned by another user.
+    let admin_task = handle_rpc_as(
+        &session_mgr,
+        state.clone(),
+        &owner_token,
+        owner_id,
+        create_rip_rpc_request(
+            "create-admin-cancel",
+            &format!("lifecycle_admin_{unique_suffix}"),
+            Some("alac"),
+        ),
+    )
+    .await
+    .expect("admin-cancellable task create succeeds");
+    let admin_task_id = match admin_task {
+        RipTaskRpcSuccess::Created {
+            task_id,
+            status: RipTaskRpcStatus::Queued,
+            result_track_id: None,
+            ..
+        } => task_id,
+        other => panic!("expected queued task, got {other:?}"),
+    };
+    assert!(matches!(
+        task_sync_events.recv().await.unwrap(),
+        server::tasks::TaskSyncEvent::Updated { task_id: updated_id }
+            if updated_id == admin_task_id
+    ));
     assert_eq!(
-        task_id_dedup1, task_id_dedup2,
-        "Duplicate in-flight rip must return same task ID"
+        handle_rpc_as(
+            &session_mgr,
+            state.clone(),
+            &admin_token,
+            admin_id,
+            cancel_rip_rpc_request("cancel-as-admin", &admin_task_id),
+        )
+        .await
+        .expect("admin cancel succeeds"),
+        RipTaskRpcSuccess::Cancelled {
+            request_id: "cancel-as-admin".to_owned(),
+            task_id: admin_task_id.clone(),
+        }
     );
+    assert!(matches!(
+        task_sync_events.recv().await.unwrap(),
+        server::tasks::TaskSyncEvent::Dismissed { task_id: dismissed_id }
+            if dismissed_id == admin_task_id
+    ));
+    assert!(!state.active_tasks.read().contains_key(&admin_task_id));
 
-    // 7. Completed work disappears from the active task feed.
-    state.complete_task(&task_id_dedup1);
-    assert!(!state.active_tasks.read().contains_key(&task_id_dedup1));
+    // 6. Identical in-flight requests coalesce after provider/track/codec normalization.
+    let dedup_track_id = format!("lifecycle_dedup_{unique_suffix}");
+    let dedup_first = handle_rpc_as(
+        &session_mgr,
+        state.clone(),
+        &owner_token,
+        owner_id,
+        create_rip_rpc_request("dedup-first", &dedup_track_id, Some("ALAC")),
+    )
+    .await
+    .expect("first dedup create succeeds");
+    let dedup_task_id = match dedup_first {
+        RipTaskRpcSuccess::Created {
+            request_id,
+            task_id,
+            status,
+            result_track_id,
+        } => {
+            assert_eq!(request_id, "dedup-first");
+            assert_eq!(status, RipTaskRpcStatus::Queued);
+            assert_eq!(result_track_id, None);
+            task_id
+        }
+        other => panic!("expected created response, got {other:?}"),
+    };
+    assert!(matches!(
+        task_sync_events.recv().await.unwrap(),
+        server::tasks::TaskSyncEvent::Updated { task_id: updated_id }
+            if updated_id == dedup_task_id
+    ));
 
-    // 8. Fast-path DB cache hit
+    let dedup_again = handle_rpc_as(
+        &session_mgr,
+        state.clone(),
+        &owner_token,
+        owner_id,
+        create_rip_rpc_request("dedup-again", &dedup_track_id, Some("alac")),
+    )
+    .await
+    .expect("duplicate in-flight create succeeds");
+    assert_eq!(
+        dedup_again,
+        RipTaskRpcSuccess::Created {
+            request_id: "dedup-again".to_owned(),
+            task_id: dedup_task_id.clone(),
+            status: RipTaskRpcStatus::Queued,
+            result_track_id: None,
+        }
+    );
+    assert!(matches!(
+        task_sync_events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+
+    // A different normalized codec is a distinct dedup key and gets its own task.
+    let different_codec = handle_rpc_as(
+        &session_mgr,
+        state.clone(),
+        &owner_token,
+        owner_id,
+        create_rip_rpc_request("dedup-flac", &dedup_track_id, Some("flac")),
+    )
+    .await
+    .expect("different codec create succeeds");
+    let different_codec_task_id = match different_codec {
+        RipTaskRpcSuccess::Created {
+            task_id,
+            status: RipTaskRpcStatus::Queued,
+            result_track_id: None,
+            ..
+        } => task_id,
+        other => panic!("expected distinct queued task, got {other:?}"),
+    };
+    assert_ne!(different_codec_task_id, dedup_task_id);
+    assert_eq!(
+        state.active_tasks.read()[&different_codec_task_id]
+            .codec
+            .as_deref(),
+        Some("flac")
+    );
+    assert!(matches!(
+        task_sync_events.recv().await.unwrap(),
+        server::tasks::TaskSyncEvent::Updated { task_id: updated_id }
+            if updated_id == different_codec_task_id
+    ));
+
+    // Completed tasks disappear from the active task feed.
+    state.complete_task(&dedup_task_id);
+    assert!(!state.active_tasks.read().contains_key(&dedup_task_id));
+    assert!(matches!(
+        task_sync_events.recv().await.unwrap(),
+        server::tasks::TaskSyncEvent::Dismissed { task_id: dismissed_id }
+            if dismissed_id == dedup_task_id
+    ));
+    state.complete_task(&different_codec_task_id);
+    assert!(
+        !state
+            .active_tasks
+            .read()
+            .contains_key(&different_codec_task_id)
+    );
+    assert!(matches!(
+        task_sync_events.recv().await.unwrap(),
+        server::tasks::TaskSyncEvent::Dismissed { task_id: dismissed_id }
+            if dismissed_id == different_codec_task_id
+    ));
+
+    // 7. Fast-path DB cache hit returns the result id and an empty, non-cancellable task id.
     let save_input = engine::orchestrator::deps::SaveTrackInput {
         track_key: music::TrackKey::new(
             music::Provider::Apple,
@@ -767,28 +944,35 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
         isrc: None,
     };
     tracks_repo.save_track(&save_input).await.unwrap();
-
-    let fastpath_payload = serde_json::json!({
-        "provider": "apple",
-        "track_id": "cached_track_fastpath",
-        "codec": "alac"
-    });
-    let fp_req = Request::builder()
-        .method("POST")
-        .uri("/api/v1/tasks/rip")
-        .header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(serde_json::to_vec(&fastpath_payload).unwrap()))
-        .unwrap();
-    let fp_res = app.clone().oneshot(fp_req).await.unwrap();
-    assert_eq!(fp_res.status(), StatusCode::OK);
-    let fp_body = axum::body::to_bytes(fp_res.into_body(), usize::MAX)
+    let cached_track = tracks_repo
+        .find_all_by_provider_track_id(music::Provider::Apple, "cached_track_fastpath")
         .await
-        .unwrap();
-    let fp_json: serde_json::Value = serde_json::from_slice(&fp_body).unwrap();
-    assert_eq!(fp_json["status"], "completed");
-    let fp_task_id = fp_json["task_id"].as_str().unwrap().to_string();
+        .unwrap()
+        .into_iter()
+        .find(|track| track.codec == music::Codec::Alac)
+        .expect("saved fast-path track must be queryable");
 
-    // A cached fast-path task never enters the live task feed.
-    assert!(!state.active_tasks.read().contains_key(&fp_task_id));
+    let cached = handle_rpc_as(
+        &session_mgr,
+        state.clone(),
+        &owner_token,
+        owner_id,
+        create_rip_rpc_request("cache-hit", "cached_track_fastpath", Some("alac")),
+    )
+    .await
+    .expect("cached create succeeds");
+    assert_eq!(
+        cached,
+        RipTaskRpcSuccess::Created {
+            request_id: "cache-hit".to_owned(),
+            task_id: String::new(),
+            status: RipTaskRpcStatus::Completed,
+            result_track_id: Some(cached_track.id),
+        }
+    );
+    assert!(state.active_tasks.read().is_empty());
+    assert!(matches!(
+        task_sync_events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
 }

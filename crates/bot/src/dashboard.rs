@@ -236,6 +236,11 @@ fn render_rip_activity(activity: &RipActivity) -> String {
             track_text(track),
             byte_progress(progress)
         ),
+        RipActivity::MaterializingCachedMedia { track, progress } => format!(
+            "<b>⬇️ Materializing cached media:</b> <b>{}</b> <code>{}</code>\n",
+            track_text(track),
+            byte_progress(progress)
+        ),
         RipActivity::Decrypting { track } => {
             format!("<b>🔓 Decrypting:</b> <b>{}</b>\n", track_text(track))
         }

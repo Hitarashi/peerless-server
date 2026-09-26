@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use axum::{
     extract::{
@@ -8,12 +8,22 @@ use axum::{
     http::HeaderMap,
     response::IntoResponse,
 };
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, broadcast};
 use utoipa::ToSchema;
 
-use crate::{ServerState, error::ServerError};
+use crate::{
+    ServerState,
+    error::ServerError,
+    rip_task_rpc::{
+        AuthenticatedIdentity, RipTaskRpcError, RipTaskRpcErrorCode, RipTaskRpcRequest,
+        RipTaskRpcStatus, RipTaskRpcSuccess,
+    },
+};
+
+/// Session revocation is detected within this interval while a socket is idle.
+const AUTH_RECHECK_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Identifies a device currently connected to the authenticated user's playback room.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
@@ -24,6 +34,46 @@ pub struct ConnectedDeviceInfo {
     pub device_name: String,
     /// Client-reported platform, such as `ios`, `android`, `web`, or `desktop`.
     pub platform: String,
+}
+
+/// Wire status for a create-rip-task reply.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RipTaskStatus {
+    Queued,
+    Completed,
+}
+
+/// Wire taxonomy for protocol errors.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RpcErrorCode {
+    Validation,
+    NotFound,
+    NotAuthorized,
+    Unavailable,
+    Internal,
+}
+
+impl From<RipTaskRpcStatus> for RipTaskStatus {
+    fn from(status: RipTaskRpcStatus) -> Self {
+        match status {
+            RipTaskRpcStatus::Queued => Self::Queued,
+            RipTaskRpcStatus::Completed => Self::Completed,
+        }
+    }
+}
+
+impl From<RipTaskRpcErrorCode> for RpcErrorCode {
+    fn from(code: RipTaskRpcErrorCode) -> Self {
+        match code {
+            RipTaskRpcErrorCode::Validation => Self::Validation,
+            RipTaskRpcErrorCode::NotFound => Self::NotFound,
+            RipTaskRpcErrorCode::NotAuthorized => Self::NotAuthorized,
+            RipTaskRpcErrorCode::Unavailable => Self::Unavailable,
+            RipTaskRpcErrorCode::Internal => Self::Internal,
+        }
+    }
 }
 
 /// Messages sent by a client to the playback synchronization server.
@@ -62,6 +112,22 @@ pub enum ClientMessage {
     TransferPlayback {
         /// Identifier of the device to make active.
         target_device_id: String,
+    },
+    /// Create a rip task and correlate its direct reply using `request_id`.
+    #[serde(rename = "create_rip_task")]
+    CreateRipTask {
+        /// Client-generated identifier echoed in the RPC reply.
+        request_id: String,
+        /// Task request data.
+        request: crate::tasks::RipTaskRequest,
+    },
+    /// Cancel an active rip task and correlate its direct reply using `request_id`.
+    #[serde(rename = "cancel_rip_task")]
+    CancelRipTask {
+        /// Client-generated identifier echoed in the RPC reply.
+        request_id: String,
+        /// Active task identifier returned by `create_rip_task`.
+        task_id: String,
     },
 }
 
@@ -114,6 +180,40 @@ pub enum ServerMessage {
     RipTaskDismissed {
         /// Identifier of the dismissed task.
         task_id: String,
+    },
+    /// Direct reply to a create request; sent only to the initiating connection.
+    #[serde(rename = "rip_task_created")]
+    RipTaskCreated {
+        /// Request correlation identifier supplied by the client.
+        request_id: String,
+        /// Empty for a cache hit, which has no cancellable task; see `result_track_id`.
+        task_id: String,
+        /// Whether a task was queued or an existing cached result completed the request.
+        status: RipTaskStatus,
+        /// Database track id when the request was satisfied from cache.
+        result_track_id: Option<i32>,
+        /// Initial active-task snapshot for queued requests; null when there is no active task.
+        task: Option<Box<crate::tasks::RipTaskSnapshot>>,
+    },
+    /// Direct reply to a cancel request; sent only to the initiating connection.
+    #[serde(rename = "rip_task_cancelled")]
+    RipTaskCancelled {
+        /// Request correlation identifier supplied by the client.
+        request_id: String,
+        /// Identifier of the task that was cancelled.
+        task_id: String,
+    },
+    /// Direct RPC error; sent only to the initiating connection.
+    #[serde(rename = "error")]
+    Error {
+        /// Request id when it could be recovered from the incoming frame.
+        request_id: Option<String>,
+        /// Stable protocol error category.
+        code: RpcErrorCode,
+        /// Sanitized client-facing description.
+        message: String,
+        /// Whether retrying the same operation may succeed.
+        retryable: bool,
     },
 }
 
@@ -212,14 +312,19 @@ pub async fn ws_handler(
             telegram_id: identity.telegram_id,
             session_id: identity.session_id,
         };
-        state.token_cache.insert(token, user).await;
+        state.token_cache.insert(token.clone(), user).await;
         identity.telegram_id
     };
 
-    Ok(ws.on_upgrade(move |socket| handle_socket(socket, state, telegram_id)))
+    Ok(ws.on_upgrade(move |socket| handle_socket(socket, state, telegram_id, token)))
 }
 
-async fn handle_socket(socket: WebSocket, state: Arc<ServerState>, telegram_id: i64) {
+async fn handle_socket(
+    socket: WebSocket,
+    state: Arc<ServerState>,
+    telegram_id: i64,
+    token: String,
+) {
     let connection_id = rand::random::<u64>();
     let room_arc = state.sync_hub.get_or_create_room(telegram_id).await;
     let mut rx = {
@@ -230,9 +335,22 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServerState>, telegram_id: 
 
     let (mut sender, mut receiver) = socket.split();
     let mut my_device_id: Option<String> = None;
+    let mut auth_recheck = tokio::time::interval_at(
+        tokio::time::Instant::now() + AUTH_RECHECK_INTERVAL,
+        AUTH_RECHECK_INTERVAL,
+    );
 
     loop {
         tokio::select! {
+            _ = auth_recheck.tick() => {
+                match state.session_mgr.verify_session(&token).await {
+                    Ok(identity) if identity.telegram_id == telegram_id => {}
+                    _ => {
+                        tracing::info!(telegram_id, "Closing playback WebSocket after session verification failed");
+                        break;
+                    }
+                }
+            }
             msg_res = rx.recv() => {
                 match msg_res {
                     Ok(server_msg) => {
@@ -287,8 +405,16 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServerState>, telegram_id: 
                             Message::Text(text) => {
                                 let client_msg: ClientMessage = match serde_json::from_str(&text) {
                                     Ok(m) => m,
-                                    Err(e) => {
-                                        tracing::warn!(error = %e, "Invalid ClientMessage JSON received");
+                                    Err(_) => {
+                                        let error = ServerMessage::Error {
+                                            request_id: recover_request_id(&text),
+                                            code: RpcErrorCode::Validation,
+                                            message: "malformed client message".to_owned(),
+                                            retryable: false,
+                                        };
+                                        if !send_server_message(&mut sender, error).await {
+                                            break;
+                                        }
                                         continue;
                                     }
                                 };
@@ -360,6 +486,40 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServerState>, telegram_id: 
                                         };
                                         let _ = room.tx.send(room_state);
                                     }
+                                    ClientMessage::CreateRipTask { request_id, request } => {
+                                        let rpc_request = RipTaskRpcRequest::Create {
+                                            request_id,
+                                            request,
+                                        };
+                                        if !dispatch_rip_task_rpc(
+                                            &mut sender,
+                                            &state,
+                                            &token,
+                                            telegram_id,
+                                            rpc_request,
+                                        )
+                                        .await
+                                        {
+                                            break;
+                                        }
+                                    }
+                                    ClientMessage::CancelRipTask { request_id, task_id } => {
+                                        let rpc_request = RipTaskRpcRequest::Cancel {
+                                            request_id,
+                                            task_id,
+                                        };
+                                        if !dispatch_rip_task_rpc(
+                                            &mut sender,
+                                            &state,
+                                            &token,
+                                            telegram_id,
+                                            rpc_request,
+                                        )
+                                        .await
+                                        {
+                                            break;
+                                        }
+                                    }
                                 }
                             }
                             Message::Ping(bytes) => {
@@ -400,6 +560,103 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServerState>, telegram_id: 
         };
         let _ = room.tx.send(updated_state);
     }
+}
+
+async fn dispatch_rip_task_rpc(
+    sender: &mut SplitSink<WebSocket, Message>,
+    state: &Arc<ServerState>,
+    token: &str,
+    connection_telegram_id: i64,
+    request: RipTaskRpcRequest,
+) -> bool {
+    let request_id = match &request {
+        RipTaskRpcRequest::Create { request_id, .. }
+        | RipTaskRpcRequest::Cancel { request_id, .. } => request_id.clone(),
+    };
+
+    // Never rely on token_cache for operation freshness. Verification is deliberately
+    // immediately before entering the service, before it can reserve or cancel work.
+    let identity = match state.session_mgr.verify_session(token).await {
+        Ok(identity) if identity.telegram_id == connection_telegram_id => AuthenticatedIdentity {
+            telegram_id: identity.telegram_id,
+        },
+        _ => {
+            return send_server_message(
+                sender,
+                ServerMessage::Error {
+                    request_id: Some(request_id),
+                    code: RpcErrorCode::NotAuthorized,
+                    message: "session is no longer authorized".to_owned(),
+                    retryable: false,
+                },
+            )
+            .await;
+        }
+    };
+
+    let reply = match crate::rip_task_rpc::handle_request(identity, request, state.clone()).await {
+        Ok(RipTaskRpcSuccess::Created {
+            request_id,
+            task_id,
+            status,
+            result_track_id,
+        }) => {
+            let task = if task_id.is_empty() {
+                None
+            } else {
+                state
+                    .active_tasks
+                    .read()
+                    .get(&task_id)
+                    .map(|task| Box::new(task.snapshot(task.owner_id == identity.telegram_id)))
+            };
+            ServerMessage::RipTaskCreated {
+                request_id,
+                task_id,
+                status: status.into(),
+                result_track_id,
+                task,
+            }
+        }
+        Ok(RipTaskRpcSuccess::Cancelled {
+            request_id,
+            task_id,
+        }) => ServerMessage::RipTaskCancelled {
+            request_id,
+            task_id,
+        },
+        Err(RipTaskRpcError {
+            request_id,
+            code,
+            message,
+            retryable,
+        }) => ServerMessage::Error {
+            request_id,
+            code: code.into(),
+            message,
+            retryable,
+        },
+    };
+    send_server_message(sender, reply).await
+}
+
+async fn send_server_message(
+    sender: &mut SplitSink<WebSocket, Message>,
+    message: ServerMessage,
+) -> bool {
+    match serde_json::to_string(&message) {
+        Ok(json) => sender.send(Message::Text(json.into())).await.is_ok(),
+        Err(_) => false,
+    }
+}
+
+fn recover_request_id(text: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    value
+        .get("payload")?
+        .get("request_id")?
+        .as_str()
+        .map(str::to_owned)
 }
 
 fn task_snapshots_for_user(
@@ -477,6 +734,50 @@ mod tests {
             }
             _ => panic!("Expected TransferPlayback variant"),
         }
+
+        let create = ClientMessage::CreateRipTask {
+            request_id: "create-1".to_owned(),
+            request: crate::tasks::RipTaskRequest {
+                provider: "apple".to_owned(),
+                track_id: "123".to_owned(),
+                codec: Some("flac".to_owned()),
+                title: None,
+                artist: None,
+                album: None,
+                duration: None,
+            },
+        };
+        let round_trip: ClientMessage =
+            serde_json::from_str(&serde_json::to_string(&create).unwrap()).unwrap();
+        match round_trip {
+            ClientMessage::CreateRipTask {
+                request_id,
+                request,
+            } => {
+                assert_eq!(request_id, "create-1");
+                assert_eq!(request.provider, "apple");
+                assert_eq!(request.track_id, "123");
+                assert_eq!(request.codec.as_deref(), Some("flac"));
+            }
+            _ => panic!("Expected CreateRipTask variant"),
+        }
+
+        let cancel = ClientMessage::CancelRipTask {
+            request_id: "cancel-1".to_owned(),
+            task_id: "task-1".to_owned(),
+        };
+        let round_trip: ClientMessage =
+            serde_json::from_str(&serde_json::to_string(&cancel).unwrap()).unwrap();
+        match round_trip {
+            ClientMessage::CancelRipTask {
+                request_id,
+                task_id,
+            } => {
+                assert_eq!(request_id, "cancel-1");
+                assert_eq!(task_id, "task-1");
+            }
+            _ => panic!("Expected CancelRipTask variant"),
+        }
     }
 
     #[test]
@@ -493,6 +794,52 @@ mod tests {
         let serialized = serde_json::to_string(&server_msg).unwrap();
         let parsed: ServerMessage = serde_json::from_str(&serialized).unwrap();
         assert_eq!(server_msg, parsed);
+
+        let new_variants = [
+            ServerMessage::RipTaskCreated {
+                request_id: "create-1".to_owned(),
+                task_id: "task-1".to_owned(),
+                status: RipTaskStatus::Queued,
+                result_track_id: None,
+                task: None,
+            },
+            ServerMessage::RipTaskCreated {
+                request_id: "create-2".to_owned(),
+                task_id: String::new(),
+                status: RipTaskStatus::Completed,
+                result_track_id: Some(42),
+                task: None,
+            },
+            ServerMessage::RipTaskCancelled {
+                request_id: "cancel-1".to_owned(),
+                task_id: "task-1".to_owned(),
+            },
+            ServerMessage::Error {
+                request_id: Some("error-1".to_owned()),
+                code: RpcErrorCode::Unavailable,
+                message: "temporarily unavailable".to_owned(),
+                retryable: true,
+            },
+            ServerMessage::Error {
+                request_id: None,
+                code: RpcErrorCode::Validation,
+                message: "malformed client message".to_owned(),
+                retryable: false,
+            },
+        ];
+        for message in new_variants {
+            let serialized = serde_json::to_string(&message).unwrap();
+            let value: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+            let expected_type = match &message {
+                ServerMessage::RipTaskCreated { .. } => "rip_task_created",
+                ServerMessage::RipTaskCancelled { .. } => "rip_task_cancelled",
+                ServerMessage::Error { .. } => "error",
+                _ => unreachable!(),
+            };
+            assert_eq!(value["type"], expected_type);
+            let parsed: ServerMessage = serde_json::from_str(&serialized).unwrap();
+            assert_eq!(message, parsed);
+        }
     }
 
     #[test]
