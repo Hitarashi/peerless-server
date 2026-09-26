@@ -307,11 +307,6 @@ impl<S: StreamHttp, M: MirrorHttp> AppleStreamAcquisition<S, M> {
                             self.mirror_policy.record_failure(&message);
                         }
                     }
-                    Err(StreamError::LimitExceeded { .. }) => {
-                        return AcquisitionAttempt::Typed(StreamError::LimitExceeded {
-                            limit_mib: engine::limits::MAX_AUDIO_BYTES / (1024 * 1024),
-                        });
-                    }
                     Err(StreamError::Cancelled) => {
                         errors.push("Primary mirror cancelled".to_owned());
                     }
@@ -418,11 +413,6 @@ impl<S: StreamHttp, M: MirrorHttp> AppleStreamAcquisition<S, M> {
                             Ok(source) => return AcquisitionAttempt::Source(source),
                             Err(reason) => unavailable_reason = Some(reason),
                         }
-                    }
-                    Err(StreamError::LimitExceeded { .. }) => {
-                        return AcquisitionAttempt::Typed(StreamError::LimitExceeded {
-                            limit_mib: engine::limits::MAX_AUDIO_BYTES / (1024 * 1024),
-                        });
                     }
                     Err(StreamError::Cancelled) => {
                         errors.push(format!(

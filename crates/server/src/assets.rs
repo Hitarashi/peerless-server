@@ -56,14 +56,15 @@ pub struct LyricsQuery {
     path = "/api/v1/assets/tracks/{id}/artwork",
     tag = "assets",
     summary = "Get Track Artwork (HTTP 307 Redirect)",
-    description = "Returns an HTTP 307 temporary redirect to the high-resolution album artwork image on provider CDNs, scaled to the requested pixel dimensions.",
+    description = "Returns an HTTP 307 temporary redirect to provider artwork scaled to the requested pixel dimensions. If the selected track has no artwork, the handler tries tracks with the same non-empty ISRC and redirects to the first available sibling artwork.",
     params(
         ("id" = i32, Path, description = "Unique database track ID", example = 42),
         ArtworkQuery
     ),
     responses(
-        (status = 307, description = "Temporary redirect to provider CDN artwork URL"),
-        (status = 404, description = "Track not found or artwork unavailable")
+        (status = 307, description = "Temporary redirect to the selected track's or an ISRC sibling track's provider artwork URL"),
+        (status = 404, description = "Track not found, or no artwork was found for the track or any ISRC sibling"),
+        (status = 500, description = "Internal error while retrieving the track or searching its ISRC siblings")
     )
 )]
 pub async fn get_artwork(
@@ -142,9 +143,10 @@ pub async fn get_artwork(
         ProviderArtworkQuery
     ),
     responses(
-        (status = 307, description = "Temporary redirect to provider CDN artwork URL"),
+        (status = 307, description = "Temporary redirect to the resolved provider artwork URL"),
         (status = 400, description = "Unsupported provider"),
-        (status = 404, description = "Artwork unavailable")
+        (status = 404, description = "No artwork could be resolved for the provider track"),
+        (status = 500, description = "Internal error while constructing the redirect response")
     )
 )]
 pub async fn get_provider_artwork(
@@ -463,19 +465,16 @@ pub struct LyricsResponse {
     get,
     path = "/api/v1/assets/tracks/{id}/lyrics",
     tag = "assets",
-    summary = "Get Synchronized Lyrics",
-    description = "Resolves word-by-word or line-by-line synchronized TTML/LRC lyrics using multi-provider engine (LRCLIB, BetterLyrics, Paxsenix, Unison). Returns structured timestamped lines, sync level, provider, and attribution metadata.",
+    summary = "Get Track Lyrics",
+    description = "Resolves provider-sourced synchronized TTML/LRC or plain lyrics and returns structured lines, timing, provider, and attribution metadata. If no lyrics are found, returns a plain-text fallback containing the track title and artist. Set `refresh=true` to bypass the server cache.",
     params(
         ("id" = i32, Path, description = "Unique database track ID", example = 42),
         LyricsQuery
     ),
     responses(
-        (status = 200, description = "Synchronized lyrics lines and timing metadata", body = LyricsResponse),
-        (status = 401, description = "Unauthorized - Missing or invalid Bearer token"),
-        (status = 404, description = "Lyrics not found for track")
-    ),
-    security(
-        ("bearer_auth" = [])
+        (status = 200, description = "Provider lyrics or the track title-and-artist fallback", body = LyricsResponse),
+        (status = 404, description = "Track not found"),
+        (status = 500, description = "Internal error while retrieving track metadata")
     )
 )]
 pub async fn get_lyrics(

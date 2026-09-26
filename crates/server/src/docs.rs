@@ -25,6 +25,16 @@ impl Modify for SecurityAddon {
                 ),
             );
         }
+
+        if let Some(stream_path) = openapi.paths.paths.get_mut("/api/v1/stream")
+            && let Some(head) = stream_path.head.as_mut()
+        {
+            for response in head.responses.responses.values_mut() {
+                if let utoipa::openapi::RefOr::T(response) = response {
+                    response.content.clear();
+                }
+            }
+        }
     }
 }
 
@@ -33,7 +43,7 @@ impl Modify for SecurityAddon {
     info(
         title = "ALAC Lossless Media Streaming Server API",
         version = "1.0.0",
-        description = "# Lossless Audio & Media Streaming Engine\n\nHigh-performance lossless audio streaming server powered by Telegram MTProto backend, providing direct bit-perfect ALAC/FLAC streaming, sliding session auth, live catalog discovery, on-demand ripping, and synchronized lyrics.\n\n### Core Workflows\n1. **Authentication**: Users authenticate via the Telegram bot command `/stream` to obtain a single-use OTP code, exchanged at `/api/v1/auth/exchange` for sliding session tokens.\n2. **Bit-Perfect Streaming**: Lossless streams are requested via `/api/v1/tracks/{id}/playback` and served at `/api/v1/stream` with full HTTP 206 Partial Content Range support.\n3. **Catalog & Discovery**: Query cached tracks and live Apple Music catalog items simultaneously via `/api/v1/search`.\n4. **On-Demand Ripping**: Trigger background rip jobs via `/api/v1/tasks/rip`; server-owned snapshots and progress updates are sent over the authenticated playback WebSocket.",
+        description = "# Lossless Audio & Media Streaming Engine\n\nHigh-performance lossless audio streaming server powered by Telegram MTProto backend, serving ripped ALAC/FLAC source bytes via HTTP byte ranges without server-side transcoding, with sliding session auth, live catalog discovery, on-demand ripping, and synchronized lyrics.\n\n### Core Workflows\n1. **Authentication**: Users authenticate via the Telegram bot command `/stream` to obtain a single-use OTP code, exchanged at `/api/v1/auth/exchange` for sliding session tokens.\n2. **Source-byte Streaming**: Lossless streams are requested via `/api/v1/tracks/{id}/playback` and served at `/api/v1/stream` with HTTP 206 Partial Content Range support. The server returns the ripped ALAC/FLAC source bytes without server-side transcoding.\n3. **Catalog & Discovery**: Query cached tracks and live Apple Music catalog items simultaneously via `/api/v1/search`.\n4. **On-Demand Ripping**: Trigger background rip jobs via `/api/v1/tasks/rip`; server-owned snapshots and progress updates are sent over the authenticated playback WebSocket.",
         license(name = "MIT")
     ),
     servers(
@@ -72,6 +82,7 @@ impl Modify for SecurityAddon {
         crate::integrations::status,
         crate::integrations::disconnect,
         crate::health::health_check,
+        crate::playback_sync::ws_handler,
     ),
     components(
         schemas(
@@ -81,6 +92,7 @@ impl Modify for SecurityAddon {
             crate::auth::RefreshResponse,
             crate::auth::LogoutRequest,
             crate::auth::UserDto,
+            crate::auth::AuthedUser,
             crate::auth::SessionDto,
             crate::auth::MeResponse,
             crate::streaming::PlaybackInfo,
@@ -106,17 +118,21 @@ impl Modify for SecurityAddon {
             crate::integrations::LastfmLoginRequest,
             crate::integrations::LastfmStatusResponse,
             crate::health::HealthResponse,
+            crate::playback_sync::ConnectedDeviceInfo,
+            crate::playback_sync::ClientMessage,
+            crate::playback_sync::ServerMessage,
         )
     ),
     tags(
         (name = "auth", description = "Telegram OTP exchange, sliding session refresh, and user profile management"),
-        (name = "stream", description = "Direct bit-perfect lossless audio streaming and HMAC-SHA256 playback ticket generation"),
+        (name = "stream", description = "Direct ripped ALAC/FLAC source-byte streaming via HTTP byte ranges without server-side transcoding, and HMAC-SHA256 playback ticket generation"),
         (name = "catalog", description = "Music catalog search, track metadata, album tracklists, and artist discographies"),
         (name = "tasks", description = "On-demand provider ripping with server-owned task snapshots and playback WebSocket progress updates"),
         (name = "assets", description = "High-resolution album artwork redirection and synchronized TTML/LRC lyrics resolution"),
         (name = "library", description = "User favorited tracks and custom playlist management"),
         (name = "integrations", description = "Third-party integrations and Last.fm scrobbling authentication"),
         (name = "system", description = "Server health check, telemetry, and metrics"),
+        (name = "ws", description = "Authenticated, bidirectional playback synchronization WebSocket handshake; see the AsyncAPI document for its message protocol"),
     )
 )]
 pub struct ApiDoc;
@@ -137,8 +153,11 @@ const SCALAR_HTML: &str = r#"<!doctype html>
   <body>
     <script
       id="api-reference"
-      data-url="/api/v1/docs.json"
       data-configuration='{
+        "sources": [
+          { "title": "REST API", "url": "/api/v1/docs.json" },
+          { "title": "Playback WebSocket", "url": "/api/v1/docs-ws.json" }
+        ],
         "theme": "purple",
         "layout": "modern",
         "showSidebar": true,
@@ -190,5 +209,42 @@ pub async fn openapi_yaml() -> Response {
             format!("Failed to serialize OpenAPI yaml: {e}"),
         )
             .into_response(),
+    }
+}
+
+pub async fn asyncapi_json() -> Response {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        include_str!("playback_asyncapi.json"),
+    )
+        .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use utoipa::OpenApi;
+
+    use super::ApiDoc;
+
+    #[test]
+    fn registers_auth_user_and_omits_stream_body_from_head() {
+        let document = ApiDoc::openapi();
+        let document: serde_json::Value =
+            serde_json::from_str(&document.to_json().expect("OpenAPI serialization succeeds"))
+                .expect("OpenAPI JSON is valid");
+
+        assert!(document["components"]["schemas"]["AuthedUser"].is_object());
+        assert!(
+            document["paths"]["/api/v1/stream"]["get"]["responses"]["200"]["content"]["audio/*"]
+                .is_object()
+        );
+        for status in ["200", "206"] {
+            assert!(
+                document["paths"]["/api/v1/stream"]["head"]["responses"][status]
+                    .get("content")
+                    .is_none()
+            );
+        }
     }
 }

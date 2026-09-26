@@ -19,7 +19,7 @@ pub struct RipTaskRequest {
     /// Provider-native track identifier.
     #[schema(example = "1440857781")]
     pub track_id: String,
-    /// Desired lossless or compressed codec (`alac`, `flac`, `aac`).
+    /// Desired codec (`alac`, `flac`, or `aac`); unsupported values fall back to `alac`.
     #[schema(example = "alac")]
     pub codec: Option<String>,
     /// Display metadata retained by the server for task recovery.
@@ -29,13 +29,13 @@ pub struct RipTaskRequest {
     pub duration: Option<i32>,
 }
 
-/// Initial response returned when an on-demand rip task is queued.
+/// Response returned when a rip task is requested; cached tracks may complete immediately.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RipTaskResponse {
     /// Unique task identifier used to correlate WebSocket progress updates.
     #[schema(example = "task_01h7xyz...")]
     pub task_id: String,
-    /// Initial task status (`queued`).
+    /// `completed` for a cached track, otherwise `queued` (including an existing in-flight task).
     #[schema(example = "queued")]
     pub status: String,
 }
@@ -180,11 +180,11 @@ pub enum TaskSyncEvent {
     path = "/api/v1/tasks/rip",
     tag = "tasks",
     summary = "Create On-Demand Rip Task",
-    description = "Dispatches an asynchronous background ripping job via RipOrchestrator for uncached provider tracks. Returns a `task_id` used to correlate live task snapshots and progress over the authenticated playback WebSocket.",
+    description = "For an uncached track, dispatches an asynchronous background rip and returns a queued `task_id`; if an equivalent task is already active, returns its queued ID. If the track is already cached, returns a new ID with status `completed` without queuing a rip. Task snapshots and progress updates are sent over the authenticated playback WebSocket.",
     request_body = RipTaskRequest,
     responses(
-        (status = 200, description = "Rip task queued successfully", body = RipTaskResponse),
-        (status = 400, description = "Invalid request payload or unsupported provider"),
+        (status = 200, description = "Rip request accepted; status is `completed` for a cached track or `queued` for a new or reused active task", body = RipTaskResponse),
+        (status = 400, description = "Unsupported provider; provider must be `apple` or `qobuz`"),
         (status = 401, description = "Unauthorized - Missing or invalid Bearer token")
     ),
     security(

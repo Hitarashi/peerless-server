@@ -461,17 +461,19 @@ async fn main() -> Result<()> {
                                     .map(|tot| (byte_p.completed as f32 / tot as f32) * 100.0);
                                 current_track_title = Some(track.title.clone());
                                 current_track_artist = Some(track.artist.clone());
-                                if let Some(tot) = byte_p.total {
-                                    if tot > 0 {
-                                        speed_info = Some(format!(
-                                            "{:.1}/{:.1} MB",
-                                            byte_p.completed as f64 / 1_048_576.0,
-                                            tot as f64 / 1_048_576.0
-                                        ));
-                                    }
+                                if let Some(tot) = byte_p.total
+                                    && tot > 0
+                                {
+                                    speed_info = Some(format!(
+                                        "{:.1}/{:.1} MB",
+                                        byte_p.completed as f64 / 1_048_576.0,
+                                        tot as f64 / 1_048_576.0
+                                    ));
                                 }
                             }
-                            UploadLane::ArchiveBuild { progress: byte_p, .. } => {
+                            UploadLane::ArchiveBuild {
+                                progress: byte_p, ..
+                            } => {
                                 stage = Some("packaging_zip");
                                 percent = byte_p
                                     .total
@@ -479,17 +481,19 @@ async fn main() -> Result<()> {
                                 current_track_title = Some("Album ZIP archive".to_string());
                                 current_track_artist = None;
                                 is_archive = true;
-                                if let Some(tot) = byte_p.total {
-                                    if tot > 0 {
-                                        speed_info = Some(format!(
-                                            "{:.1}/{:.1} MB",
-                                            byte_p.completed as f64 / 1_048_576.0,
-                                            tot as f64 / 1_048_576.0
-                                        ));
-                                    }
+                                if let Some(tot) = byte_p.total
+                                    && tot > 0
+                                {
+                                    speed_info = Some(format!(
+                                        "{:.1}/{:.1} MB",
+                                        byte_p.completed as f64 / 1_048_576.0,
+                                        tot as f64 / 1_048_576.0
+                                    ));
                                 }
                             }
-                            UploadLane::ArchiveUpload { progress: byte_p, .. } => {
+                            UploadLane::ArchiveUpload {
+                                progress: byte_p, ..
+                            } => {
                                 stage = Some("uploading_zip");
                                 percent = byte_p
                                     .total
@@ -497,14 +501,14 @@ async fn main() -> Result<()> {
                                 current_track_title = Some("Album ZIP archive".to_string());
                                 current_track_artist = None;
                                 is_archive = true;
-                                if let Some(tot) = byte_p.total {
-                                    if tot > 0 {
-                                        speed_info = Some(format!(
-                                            "{:.1}/{:.1} MB",
-                                            byte_p.completed as f64 / 1_048_576.0,
-                                            tot as f64 / 1_048_576.0
-                                        ));
-                                    }
+                                if let Some(tot) = byte_p.total
+                                    && tot > 0
+                                {
+                                    speed_info = Some(format!(
+                                        "{:.1}/{:.1} MB",
+                                        byte_p.completed as f64 / 1_048_576.0,
+                                        tot as f64 / 1_048_576.0
+                                    ));
                                 }
                             }
                         }

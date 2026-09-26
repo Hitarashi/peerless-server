@@ -211,11 +211,11 @@ pub struct ExchangeResponse {
     /// Standard Bearer token type.
     #[schema(example = "Bearer")]
     pub token_type: &'static str,
-    /// Raw token string (AdonisJS opaque token).
+    /// Opaque session token, identical to `access_token` and `refresh_token` in this response.
     pub token: String,
-    /// Access token for Bearer Authorization headers.
+    /// Bearer token for Authorization headers; identical to `token` and `refresh_token`.
     pub access_token: String,
-    /// Refresh token used to slide sessions forward.
+    /// Token accepted by the refresh endpoint; identical to `token` and `access_token`.
     pub refresh_token: String,
     /// Number of seconds until session expiry (default 259,200s / 3 days).
     #[schema(example = 259200)]
@@ -244,11 +244,11 @@ pub struct RefreshResponse {
     /// Standard Bearer token type.
     #[schema(example = "Bearer")]
     pub token_type: &'static str,
-    /// Raw token string.
+    /// Opaque session token supplied in the request, unchanged and identical to the other token fields.
     pub token: String,
-    /// Refreshed access token.
+    /// Bearer token for Authorization headers; identical to `token` and `refresh_token`.
     pub access_token: String,
-    /// Refreshed refresh token.
+    /// Token accepted by the refresh endpoint; identical to `token` and `access_token`.
     pub refresh_token: String,
     /// Number of seconds until session expiry.
     #[schema(example = 259200)]
@@ -353,11 +353,12 @@ pub async fn exchange(
     post,
     path = "/api/v1/auth/refresh",
     tag = "auth",
-    summary = "Refresh Session Tokens",
-    description = "Extends the user session forward by 3 days and issues refreshed sliding session tokens.",
+    summary = "Extend Session Expiration",
+    description = "Slides the session expiry to 3 days from the time of the request. The response returns the same opaque token supplied in the request as `token`, `access_token`, and `refresh_token`; no new token is generated.",
     request_body = RefreshRequest,
     responses(
-        (status = 200, description = "Token renewed and slid forward by 3 days", body = RefreshResponse),
+        (status = 200, description = "Session expiry extended by 3 days; the existing token is returned unchanged", body = RefreshResponse),
+        (status = 400, description = "Missing both `token` and `refresh_token` in the request body"),
         (status = 401, description = "Invalid, expired, or revoked token")
     )
 )]
@@ -401,10 +402,10 @@ pub async fn refresh(
     path = "/api/v1/auth/logout",
     tag = "auth",
     summary = "Revoke Session (Logout)",
-    description = "Revokes an active session from PostgreSQL and evicts it from the in-memory token cache. Can be called either with an `Authorization: Bearer <token>` header or with `{ \"refresh_token\": \"...\" }` in the JSON request body.",
+    description = "With `token` or `refresh_token` in the JSON body, revokes that session. With a valid `Authorization: Bearer <token>` header and no token in the body, revokes all sessions for the authenticated user. A body token takes precedence over the Bearer header.",
     request_body = LogoutRequest,
     responses(
-        (status = 200, description = "Session successfully revoked"),
+        (status = 200, description = "Logout request processed; returns `revoked: true` after the revocation attempt without confirming that a matching session existed"),
         (status = 401, description = "Missing token or authorization")
     ),
     security(
@@ -445,7 +446,8 @@ pub async fn logout(
     description = "Returns current authenticated user profile and all active device sessions registered in the database.",
     responses(
         (status = 200, description = "Current authenticated user profile and sessions", body = MeResponse),
-        (status = 401, description = "Unauthorized - Missing or invalid Bearer token")
+        (status = 401, description = "Unauthorized - Missing or invalid Bearer token"),
+        (status = 500, description = "Internal error while retrieving active sessions")
     ),
     security(
         ("bearer_auth" = [])
@@ -486,7 +488,8 @@ pub async fn me(
     responses(
         (status = 200, description = "Telegram profile photo", content_type = "image/jpeg"),
         (status = 404, description = "No Telegram profile photo is available"),
-        (status = 401, description = "Unauthorized")
+        (status = 401, description = "Unauthorized"),
+        (status = 500, description = "Internal error while retrieving or downloading the Telegram profile photo")
     ),
     security(("bearer_auth" = []))
 )]

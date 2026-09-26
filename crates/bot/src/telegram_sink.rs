@@ -12,6 +12,8 @@ use ferogram::{
 
 /// Maximum caption length allowed by Telegram for media messages (in UTF-16 code units).
 const MAX_CAPTION_UTF16_LEN: usize = 1024;
+/// Maximum size allowed for one audio track upload through Telegram.
+const MAX_TELEGRAM_TRACK_BYTES: u64 = 2_000_000_000;
 
 /// Clamps plain text to fit within `max_utf16` code units, appending an ellipsis if truncated.
 fn clamp_plain_text(text: &str, max_utf16: usize) -> String {
@@ -185,6 +187,15 @@ impl Delivery for FerogramTelegramSink {
                     caption_html,
                     on_upload_progress,
                 } => {
+                    let size = tokio::fs::metadata(&file_path)
+                        .await
+                        .map_err(|error| DeliveryError::LocalIo(error.to_string()))?
+                        .len();
+                    if size > MAX_TELEGRAM_TRACK_BYTES {
+                        return Err(DeliveryError::Rejected(DeliveryRejection::Other(format!(
+                            "track exceeds Telegram's 2000 MB per-track upload limit ({size} bytes)"
+                        ))));
+                    }
                     let handle = TransferHandle::new();
                     let progress = progress_task(&handle, on_upload_progress.as_ref());
                     let upload_result = self.client.upload_file(&file_path).handle(&handle).await;

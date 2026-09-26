@@ -121,11 +121,11 @@ pub struct TrackDetailDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(example = "USCJY1431245")]
     pub isrc: Option<String>,
-    /// Track composer.
+    /// Track composer; currently unavailable in database-backed track responses.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(example = "Taylor Swift, Max Martin, Shellback")]
     pub composer: Option<String>,
-    /// Disc number for multi-disc releases.
+    /// Disc number for multi-disc releases; currently unavailable in database-backed track responses.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(example = 1)]
     pub disc_number: Option<i32>,
@@ -221,13 +221,13 @@ pub struct SearchQuery {
     /// Search query string (song title, artist, or album).
     #[param(example = "Taylor Swift Blank Space")]
     pub q: String,
-    /// Target provider filter (`apple` or `qobuz`).
+    /// Selects live catalog lookup only: omitted defaults to Apple, `apple` enables it, and other values skip live lookup. Cached results are not filtered by this parameter.
     #[param(example = "apple")]
     pub provider: Option<String>,
     /// Page number (1-based pagination).
     #[param(example = 1)]
     pub page: Option<i64>,
-    /// Results per page (default: 20, max: 100).
+    /// Results per page (default: 20, clamped to 1-100).
     #[param(example = 20)]
     pub limit: Option<i64>,
 }
@@ -248,12 +248,13 @@ pub struct SearchResponse {
     path = "/api/v1/search",
     tag = "catalog",
     summary = "Search Cached & Live Music Catalog",
-    description = "Searches tracks with pagination (`page`, `limit`). Returns both instantly playable cached tracks and live provider catalog results.",
+    description = "Searches cached tracks and, when available, up to 10 live Apple Music results for a non-empty query. `page` and `limit` paginate only cached results; live results are not paginated. `provider` defaults to `apple`; only an `apple` value (case-insensitive) enables live lookup, while cached results are returned regardless of provider.",
     params(
         SearchQuery
     ),
     responses(
-        (status = 200, description = "Deduplicated cached and live search results", body = SearchResponse)
+        (status = 200, description = "Deduplicated cached and live search results", body = SearchResponse),
+        (status = 500, description = "Internal error while searching cached tracks")
     )
 )]
 pub async fn search_catalog(
@@ -495,16 +496,14 @@ pub fn build_canonical_tracks(
     path = "/api/v1/tracks/{id}",
     tag = "catalog",
     summary = "Get Track Metadata & Audio Specs",
-    description = "Retrieves full track details including codec, bit depth, sample rate, ISRC, composer, and cached status.",
+    description = "Retrieves database track metadata and technical specifications, including codec, bit depth, sample rate, ISRC, and cached status. Composer and disc number are currently unavailable in database-backed track responses and are omitted.",
     params(
         ("id" = i32, Path, description = "Unique database track ID", example = 42)
     ),
     responses(
         (status = 200, description = "Comprehensive track metadata", body = TrackDetailDto),
-        (status = 404, description = "Track not found in database cache")
-    ),
-    security(
-        ("bearer_auth" = [])
+        (status = 404, description = "Track not found in database cache"),
+        (status = 500, description = "Internal error while retrieving track metadata")
     )
 )]
 pub async fn get_track(
@@ -538,7 +537,7 @@ pub struct PaginationQuery {
     /// Page number (1-based index).
     #[param(example = 1)]
     pub page: Option<i64>,
-    /// Number of items per page (default: 30, max: 100).
+    /// Number of items per page (default: 30, clamped to 1-100).
     #[param(example = 30)]
     pub limit: Option<i64>,
 }
@@ -553,10 +552,8 @@ pub struct PaginationQuery {
         PaginationQuery
     ),
     responses(
-        (status = 200, description = "Paginated list of distinct cached albums", body = Vec<AlbumSummaryDto>)
-    ),
-    security(
-        ("bearer_auth" = [])
+        (status = 200, description = "Paginated list of distinct cached albums", body = Vec<AlbumSummaryDto>),
+        (status = 500, description = "Internal error while retrieving cached albums")
     )
 )]
 pub async fn list_albums(
@@ -611,10 +608,8 @@ pub struct AlbumDetailsDto {
     ),
     responses(
         (status = 200, description = "Album metadata and ordered tracklist", body = AlbumDetailsDto),
-        (status = 404, description = "Album not found in cache or live catalog")
-    ),
-    security(
-        ("bearer_auth" = [])
+        (status = 404, description = "Album not found in cache or live catalog"),
+        (status = 500, description = "Internal error while retrieving cached album tracks")
     )
 )]
 pub async fn get_album_tracks(
@@ -693,15 +688,13 @@ pub async fn get_album_tracks(
     path = "/api/v1/artists/{name}/tracks",
     tag = "catalog",
     summary = "Get Artist Tracks",
-    description = "Returns all cached tracks for a specified artist.",
+    description = "Returns up to 50 cached tracks whose artist field contains the supplied text, case-insensitively.",
     params(
         ("name" = String, Path, description = "Artist name", example = "Taylor Swift")
     ),
     responses(
-        (status = 200, description = "List of cached tracks by artist", body = Vec<TrackSummaryDto>)
-    ),
-    security(
-        ("bearer_auth" = [])
+        (status = 200, description = "List of up to 50 cached tracks by artist", body = Vec<TrackSummaryDto>),
+        (status = 500, description = "Internal error while retrieving the artist's cached tracks")
     )
 )]
 pub async fn get_artist_tracks(

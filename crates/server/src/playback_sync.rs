@@ -11,66 +11,110 @@ use axum::{
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, broadcast};
+use utoipa::ToSchema;
 
 use crate::{ServerState, error::ServerError};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Identifies a device currently connected to the authenticated user's playback room.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 pub struct ConnectedDeviceInfo {
+    /// Client-chosen identifier for this device.
     pub device_id: String,
+    /// Human-readable device name shown to other clients in the room.
     pub device_name: String,
+    /// Client-reported platform, such as `ios`, `android`, `web`, or `desktop`.
     pub platform: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Messages sent by a client to the playback synchronization server.
+///
+/// The wire representation is adjacent-tagged JSON: `{"type":"...","payload":{...}}`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type", content = "payload")]
 pub enum ClientMessage {
+    /// Register this connection as a device in the user's room. Required before receiving rip-task events.
     #[serde(rename = "hello")]
     Hello {
+        /// Client-chosen identifier for this device.
         device_id: String,
+        /// Human-readable device name.
         device_name: String,
+        /// Client-reported platform.
         platform: String,
     },
+    /// Publish playback state. The server treats `snapshot` as opaque JSON and stores/rebroadcasts it unchanged.
     #[serde(rename = "report_state")]
-    ReportState { snapshot: serde_json::Value },
+    ReportState {
+        /// Opaque client playback state; the server does not parse or validate its contents.
+        snapshot: serde_json::Value,
+    },
+    /// Ask every device in the room (including the sender) to perform an action.
     #[serde(rename = "command")]
     Command {
-        action: String, // "play", "pause", "seek", "next", "prev", "select_track"
+        /// Action name, commonly `play`, `pause`, `seek`, `next`, `prev`, or `select_track`.
+        action: String,
+        /// Optional action-specific data, whose structure is defined by the client application.
         #[serde(default)]
         data: Option<serde_json::Value>,
     },
+    /// Make the named device the active playback device and broadcast the resulting room state.
     #[serde(rename = "transfer_playback")]
-    TransferPlayback { target_device_id: String },
+    TransferPlayback {
+        /// Identifier of the device to make active.
+        target_device_id: String,
+    },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Messages sent by the server to clients in a playback room.
+///
+/// The wire representation is adjacent-tagged JSON: `{"type":"...","payload":{...}}`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(tag = "type", content = "payload")]
 pub enum ServerMessage {
+    /// Current room membership, active device, and most recently reported playback snapshot.
     #[serde(rename = "room_state")]
     RoomState {
+        /// Device currently controlling playback, if one is active.
         active_device_id: Option<String>,
+        /// Devices currently connected to the room.
         devices: Vec<ConnectedDeviceInfo>,
+        /// Latest opaque playback snapshot, if any has been reported by the active device.
         snapshot: Option<serde_json::Value>,
     },
+    /// A new playback snapshot reported by the active device.
     #[serde(rename = "state_updated")]
     StateUpdated {
+        /// Device currently controlling playback.
         active_device_id: Option<String>,
+        /// Opaque playback state, forwarded without server-side interpretation.
         snapshot: serde_json::Value,
     },
+    /// A room-wide command to execute locally; this is also delivered back to its sender.
     #[serde(rename = "execute_command")]
     ExecuteCommand {
+        /// Action name supplied by the client that issued the command.
         action: String,
+        /// Optional action-specific data supplied by the sender.
         data: Option<serde_json::Value>,
     },
+    /// Full active rip-task state, sent after `hello` and when a task subscriber falls behind.
     #[serde(rename = "rip_tasks_snapshot")]
     RipTasksSnapshot {
+        /// Current active server-owned task snapshots; each task's `is_owner` identifies ownership.
         tasks: Vec<crate::tasks::RipTaskSnapshot>,
     },
+    /// Updated state for one server-owned rip task.
     #[serde(rename = "rip_task_updated")]
     RipTaskUpdated {
+        /// Updated task snapshot.
         task: Box<crate::tasks::RipTaskSnapshot>,
     },
+    /// Notification that a task was dismissed or is no longer active.
     #[serde(rename = "rip_task_dismissed")]
-    RipTaskDismissed { task_id: String },
+    RipTaskDismissed {
+        /// Identifier of the dismissed task.
+        task_id: String,
+    },
 }
 
 pub struct SyncRoom {
@@ -116,6 +160,21 @@ pub struct WsAuthQuery {
     pub token: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/ws/playback",
+    tag = "ws",
+    summary = "Upgrade to the playback synchronization WebSocket",
+    description = "This operation documents only the HTTP WebSocket upgrade handshake. The bidirectional WebSocket message contract is documented separately in the [Playback WebSocket AsyncAPI document](/api/v1/docs-ws.json), which is also available from the Scalar API reference.",
+    params(
+        ("token" = Option<String>, Query, description = "Optional session token query parameter. Prefer the Authorization: Bearer header because query-string tokens can appear in URLs, proxy/access logs, and browser history. A blank query value falls back to the header.")
+    ),
+    responses(
+        (status = 101, description = "WebSocket protocol switch; the connection is upgraded."),
+        (status = 401, description = "Unauthorized: token is missing, empty, or invalid.")
+    ),
+    security(("bearer_auth" = []))
+)]
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<Arc<ServerState>>,

@@ -350,6 +350,7 @@ pub fn create_router(state: Arc<ServerState>) -> Router {
         .route("/api/v1/docs", get(docs::scalar_html))
         .route("/api/v1/docs.json", get(docs::openapi_json))
         .route("/api/v1/docs.yaml", get(docs::openapi_yaml))
+        .route("/api/v1/docs-ws.json", get(docs::asyncapi_json))
         // Intent Gateway
         .route("/open", get(gateway::open_gateway))
         // Health & Telemetry

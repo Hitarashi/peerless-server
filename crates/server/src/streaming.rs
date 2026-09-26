@@ -133,17 +133,17 @@ pub struct PlaybackInfo {
     /// Audio sampling rate in Hz (e.g. 44100, 48000, 96000, 192000).
     #[schema(example = 96000)]
     pub sample_rate: Option<i32>,
-    /// Total audio file size in bytes.
+    /// Audio file size in bytes; estimated from duration when media metadata cannot be resolved.
     #[schema(example = 48920110)]
     pub file_size: i64,
 }
 
 #[utoipa::path(
-    get,
+    method(get, post),
     path = "/api/v1/tracks/{id}/playback",
     tag = "stream",
     summary = "Generate Stream Ticket & Playback Info",
-    description = "Generates an HMAC-SHA256 signed playback ticket and metadata for bit-perfect audio streaming. Supports both GET and POST requests.",
+    description = "Generates an HMAC-SHA256 signed playback ticket and metadata for serving original ripped audio bytes over HTTP byte ranges without server-side transcoding or re-encoding. GET and POST run the same operation: both require the track ID and Bearer authentication, read no request body, and return the same PlaybackInfo response.",
     params(
         ("id" = i32, Path, description = "Unique database track ID")
     ),
@@ -151,7 +151,8 @@ pub struct PlaybackInfo {
         (status = 200, description = "Signed stream ticket and audio format metadata", body = PlaybackInfo),
         (status = 401, description = "Unauthorized - Missing or invalid Bearer token"),
         (status = 403, description = "Forbidden - Last.fm account connection required"),
-        (status = 404, description = "Track not found in database cache")
+        (status = 404, description = "Track not found in database cache"),
+        (status = 500, description = "Internal error while checking the Last.fm connection or resolving the track")
     ),
     security(
         ("bearer_auth" = [])
@@ -208,20 +209,21 @@ pub struct StreamQuery {
 }
 
 #[utoipa::path(
-    get,
+    method(get, head),
     path = "/api/v1/stream",
     tag = "stream",
-    summary = "Direct Bit-Perfect Lossless Audio Stream (HTTP 206)",
-    description = "Streams lossless audio directly from Telegram MTProto chunk cache. Audio streaming strictly requires a valid signed HMAC ticket. Supports HTTP 206 Partial Content Range requests (`Range: bytes=start-end`) and HEAD preflight requests without downloading the entire file.",
+    summary = "Direct Lossless Audio Stream",
+    description = "GET streams audio bytes using a valid signed HMAC ticket. Without a `Range` header it returns the full stream with 200; a single byte range returns 206. Range values may use `bytes=start-end`, `bytes=start-`, or `bytes=-suffix-length`; the response `Content-Range` uses inclusive offsets in the form `bytes start-end/total`, and an end beyond the file size is clamped. HEAD performs the same ticket and media checks and returns the corresponding status and headers without an audio response body.",
     params(
         StreamQuery
     ),
     responses(
-        (status = 200, description = "Full audio file stream"),
-        (status = 206, description = "Partial content audio byte range stream (`Content-Range: bytes start-end/total`)"),
-        (status = 400, description = "Missing or empty stream ticket query parameter"),
+        (status = 200, description = "GET response: full audio byte stream (`Content-Type`, `Content-Length`, and `Accept-Ranges: bytes` headers). HEAD returns the same headers with no body.", body = Vec<u8>, content_type = "audio/*"),
+        (status = 206, description = "GET response: partial audio byte stream for the requested range, with `Content-Range: bytes start-end/total` and inclusive offsets. HEAD returns the same range status and headers with no body.", body = Vec<u8>, content_type = "audio/*"),
+        (status = 400, description = "Missing or empty stream ticket, or malformed or out-of-bounds Range header"),
         (status = 401, description = "Invalid, expired, or tampered stream ticket"),
-        (status = 404, description = "Track not found in database or MTProto channel")
+        (status = 404, description = "Track or its media document not found"),
+        (status = 500, description = "Internal error while resolving media or constructing the response")
     )
 )]
 pub async fn stream_handler(

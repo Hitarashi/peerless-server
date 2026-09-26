@@ -22,8 +22,11 @@ pub struct LastfmLoginRequest {
 pub struct LastfmStatusResponse {
     pub connected: bool,
     pub username: Option<String>,
+    /// Raw Last.fm session key returned to the client in this response when connected.
     pub session_key: Option<String>,
+    /// Last.fm API key from `LASTFM_API_KEY`, included in this response when configured.
     pub api_key: Option<String>,
+    /// Last.fm API shared secret from `LASTFM_SHARED_SECRET`, included in this response when configured.
     pub api_secret: Option<String>,
 }
 
@@ -57,12 +60,13 @@ pub fn compute_api_sig(
     path = "/api/v1/integrations/lastfm/login",
     tag = "integrations",
     summary = "Connect Last.fm Account",
-    description = "Authenticates with Last.fm using auth.getMobileSession, securely encrypts the session key at rest, and connects the user's Last.fm account.",
+    description = "Authenticates with Last.fm using auth.getMobileSession and stores the session key encrypted at rest. The response body includes the raw Last.fm session key, API key, and API shared secret.",
     request_body = LastfmLoginRequest,
     responses(
-        (status = 200, description = "Successfully connected Last.fm account", body = LastfmStatusResponse),
+        (status = 200, description = "Connected account and the raw Last.fm session key and configured API credentials", body = LastfmStatusResponse),
         (status = 400, description = "Invalid credentials or Last.fm authentication error"),
-        (status = 401, description = "Unauthorized - Missing or invalid Bearer token")
+        (status = 401, description = "Unauthorized - Missing or invalid Bearer token"),
+        (status = 500, description = "Internal error while contacting Last.fm, loading credentials, encrypting the session key, or saving the integration")
     ),
     security(
         ("bearer_auth" = [])
@@ -149,8 +153,9 @@ pub async fn login(
     summary = "Get Last.fm Connection Status",
     description = "Checks if the authenticated user has connected their Last.fm account, returning decrypted credentials if available.",
     responses(
-        (status = 200, description = "Integration status and credentials", body = LastfmStatusResponse),
-        (status = 401, description = "Unauthorized - Missing or invalid Bearer token")
+        (status = 200, description = "Integration status, decrypted session key when connected, and configured API credentials", body = LastfmStatusResponse),
+        (status = 401, description = "Unauthorized - Missing or invalid Bearer token"),
+        (status = 500, description = "Internal error while retrieving the integration or decrypting its session key")
     ),
     security(
         ("bearer_auth" = [])
@@ -198,10 +203,11 @@ pub async fn status(
     path = "/api/v1/integrations/lastfm",
     tag = "integrations",
     summary = "Disconnect Last.fm Account",
-    description = "Removes the stored Last.fm integration for the authenticated user.",
+    description = "Removes the stored Last.fm integration for the authenticated user, if one is present.",
     responses(
-        (status = 204, description = "Successfully disconnected Last.fm account"),
-        (status = 401, description = "Unauthorized - Missing or invalid Bearer token")
+        (status = 204, description = "Last.fm integration removed if present"),
+        (status = 401, description = "Unauthorized - Missing or invalid Bearer token"),
+        (status = 500, description = "Internal error while deleting the integration")
     ),
     security(
         ("bearer_auth" = [])

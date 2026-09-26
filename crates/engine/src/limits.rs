@@ -3,7 +3,6 @@
 use std::time::Duration;
 
 pub const MAX_DOCUMENT_BYTES: u64 = 256 * 1024 * 1024;
-pub const MAX_AUDIO_BYTES: u64 = 512 * 1024 * 1024;
 pub const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
 pub const MAX_PROCESS_OUTPUT_BYTES: usize = 1024 * 1024;
 pub const PROCESS_TIMEOUT: Duration = Duration::from_secs(15 * 60);

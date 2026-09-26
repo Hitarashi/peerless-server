@@ -9,10 +9,7 @@ use super::{
     http::{ByteStream, StreamHttp, StreamHttpError},
     source_id::SourceId,
 };
-use crate::{
-    limits::{MAX_AUDIO_BYTES, MAX_ERROR_BODY_BYTES},
-    orchestrator::types::RipActivity,
-};
+use crate::{limits::MAX_ERROR_BODY_BYTES, orchestrator::types::RipActivity};
 
 pub struct FetchEndpointOptions {
     pub stream_url: String,
@@ -60,9 +57,6 @@ pub enum StreamError {
         expected: u64,
         received: u64,
     },
-    LimitExceeded {
-        limit_mib: u64,
-    },
     Cancelled,
 }
 
@@ -95,9 +89,6 @@ impl std::fmt::Display for StreamError {
                 formatter,
                 "incomplete audio body from {source}: expected {expected} bytes, received {received}"
             ),
-            Self::LimitExceeded { limit_mib } => {
-                write!(formatter, "audio stream exceeds the {limit_mib} MiB limit")
-            }
             Self::Cancelled => formatter.write_str("Download was cancelled"),
         }
     }
@@ -187,14 +178,6 @@ impl<H: StreamHttp> StreamTransport<H> {
         let body = response
             .body
             .ok_or_else(|| StreamError::message(format!("Empty body from {source}")))?;
-        if response
-            .content_length
-            .is_some_and(|length| length > MAX_AUDIO_BYTES)
-        {
-            return Err(StreamError::LimitExceeded {
-                limit_mib: MAX_AUDIO_BYTES / (1024 * 1024),
-            });
-        }
         // Malformed values parse as documented defaults instead of
         // failing, which only ever happens with misbehaving mirrors.
         let bit_depth = response

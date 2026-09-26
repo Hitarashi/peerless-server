@@ -19,7 +19,6 @@ use tracing::{debug, warn};
 
 use crate::{
     filename::StandardFilename,
-    limits::MAX_AUDIO_BYTES,
     orchestrator::types::{ByteProgress, RipActivity, TrackLabel},
     streaming::{AudioStreamSource, ProgressCallback, SourceId, StreamError},
     tagger,
@@ -75,9 +74,6 @@ pub enum RipError {
         source: Option<SourceId>,
         detail: String,
     },
-    LimitExceeded {
-        limit_mib: u64,
-    },
     Message(String),
 }
 
@@ -116,9 +112,6 @@ impl std::fmt::Display for RipError {
             Self::License { detail } => write!(formatter, "license error: {detail}"),
             Self::Decrypt { detail } => write!(formatter, "decrypt failed: {detail}"),
             Self::Decode { detail, .. } => write!(formatter, "audio decode failed: {detail}"),
-            Self::LimitExceeded { limit_mib } => {
-                write!(formatter, "audio stream exceeds the {limit_mib} MiB limit")
-            }
             Self::Message(message) => formatter.write_str(message),
         }
     }
@@ -160,7 +153,6 @@ impl From<StreamError> for RipError {
                 expected,
                 received,
             },
-            StreamError::LimitExceeded { limit_mib } => RipError::LimitExceeded { limit_mib },
             StreamError::Cancelled => RipError::Cancelled,
         }
     }
@@ -656,11 +648,6 @@ impl AlacTrackRipper {
 
             let result: Result<TrackRipResult, RipError> = async {
                 let total = stream.content_length.filter(|len| *len > 0);
-                if total.is_some_and(|length| length > MAX_AUDIO_BYTES) {
-                    return Err(RipError::LimitExceeded {
-                        limit_mib: MAX_AUDIO_BYTES / (1024 * 1024),
-                    });
-                }
                 let mut downloaded_bytes = 0u64;
                 // Starting at 0 makes the first chunk always emit a progress event.
                 let mut last_progress_update = std::time::Instant::now()
@@ -717,12 +704,6 @@ impl AlacTrackRipper {
                             None => break,
                         },
                     };
-
-                    if downloaded_bytes.saturating_add(chunk.len() as u64) > MAX_AUDIO_BYTES {
-                        return Err(RipError::LimitExceeded {
-                            limit_mib: MAX_AUDIO_BYTES / (1024 * 1024),
-                        });
-                    }
 
                     file.write_all(&chunk).await?;
                     downloaded_bytes += chunk.len() as u64;

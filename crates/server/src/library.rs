@@ -15,10 +15,11 @@ use crate::{ServerState, auth::AuthedUser, catalog::TrackSummaryDto, error::Serv
     path = "/api/v1/me/favorites",
     tag = "library",
     summary = "List User Favorite Tracks",
-    description = "Returns all tracks bookmarked as favorites by the authenticated user with complete metadata.",
+    description = "Returns up to 1,000 tracks bookmarked as favorites by the authenticated user with complete metadata.",
     responses(
-        (status = 200, description = "List of user favorited tracks", body = Vec<TrackSummaryDto>),
-        (status = 401, description = "Unauthorized - Missing or invalid Bearer token")
+        (status = 200, description = "List of up to 1,000 user-favorited tracks", body = Vec<TrackSummaryDto>),
+        (status = 401, description = "Unauthorized - Missing or invalid Bearer token"),
+        (status = 500, description = "Internal error while retrieving user favorites")
     ),
     security(
         ("bearer_auth" = [])
@@ -47,8 +48,9 @@ pub async fn list_favorites(
         ("track_id" = i32, Path, description = "Unique database track ID", example = 42)
     ),
     responses(
-        (status = 200, description = "Track successfully added to favorites"),
-        (status = 401, description = "Unauthorized - Missing or invalid Bearer token")
+        (status = 200, description = "Returns whether the track was newly added (`added: true`) or was already favorited (`added: false`)"),
+        (status = 401, description = "Unauthorized - Missing or invalid Bearer token"),
+        (status = 500, description = "Internal error while updating user favorites")
     ),
     security(
         ("bearer_auth" = [])
@@ -78,8 +80,9 @@ pub async fn add_favorite(
         ("track_id" = i32, Path, description = "Unique database track ID", example = 42)
     ),
     responses(
-        (status = 200, description = "Track successfully removed from favorites"),
-        (status = 401, description = "Unauthorized - Missing or invalid Bearer token")
+        (status = 200, description = "Returns whether the track was removed (`removed: true`) or was not favorited (`removed: false`)"),
+        (status = 401, description = "Unauthorized - Missing or invalid Bearer token"),
+        (status = 500, description = "Internal error while updating user favorites")
     ),
     security(
         ("bearer_auth" = [])
@@ -170,7 +173,8 @@ pub struct UpdatePlaylistRequest {
     description = "Returns summaries of all custom playlists created by the authenticated user.",
     responses(
         (status = 200, description = "List of user playlists", body = Vec<PlaylistSummaryDto>),
-        (status = 401, description = "Unauthorized - Missing or invalid Bearer token")
+        (status = 401, description = "Unauthorized - Missing or invalid Bearer token"),
+        (status = 500, description = "Internal error while retrieving user playlists")
     ),
     security(
         ("bearer_auth" = [])
@@ -198,8 +202,9 @@ pub async fn list_playlists(
     request_body = CreatePlaylistRequest,
     responses(
         (status = 200, description = "Playlist created successfully", body = PlaylistSummaryDto),
-        (status = 400, description = "Invalid playlist name"),
-        (status = 401, description = "Unauthorized - Missing or invalid Bearer token")
+        (status = 400, description = "Playlist name is empty or contains only whitespace"),
+        (status = 401, description = "Unauthorized - Missing or invalid Bearer token"),
+        (status = 500, description = "Internal error while creating the playlist")
     ),
     security(
         ("bearer_auth" = [])
@@ -236,7 +241,8 @@ pub async fn create_playlist(
     responses(
         (status = 200, description = "Playlist details with ordered tracklist", body = PlaylistWithTracksDto),
         (status = 401, description = "Unauthorized - Missing or invalid Bearer token"),
-        (status = 404, description = "Playlist not found")
+        (status = 404, description = "Playlist not found or not owned by the authenticated user"),
+        (status = 500, description = "Internal error while retrieving the playlist")
     ),
     security(
         ("bearer_auth" = [])
@@ -276,7 +282,8 @@ pub async fn get_playlist(
     responses(
         (status = 200, description = "Playlist tracks successfully updated"),
         (status = 401, description = "Unauthorized - Missing or invalid Bearer token"),
-        (status = 404, description = "Playlist not found")
+        (status = 404, description = "Playlist not found or not owned by the authenticated user"),
+        (status = 500, description = "Internal error while updating playlist tracks")
     ),
     security(
         ("bearer_auth" = [])
@@ -306,9 +313,9 @@ pub async fn update_playlist(
         ("id" = i32, Path, description = "Unique playlist database ID", example = 1)
     ),
     responses(
-        (status = 200, description = "Playlist successfully deleted"),
+        (status = 200, description = "Returns whether a playlist was deleted (`deleted: true`) or was not found for this user (`deleted: false`)"),
         (status = 401, description = "Unauthorized - Missing or invalid Bearer token"),
-        (status = 404, description = "Playlist not found")
+        (status = 500, description = "Internal error while deleting the playlist")
     ),
     security(
         ("bearer_auth" = [])
