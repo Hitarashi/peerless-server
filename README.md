@@ -102,7 +102,7 @@ mirrors with native client applications (such as [Peerless KMP](https://github.c
 |                  | `GET`      | `/api/v1/auth/me/avatar`                                        | Fetch the authenticated user's Telegram avatar          |
 | **Streaming**    | `GET/POST` | `/api/v1/tracks/{id}/playback`                                  | Acquire short-lived signed stream ticket                |
 |                  | `GET/HEAD` | `/api/v1/stream?ticket=...`                                     | HTTP byte-range streaming (206 for Range requests)      |
-|                  | `GET`      | `/api/v1/ws/playback`                                           | Playback sync; create, cancel, and observe rip tasks     |
+|                  | `GET`      | `/api/v1/ws/playback`                                           | Playback sync; create, cancel, and observe rip tasks    |
 | **Catalog**      | `GET`      | `/api/v1/search?q=...`                                          | Hybrid search (cached PostgreSQL + live catalog)        |
 |                  | `GET`      | `/api/v1/tracks/{id}`                                           | Complete track metadata and audio specifications        |
 |                  | `GET`      | `/api/v1/albums`                                                | Paginated list of cached albums                         |
@@ -144,7 +144,8 @@ task }`, where `task` is the initial snapshot or null when no active task exists
 cancel. Duplicate requests for the same provider, track, and codec coalesce onto the in-flight task. To cancel, send
 `cancel_rip_task` with `{ request_id, task_id }`; the direct reply is `rip_task_cancelled`.
 
-Failures arrive as one `error` message containing `request_id` (nullable if it cannot be recovered), `code` (`validation`,
+Failures arrive as one `error` message containing `request_id` (nullable if it cannot be recovered), `code`
+(`validation`,
 `not_found`, `not_authorized`, `unavailable`, or `internal`), `message`, and `retryable`. Task progress is delivered
 asynchronously as `rip_task_updated`, with task removal reported as `rip_task_dismissed`; creation publishes an update
 before its direct reply, so another connected client may receive the update before the initiating connection receives
@@ -176,7 +177,8 @@ Byte-driven updates are throttled to at most one per 250 ms per task (4 updates/
 album-track transitions are emitted immediately, adding one event per distinct transition. Animate smoothly between
 events rather than expecting per-byte updates.
 
-For albums, per-track download, processing, and track-upload phases repeat `total_tracks` times, followed once by archive
+For albums, per-track download, processing, and track-upload phases repeat `total_tracks` times, followed once by
+archive
 build and archive upload. During either archive phase, `current_track_index` is omitted on the wire and
 `completed_tracks == total_tracks`; use that pair to distinguish archive work from the repeating per-track phases.
 
@@ -298,12 +300,12 @@ just release
 ### 2. Docker Deployment
 
 ```bash
-docker build -t alac-bot:latest .
-docker run -d --name peerless-server \
+docker build -t peerless:latest .
+docker run -d --name peerless \
   --env-file .env \
   -p 4444:4444 \
-  -v peerless-server-data:/app/bot-data \
-  alac-bot:latest
+  -v peerless-data:/app/bot-data \
+  peerless:latest
 ```
 
 ---
