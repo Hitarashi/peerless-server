@@ -12,6 +12,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
+# Prefer IPv4 when a host publishes both A and AAAA records. Debian ships
+# /etc/gai.conf with every precedence rule commented out, so glibc falls back to
+# the RFC 3484 default of IPv6-first. On a host whose containers have IPv6
+# addresses but no usable IPv6 route (Docker without an IPv6 gateway), the first
+# address tried is the AAAA one and the connect hangs until the pool times out
+# instead of falling back. That is what made DATABASE_URL (Neon, AAAA + A)
+# time out in bb8 on a dual-stack Docker host. Giving IPv4-mapped addresses a
+# higher precedence makes the resolver return the reachable A record first.
+RUN printf 'precedence ::ffff:0:0/96 100\n' >> /etc/gai.conf
+
 # ==============================================================================
 # Stage 2: Builder
 # ==============================================================================
