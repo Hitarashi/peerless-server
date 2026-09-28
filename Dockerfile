@@ -94,11 +94,15 @@ ENV LOG_LEVEL=info
 # Copy only the stripped runtime binary; configuration is supplied at runtime.
 COPY --from=builder /app/target/release/bot ./bot
 
+# Liveness probe. debian:bookworm-slim has no curl or wget, so this uses bash's
+# /dev/tcp and bash builtins only.
+COPY healthcheck.sh /app/healthcheck.sh
+
 # Non-root user; bot-data holds the Telegram session and download scratch.
 RUN useradd --system --uid 10001 --home-dir /app --shell /usr/sbin/nologin alac \
  && mkdir -p /app/bot-data/downloads \
  && chown -R alac:alac /app \
- && chmod 0755 /app/bot
+ && chmod 0755 /app/bot /app/healthcheck.sh
 
 USER alac
 
