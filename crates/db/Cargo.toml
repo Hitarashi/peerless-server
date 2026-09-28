@@ -11,11 +11,12 @@ diesel.workspace = true
 diesel-async.workspace = true
 diesel_migrations.workspace = true
 # TLS for hosts that require it (Neon). diesel-async's establish() is hardcoded
-# to NoTls, so db::establish() drives the handshake itself.
+# to NoTls, so db::establish() drives the handshake itself, following
+# diesel_async's examples/postgres/*-with-rustls.
 tokio-postgres.workspace = true
 tokio-postgres-rustls.workspace = true
 rustls.workspace = true
-rustls-native-certs.workspace = true
+rustls-platform-verifier.workspace = true
 futures-util.workspace = true
 engine = { path = "../engine" }
 chrono.workspace = true

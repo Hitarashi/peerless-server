@@ -27,7 +27,11 @@ diesel_migrations = "2"
 tokio-postgres = "0.7"
 tokio-postgres-rustls = "0.14"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
-rustls-native-certs = "0.8"
+# Same approach as diesel_async's own examples/postgres/*-with-rustls: the
+# platform verifier names the crypto provider explicitly (this dependency tree
+# enables more than one, so ClientConfig::builder() panics) and reads the OS
+# trust store.
+rustls-platform-verifier = "0.5"
 tokio = { version = "1", features = ["full"] }
 bytes = "1"
 tokio-util = "0.7"

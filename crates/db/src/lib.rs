@@ -10,6 +10,7 @@ use std::{
 
 use diesel_async::{AsyncPgConnection, RunQueryDsl, pooled_connection::bb8::Pool};
 use futures_util::FutureExt as _;
+use rustls_platform_verifier::ConfigVerifierExt as _;
 
 mod albums;
 mod auth;
@@ -86,33 +87,6 @@ impl DbPool {
 /// asks for TLS we do the handshake ourselves with rustls and hand the finished
 /// client to diesel; otherwise we keep the plaintext path so local development
 /// against a bare `localhost:5432` still works.
-/// Open a single connection, honouring the URL's `sslmode`.
-///
-/// `AsyncPgConnection::establish` hardcodes `tokio_postgres::NoTls`
-/// (diesel-async 0.9 `pg/mod.rs`), so it can never reach a host that requires
-/// TLS -- Neon is one, and it answers a plaintext startup packet by dropping it,
-/// which surfaces as a pool timeout rather than a TLS error. When `sslmode`
-/// asks for TLS we do the handshake ourselves with rustls and hand the finished
-/// client to diesel; otherwise we keep the plaintext path so local development
-/// against a bare `localhost:5432` still works.
-/// Open a single connection, honouring the URL's `sslmode`.
-///
-/// `AsyncPgConnection::establish` hardcodes `tokio_postgres::NoTls`
-/// (diesel-async 0.9 `pg/mod.rs`), so it can never reach a host that requires
-/// TLS -- Neon is one, and it answers a plaintext startup packet by dropping it,
-/// which surfaces as a pool timeout rather than a TLS error. When `sslmode`
-/// asks for TLS we do the handshake ourselves with rustls and hand the finished
-/// client to diesel; otherwise we keep the plaintext path so local development
-/// against a bare `localhost:5432` still works.
-/// Open a single connection, honouring the URL's `sslmode`.
-///
-/// `AsyncPgConnection::establish` hardcodes `tokio_postgres::NoTls`
-/// (diesel-async 0.9 `pg/mod.rs`), so it can never reach a host that requires
-/// TLS -- Neon is one, and it answers a plaintext startup packet by dropping it,
-/// which surfaces as a pool timeout rather than a TLS error. When `sslmode`
-/// asks for TLS we do the handshake ourselves with rustls and hand the finished
-/// client to diesel; otherwise we keep the plaintext path so local development
-/// against a bare `localhost:5432` still works.
 pub async fn establish(
     database_url: &str,
 ) -> Result<AsyncPgConnection, diesel::ConnectionError> {
@@ -124,27 +98,18 @@ pub async fn establish(
     // The two arms produce different `Connection` stream types, so they cannot be
     // unified in one expression; each path ends with the same wrap step.
     if use_tls {
-        let mut roots = rustls::RootCertStore::empty();
-        let certificates = rustls_native_certs::load_native_certs();
-        for certificate in certificates.certs {
-            roots.add(certificate)
-                .map_err(|e| diesel::ConnectionError::BadConnection(e.to_string()))?;
-        }
-        if !certificates.errors.is_empty() {
-            let message = certificates
-                .errors
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join("; ");
-            return Err(diesel::ConnectionError::BadConnection(format!(
-                "loading system root certificates: {message}"
-            )));
-        }
+        // rustls 0.23 can only pick a provider automatically when exactly one of
+        // `ring`/`aws-lc-rs` is compiled in. This workspace enables both (our own
+        // dependency and reqwest's rustls path), so `ClientConfig::builder()`
+        // panics with "Could not automatically determine the process-level
+        // CryptoProvider". Installing ring as the process default resolves it;
+        // this returns Err when a provider is already installed, which is fine.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        // `with_platform_verifier` is what diesel_async's own rustls examples
+        // use, and reads the OS trust store.
         let tls = tokio_postgres_rustls::MakeRustlsConnect::new(
-            rustls::ClientConfig::builder()
-                .with_root_certificates(roots)
-                .with_no_client_auth(),
+            rustls::ClientConfig::with_platform_verifier(),
         );
         let (client, connection) = config
             .connect(tls)
