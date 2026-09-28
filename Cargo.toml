@@ -23,6 +23,11 @@ ferogram = { git = "https://github.com/sayeed205/ferogram", branch = "fix/evict-
 diesel = { version = "2", features = ["postgres", "chrono", "serde_json"] }
 diesel-async = { version = "0.9", features = ["postgres", "bb8", "async-connection-wrapper"] }
 diesel_migrations = "2"
+# Must track the tokio-postgres that diesel-async 0.9 resolves to.
+tokio-postgres = "0.7"
+tokio-postgres-rustls = "0.14"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-native-certs = "0.8"
 tokio = { version = "1", features = ["full"] }
 bytes = "1"
 tokio-util = "0.7"

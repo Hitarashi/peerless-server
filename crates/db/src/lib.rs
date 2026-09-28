@@ -1,11 +1,15 @@
 //! Database access for the bot.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
+use std::{
+    str::FromStr,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use diesel_async::{AsyncPgConnection, RunQueryDsl, pooled_connection::bb8::Pool};
+use futures_util::FutureExt as _;
 
 mod albums;
 mod auth;
@@ -73,9 +77,93 @@ impl DbPool {
     }
 }
 
+/// Open a single connection, honouring the URL's `sslmode`.
+///
+/// `AsyncPgConnection::establish` hardcodes `tokio_postgres::NoTls`
+/// (diesel-async 0.9 `pg/mod.rs`), so it can never reach a host that requires
+/// TLS -- Neon is one, and it answers a plaintext startup packet by dropping it,
+/// which surfaces as a pool timeout rather than a TLS error. When `sslmode`
+/// asks for TLS we do the handshake ourselves with rustls and hand the finished
+/// client to diesel; otherwise we keep the plaintext path so local development
+/// against a bare `localhost:5432` still works.
+/// Open a single connection, honouring the URL's `sslmode`.
+///
+/// `AsyncPgConnection::establish` hardcodes `tokio_postgres::NoTls`
+/// (diesel-async 0.9 `pg/mod.rs`), so it can never reach a host that requires
+/// TLS -- Neon is one, and it answers a plaintext startup packet by dropping it,
+/// which surfaces as a pool timeout rather than a TLS error. When `sslmode`
+/// asks for TLS we do the handshake ourselves with rustls and hand the finished
+/// client to diesel; otherwise we keep the plaintext path so local development
+/// against a bare `localhost:5432` still works.
+/// Open a single connection, honouring the URL's `sslmode`.
+///
+/// `AsyncPgConnection::establish` hardcodes `tokio_postgres::NoTls`
+/// (diesel-async 0.9 `pg/mod.rs`), so it can never reach a host that requires
+/// TLS -- Neon is one, and it answers a plaintext startup packet by dropping it,
+/// which surfaces as a pool timeout rather than a TLS error. When `sslmode`
+/// asks for TLS we do the handshake ourselves with rustls and hand the finished
+/// client to diesel; otherwise we keep the plaintext path so local development
+/// against a bare `localhost:5432` still works.
+/// Open a single connection, honouring the URL's `sslmode`.
+///
+/// `AsyncPgConnection::establish` hardcodes `tokio_postgres::NoTls`
+/// (diesel-async 0.9 `pg/mod.rs`), so it can never reach a host that requires
+/// TLS -- Neon is one, and it answers a plaintext startup packet by dropping it,
+/// which surfaces as a pool timeout rather than a TLS error. When `sslmode`
+/// asks for TLS we do the handshake ourselves with rustls and hand the finished
+/// client to diesel; otherwise we keep the plaintext path so local development
+/// against a bare `localhost:5432` still works.
+pub async fn establish(
+    database_url: &str,
+) -> Result<AsyncPgConnection, diesel::ConnectionError> {
+    let config = tokio_postgres::Config::from_str(database_url)
+        .map_err(|e| diesel::ConnectionError::InvalidConnectionUrl(e.to_string()))?;
+
+    let use_tls = config.get_ssl_mode() == tokio_postgres::config::SslMode::Require;
+
+    // The two arms produce different `Connection` stream types, so they cannot be
+    // unified in one expression; each path ends with the same wrap step.
+    if use_tls {
+        let mut roots = rustls::RootCertStore::empty();
+        let certificates = rustls_native_certs::load_native_certs();
+        for certificate in certificates.certs {
+            roots.add(certificate)
+                .map_err(|e| diesel::ConnectionError::BadConnection(e.to_string()))?;
+        }
+        if !certificates.errors.is_empty() {
+            let message = certificates
+                .errors
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(diesel::ConnectionError::BadConnection(format!(
+                "loading system root certificates: {message}"
+            )));
+        }
+        let tls = tokio_postgres_rustls::MakeRustlsConnect::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        );
+        let (client, connection) = config
+            .connect(tls)
+            .await
+            .map_err(|e| diesel::ConnectionError::BadConnection(e.to_string()))?;
+        return AsyncPgConnection::try_from_client_and_connection(client, connection).await;
+    }
+
+    let (client, connection) = tokio_postgres::connect(database_url, tokio_postgres::NoTls)
+        .await
+        .map_err(|e| diesel::ConnectionError::BadConnection(e.to_string()))?;
+    AsyncPgConnection::try_from_client_and_connection(client, connection).await
+}
+
 /// Establish the shared Diesel async pool.
 pub async fn connect(database_url: &str) -> Result<DbPool, DbError> {
-    let manager = DieselManager::new(database_url);
+    let mut config = diesel_async::pooled_connection::ManagerConfig::default();
+    config.custom_setup = Box::new(|url| async move { establish(url).await }.boxed());
+    let manager = DieselManager::new_with_config(database_url, config);
     let pool = Pool::builder()
         .build(manager)
         .await
