@@ -246,7 +246,7 @@ async fn resolve_artist_artwork(
     let encoded_name = music::url::urlencode(artist_name);
 
     let search_url = format!(
-        "https://itunes.apple.com/search?term={encoded_name}&entity=musicArtist&limit=1"
+        "https://itunes.apple.com/search?term={encoded_name}&entity=musicArtist&limit=5"
     );
 
     let mut artist_id = None;
@@ -255,13 +255,29 @@ async fn resolve_artist_artwork(
     if let Ok(resp) = state.http_client.get(&search_url).send().await
         && resp.status().is_success()
         && let Ok(json) = resp.json::<serde_json::Value>().await
-        && let Some(item) = json
-            .get("results")
-            .and_then(|r| r.as_array())
-            .and_then(|arr| arr.first())
+        && let Some(arr) = json.get("results").and_then(|r| r.as_array())
     {
-        artist_id = item.get("artistId").and_then(|id| id.as_i64());
-        artist_link_url = item.get("artistLinkUrl").and_then(|u| u.as_str()).map(String::from);
+        let target_norm: String = artist_name
+            .to_lowercase()
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect();
+        for item in arr {
+            let res_artist = item
+                .get("artistName")
+                .and_then(|n| n.as_str())
+                .unwrap_or_default()
+                .to_lowercase();
+            let res_norm: String = res_artist
+                .chars()
+                .filter(|c| c.is_alphanumeric())
+                .collect();
+            if res_norm == target_norm || res_artist == artist_name.to_lowercase() {
+                artist_id = item.get("artistId").and_then(|id| id.as_i64());
+                artist_link_url = item.get("artistLinkUrl").and_then(|u| u.as_str()).map(String::from);
+                break;
+            }
+        }
     }
 
     if let Some(id) = artist_id
