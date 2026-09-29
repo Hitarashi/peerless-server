@@ -536,6 +536,24 @@ impl WrapperEngine {
 
         let progressive = defragment_m4a_container(&output, track_id)?;
         let total_size = progressive.len() as u64;
+        // Diagnostics: the size of the assembled stream, how it compares to the
+        // source and to the sum of the playlist's declared segment ranges. A
+        // mismatch here is the earliest signal that assembly dropped or
+        // duplicated audio, well before tagging reports a missing duration.
+        tracing::debug!(
+            track_id,
+            source_bytes = raw_data.len(),
+            assembled_bytes = output.len(),
+            segments = media_info.segments.len(),
+            declared_segment_bytes = media_info
+                .segments
+                .iter()
+                .filter_map(|s| s.byte_range.map(|(_, len)| len))
+                .sum::<u64>(),
+            init_bytes = transformed_init.len(),
+            final_bytes = total_size,
+            "apple stream assembly sizes"
+        );
         let stream = Box::pin(futures_util::stream::once(async move {
             Ok(Bytes::from(progressive))
         }));

@@ -268,7 +268,24 @@ pub(super) fn finalize_m4a_sync(
         })
     })();
     if result.is_err() {
-        let _ = std::fs::remove_file(&part);
+        if std::env::var_os("MEDIA_KEEP_FAILED_ARTIFACTS").is_some() {
+            // `eprintln!` rather than `tracing`: this crate has no tracing
+            // dependency, and adding one for a diagnostic is not worth it.
+            match std::fs::metadata(&part) {
+                Ok(metadata) => eprintln!(
+                    "finalize failed; artifact preserved at {} ({} bytes) because \
+                     MEDIA_KEEP_FAILED_ARTIFACTS is set",
+                    part.display(),
+                    metadata.len()
+                ),
+                Err(_) => eprintln!(
+                    "finalize failed but the .part file is already gone: {}",
+                    part.display()
+                ),
+            }
+        } else {
+            let _ = std::fs::remove_file(&part);
+        }
     }
     result
 }
