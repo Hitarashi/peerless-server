@@ -248,7 +248,18 @@ pub(super) fn finalize_m4a_sync(
             )));
         }
         if validated.duration_secs == 0.0 {
-            return Err(MediaError::Invalid("finalized file has no duration".into()));
+            let size_on_disk = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
+            return Err(MediaError::Invalid(format!(
+                "finalized file has no duration: {size_on_disk} bytes on disk, re-inspect read \
+                 codec={} rate={} ch={} bit_depth={:?} (expected codec={} rate={} ch={})",
+                validated.codec,
+                validated.sample_rate,
+                validated.channels,
+                validated.bit_depth,
+                info.codec,
+                info.sample_rate,
+                info.channels,
+            )));
         }
         std::fs::rename(&part, destination)?;
         Ok(ValidatedM4a {

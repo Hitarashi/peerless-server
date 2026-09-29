@@ -464,10 +464,23 @@ impl WrapperEngine {
             .send()
             .await
             .map_err(|e| self.map_reqwest_error("Download audio stream", e))?;
+        let expected_len = resp.content_length();
         let raw_data = resp
             .bytes()
             .await
             .map_err(|e| self.map_reqwest_error("Read audio stream bytes", e))?;
+        if let Some(expected) = expected_len
+            && (raw_data.len() as u64) < expected
+        {
+            return Err(StreamError::Decrypt {
+                detail: format!(
+                    "audio stream truncated: got {} of {} advertised bytes ({} missing)",
+                    raw_data.len(),
+                    expected,
+                    expected - raw_data.len() as u64
+                ),
+            });
+        }
 
         report(
             on_progress,
