@@ -11,7 +11,6 @@ pub mod error;
 pub mod gateway;
 pub mod health;
 pub mod integrations;
-pub mod library;
 pub mod playback_sync;
 pub mod rip_task_rpc;
 pub mod streaming;
@@ -67,7 +66,6 @@ pub struct ServerState {
     pub db: db::DbPool,
     pub stream_engine: Arc<stream::StreamEngine>,
     pub session_mgr: Arc<db::SessionManager>,
-    pub library_mgr: Arc<db::LibraryManager>,
     pub tracks_repo: Arc<db::TracksRepository>,
     pub settings_store: Arc<db::SettingsStore>,
     pub rip_orchestrator: Arc<engine::orchestrator::RipOrchestrator>,
@@ -90,7 +88,6 @@ impl ServerState {
     pub fn new(
         stream_engine: Arc<stream::StreamEngine>,
         session_mgr: Arc<db::SessionManager>,
-        library_mgr: Arc<db::LibraryManager>,
         tracks_repo: Arc<db::TracksRepository>,
         settings_store: Arc<db::SettingsStore>,
         rip_orchestrator: Arc<engine::orchestrator::RipOrchestrator>,
@@ -129,7 +126,6 @@ impl ServerState {
             db,
             stream_engine,
             session_mgr,
-            library_mgr,
             tracks_repo,
             settings_store,
             rip_orchestrator,
@@ -306,24 +302,11 @@ pub fn create_router(state: Arc<ServerState>) -> Router {
             get(assets::get_provider_artwork),
         )
         .route("/api/v1/assets/tracks/{id}/lyrics", get(assets::get_lyrics))
-        // Library
-        .route("/api/v1/me/favorites", get(library::list_favorites))
-        .route(
-            "/api/v1/me/favorites/{track_id}",
-            post(library::add_favorite).delete(library::remove_favorite),
-        )
-        .route(
-            "/api/v1/me/playlists",
-            get(library::list_playlists).post(library::create_playlist),
-        )
-        .route(
-            "/api/v1/me/playlists/{id}",
-            get(library::get_playlist)
-                .put(library::update_playlist)
-                .delete(library::delete_playlist),
-        )
-        // Integrations
         .nest("/api/v1/integrations/lastfm", integrations::router())
+        .nest(
+            "/api/v1/integrations/listenbrainz",
+            integrations::listenbrainz_router(),
+        )
         // Scalar UI & OpenAPI Docs
         .route("/api/v1/docs", get(docs::scalar_html))
         .route("/api/v1/docs.json", get(docs::openapi_json))

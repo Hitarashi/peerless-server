@@ -304,7 +304,6 @@ async fn main() -> Result<()> {
     ));
 
     let session_manager = Arc::new(db::SessionManager::new(database.clone(), env.admin_id));
-    let library_manager = Arc::new(db::LibraryManager::new(database.clone()));
     let tracks_repo = Arc::new(db::TracksRepository::new(database.clone()));
     let settings_store = Arc::new(db::SettingsStore::new(database.clone()));
     let app_key =
@@ -379,7 +378,6 @@ async fn main() -> Result<()> {
         server::ServerState::new(
             stream_engine.clone(),
             session_manager.clone(),
-            library_manager,
             tracks_repo.clone(),
             settings_store,
             orchestrator.clone(),
@@ -878,10 +876,9 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use server::tasks::{RipTaskDownloadLane, RipTaskDownloadStage, RipTaskProgress};
+
     use super::*;
-    use server::tasks::{
-        RipTaskDownloadLane, RipTaskDownloadStage, RipTaskProgress,
-    };
 
     fn progress(stage: RipTaskDownloadStage, bytes_done: u64) -> RipTaskProgress {
         RipTaskProgress {
@@ -906,12 +903,11 @@ mod tests {
 
     #[test]
     fn unknown_byte_total_keeps_completed_bytes_and_null_percent() {
-        let (bytes_done, bytes_total, percent) = lane_byte_values(
-            &engine::orchestrator::types::ByteProgress {
+        let (bytes_done, bytes_total, percent) =
+            lane_byte_values(&engine::orchestrator::types::ByteProgress {
                 completed: 512,
                 total: None,
-            },
-        );
+            });
 
         assert_eq!(bytes_done, Some(512));
         assert_eq!(bytes_total, None);
@@ -922,10 +918,7 @@ mod tests {
     fn progress_throttle_emits_at_the_250ms_boundary_and_on_phase_changes() {
         let started = Instant::now();
         let mut throttle = ProgressThrottle::default();
-        assert!(throttle.should_emit(
-            started,
-            &progress(RipTaskDownloadStage::Downloading, 1)
-        ));
+        assert!(throttle.should_emit(started, &progress(RipTaskDownloadStage::Downloading, 1)));
         assert!(!throttle.should_emit(
             started + Duration::from_millis(249),
             &progress(RipTaskDownloadStage::Downloading, 2)

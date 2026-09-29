@@ -3,8 +3,8 @@ use diesel::prelude::*;
 use music::{Codec, Provider};
 
 use crate::schema::{
-    albums, one_time_auth_codes, requests, settings, tg_worker_sessions, tracks, user_favorites,
-    user_playlist_tracks, user_playlists, user_sessions, users,
+    albums, one_time_auth_codes, requests, settings, tg_worker_sessions, tracks, user_sessions,
+    users,
 };
 
 #[derive(Debug, Clone, Default, Queryable, Selectable)]
@@ -199,55 +199,6 @@ pub struct NewOneTimeAuthCode<'a> {
     pub code: &'a str,
     pub telegram_id: i64,
     pub expires_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Queryable, Selectable)]
-#[diesel(table_name = user_favorites)]
-pub struct UserFavorite {
-    pub telegram_id: i64,
-    pub track_id: i32,
-    pub created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Insertable)]
-#[diesel(table_name = user_favorites)]
-pub struct NewUserFavorite {
-    pub telegram_id: i64,
-    pub track_id: i32,
-}
-
-#[derive(Debug, Clone, Queryable, Selectable)]
-#[diesel(table_name = user_playlists)]
-pub struct UserPlaylist {
-    pub id: i32,
-    pub telegram_id: i64,
-    pub name: String,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Insertable)]
-#[diesel(table_name = user_playlists)]
-pub struct NewUserPlaylist<'a> {
-    pub telegram_id: i64,
-    pub name: &'a str,
-}
-
-#[derive(Debug, Clone, Queryable, Selectable)]
-#[diesel(table_name = user_playlist_tracks)]
-pub struct UserPlaylistTrack {
-    pub playlist_id: i32,
-    pub track_id: i32,
-    pub position: i32,
-    pub created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Insertable)]
-#[diesel(table_name = user_playlist_tracks)]
-pub struct NewUserPlaylistTrack {
-    pub playlist_id: i32,
-    pub track_id: i32,
-    pub position: i32,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]

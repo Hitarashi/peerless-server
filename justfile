@@ -32,7 +32,7 @@ test:
         echo 'error: TEST_DATABASE_URL is required for tests' >&2
         exit 1
     fi
-    TEST_DATABASE_URL='{{ test_database_url }}' cargo nextest run
+    TEST_DATABASE_URL='{{ test_database_url }}' cargo nextest run --all-targets
 
 # Debug build of the bot binary.
 build:

@@ -3280,7 +3280,7 @@ async fn cached_aac_zip_uses_aac_identity_everywhere() {
     let st = state.lock().unwrap();
     assert_eq!(st.saved_albums.len(), 1);
     assert_eq!(st.saved_albums[0].codec, engine::Codec::Aac);
-    assert!(st.sent_document_captions[0].contains("[AAC]"));
+    assert!(st.sent_document_captions[0].contains("\"codec\":\"aac\""));
     assert_eq!(
         summary
             .zip_delivery

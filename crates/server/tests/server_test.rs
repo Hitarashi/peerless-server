@@ -127,7 +127,6 @@ async fn test_docs_and_unauthorized_endpoints() {
     ));
 
     let session_mgr = Arc::new(db::SessionManager::new(pool.clone(), 12345));
-    let library_mgr = Arc::new(db::LibraryManager::new(pool.clone()));
     let tracks_repo = Arc::new(db::TracksRepository::new(pool.clone()));
     let settings_store = Arc::new(db::SettingsStore::new(pool.clone()));
     let orchestrator = Arc::new(engine::orchestrator::RipOrchestrator::default());
@@ -136,7 +135,6 @@ async fn test_docs_and_unauthorized_endpoints() {
     let state = Arc::new(ServerState::new(
         stream_engine,
         session_mgr,
-        library_mgr,
         tracks_repo,
         settings_store,
         orchestrator,
@@ -267,7 +265,7 @@ async fn test_docs_and_unauthorized_endpoints() {
 }
 
 #[tokio::test]
-async fn test_auth_and_library_lifecycle() {
+async fn test_auth_lifecycle() {
     let _ = dotenvy::from_filename(".env");
     let Ok(db_url) = std::env::var("DATABASE_URL").or_else(|_| std::env::var("TEST_DATABASE_URL"))
     else {
@@ -296,7 +294,6 @@ async fn test_auth_and_library_lifecycle() {
     ));
 
     let session_mgr = Arc::new(db::SessionManager::new(pool.clone(), admin_id));
-    let library_mgr = Arc::new(db::LibraryManager::new(pool.clone()));
     let tracks_repo = Arc::new(db::TracksRepository::new(pool.clone()));
     let settings_store = Arc::new(db::SettingsStore::new(pool.clone()));
     let orchestrator = Arc::new(engine::orchestrator::RipOrchestrator::default());
@@ -305,7 +302,6 @@ async fn test_auth_and_library_lifecycle() {
     let state = Arc::new(ServerState::new(
         stream_engine,
         session_mgr.clone(),
-        library_mgr,
         tracks_repo,
         settings_store,
         orchestrator,
@@ -496,36 +492,8 @@ async fn test_auth_and_library_lifecycle() {
     assert_eq!(me_res["user"]["telegram_id"], admin_id);
     assert!(!me_res["sessions"].as_array().unwrap().is_empty());
 
-    // 4. Create a playlist via /api/v1/me/playlists
-    let playlist_payload = serde_json::json!({ "name": "Phase 4 Lossless Hits" });
     let req = Request::builder()
-        .method("POST")
-        .uri("/api/v1/me/playlists")
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(serde_json::to_vec(&playlist_payload).unwrap()))
-        .unwrap();
-    let res = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let playlist_res: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let playlist_id = playlist_res["id"].as_i64().unwrap();
-    assert_eq!(playlist_res["name"], "Phase 4 Lossless Hits");
-
-    // 5. List playlists
-    let req = Request::builder()
-        .uri("/api/v1/me/playlists")
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
-    let res = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-
-    // 5b. Test hydrated favorites endpoint /api/v1/me/favorites
-    let req = Request::builder()
-        .uri("/api/v1/me/favorites")
+        .uri("/api/v1/integrations/listenbrainz/status")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap();
@@ -534,20 +502,52 @@ async fn test_auth_and_library_lifecycle() {
     let body = axum::body::to_bytes(res.into_body(), usize::MAX)
         .await
         .unwrap();
-    let favs_res: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert!(favs_res.is_array());
+    let lb_status: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(lb_status["connected"], false);
 
-    // 6. Delete playlist
+    let cipher = db::crypto::CryptoCipher::new(app_key).unwrap();
+    let encrypted = cipher.encrypt("test_lb_token_abc_123").unwrap();
+    db::integrations::save_integration(&pool, admin_id, "listenbrainz", "test_lb_user", &encrypted)
+        .await
+        .unwrap();
+
+    let req = Request::builder()
+        .uri("/api/v1/integrations/listenbrainz/status")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let lb_status: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(lb_status["connected"], true);
+    assert_eq!(lb_status["username"], "test_lb_user");
+    assert_eq!(lb_status["token"], "test_lb_token_abc_123");
+
     let req = Request::builder()
         .method("DELETE")
-        .uri(format!("/api/v1/me/playlists/{playlist_id}"))
+        .uri("/api/v1/integrations/listenbrainz")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::NO_CONTENT);
+
+    let req = Request::builder()
+        .uri("/api/v1/integrations/listenbrainz/status")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let lb_status: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(lb_status["connected"], false);
 
-    // 7. Logout via /api/v1/auth/logout (unauthenticated with refresh_token)
     let logout_payload = serde_json::json!({ "refresh_token": token });
     let req = Request::builder()
         .method("POST")
@@ -600,7 +600,6 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
     let other_id = 99999;
 
     let session_mgr = Arc::new(db::SessionManager::new(pool.clone(), admin_id));
-    let library_mgr = Arc::new(db::LibraryManager::new(pool.clone()));
     let tracks_repo = Arc::new(db::TracksRepository::new(pool.clone()));
     let settings_store = Arc::new(db::SettingsStore::new(pool.clone()));
     let orchestrator = Arc::new(engine::orchestrator::RipOrchestrator::default());
@@ -610,7 +609,6 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
         ServerState::new(
             stream_engine,
             session_mgr.clone(),
-            library_mgr,
             tracks_repo.clone(),
             settings_store,
             orchestrator,

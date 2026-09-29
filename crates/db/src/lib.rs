@@ -14,7 +14,6 @@ use rustls_platform_verifier::ConfigVerifierExt as _;
 
 mod albums;
 mod auth;
-mod library;
 mod migrations;
 mod models;
 mod requests;
@@ -34,11 +33,10 @@ pub use auth::{Auth, AuthedPeer};
 pub use crypto::CryptoCipher;
 pub use dump::{DbDumpService, DumpStats, RestoreStats};
 pub use engine::orchestrator::deps::{CachedTrack, RequestLog, SaveTrackInput};
-pub use library::{LibraryManager, PlaylistDetails, UserPlaylistSummary};
 pub use migrations::migrate;
 pub use models::{
     Album, NewAlbum, NewUserIntegration, OneTimeAuthCode, Request, SettingsRow, TgWorkerSession,
-    Track, User, UserFavorite, UserIntegration, UserPlaylist, UserPlaylistTrack, UserSession,
+    Track, User, UserIntegration, UserSession,
 };
 pub use music::{Provider, TrackKey};
 pub use requests::RequestLogRepository;
@@ -87,9 +85,7 @@ impl DbPool {
 /// asks for TLS we do the handshake ourselves with rustls and hand the finished
 /// client to diesel; otherwise we keep the plaintext path so local development
 /// against a bare `localhost:5432` still works.
-pub async fn establish(
-    database_url: &str,
-) -> Result<AsyncPgConnection, diesel::ConnectionError> {
+pub async fn establish(database_url: &str) -> Result<AsyncPgConnection, diesel::ConnectionError> {
     let config = tokio_postgres::Config::from_str(database_url)
         .map_err(|e| diesel::ConnectionError::InvalidConnectionUrl(e.to_string()))?;
 

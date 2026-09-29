@@ -163,8 +163,8 @@ async fn lrclib_exact_param_building() {
 #[tokio::test]
 async fn lrclib_search_duration_sort_and_form_encoding() {
     let body = r#"[
-        {"syncedLyrics":"[00:01.00]far\n[00:02.00]away","duration":300},
-        {"syncedLyrics":"[00:01.00]near\n[00:02.00]by","duration":201}
+        {"trackName":"T","artistName":"A","syncedLyrics":"[00:01.00]far\n[00:02.00]away","duration":205},
+        {"trackName":"T","artistName":"A","syncedLyrics":"[00:01.00]near\n[00:02.00]by","duration":201}
     ]"#;
     let http = FakeHttp::with(&[("lrclib.net/api/search?q=T+A", body)]);
     let meta = LyricsLookup {
@@ -175,7 +175,6 @@ async fn lrclib_search_duration_sort_and_form_encoding() {
         duration: Some(200),
     };
     let result = lookup(&http, &LyricsRegistry::all_sources(), &meta).await;
-    // duration 201 is closest to 200 → "near by" wins.
     assert_eq!(result.unwrap(), "[00:01.00]near\n[00:02.00]by");
 }
 
@@ -228,14 +227,35 @@ fn default_registry_contains_only_lrclib() {
     assert_eq!(registry.source_ids().collect::<Vec<_>>(), ["lrclib"]);
 }
 
-#[cfg(all(feature = "lrclib", feature = "betterlyrics", feature = "paxsenix"))]
 #[test]
 fn all_sources_preserves_explicit_source_order() {
     let registry = LyricsRegistry::all_sources();
-    assert_eq!(
-        registry.source_ids().collect::<Vec<_>>(),
-        ["paxsenix", "betterlyrics", "lrclib"]
-    );
+    let mut expected = Vec::new();
+    #[cfg(feature = "paxsenix")]
+    expected.push("paxsenix");
+    #[cfg(feature = "betterlyrics")]
+    expected.push("betterlyrics");
+    #[cfg(feature = "unison")]
+    expected.push("unison");
+    #[cfg(feature = "binimum")]
+    expected.push("binimum");
+    #[cfg(feature = "amll-ttml-db")]
+    expected.push("amll-ttml-db");
+    #[cfg(feature = "kugou")]
+    expected.push("kugou");
+    #[cfg(feature = "netease")]
+    expected.push("netease");
+    #[cfg(feature = "musixmatch")]
+    expected.push("musixmatch");
+    #[cfg(feature = "qq")]
+    expected.push("qq-music");
+    #[cfg(feature = "youtube")]
+    expected.push("youtube-music");
+    #[cfg(feature = "spotify")]
+    expected.push("spotify");
+    #[cfg(feature = "lrclib")]
+    expected.push("lrclib");
+    assert_eq!(registry.source_ids().collect::<Vec<_>>(), expected);
 }
 
 #[cfg(feature = "lrclib")]

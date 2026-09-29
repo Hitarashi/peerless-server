@@ -96,33 +96,6 @@ diesel::table! {
 }
 
 diesel::table! {
-    user_favorites (telegram_id, track_id) {
-        telegram_id -> BigInt,
-        track_id -> Integer,
-        created_at -> Timestamptz,
-    }
-}
-
-diesel::table! {
-    user_playlists (id) {
-        id -> Integer,
-        telegram_id -> BigInt,
-        name -> Text,
-        created_at -> Timestamptz,
-        updated_at -> Timestamptz,
-    }
-}
-
-diesel::table! {
-    user_playlist_tracks (playlist_id, track_id) {
-        playlist_id -> Integer,
-        track_id -> Integer,
-        position -> Integer,
-        created_at -> Timestamptz,
-    }
-}
-
-diesel::table! {
     tg_worker_sessions (bot_token_hash) {
         bot_token_hash -> Varchar,
         session_data -> Text,
@@ -150,9 +123,6 @@ diesel::allow_tables_to_appear_in_same_query!(
     albums,
     user_sessions,
     one_time_auth_codes,
-    user_favorites,
-    user_playlists,
-    user_playlist_tracks,
     tg_worker_sessions,
     user_integrations
 );
