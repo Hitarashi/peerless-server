@@ -265,6 +265,7 @@ async fn test_docs_and_unauthorized_endpoints() {
         "/api/v1/artists/taylor/tracks",
         "/api/v1/assets/tracks/2147483000/artwork",
         "/api/v1/assets/providers/apple/tracks/1440857781/artwork",
+        "/api/v1/assets/artists/artwork?name=taylor",
         "/api/v1/assets/tracks/2147483000/lyrics",
     ];
     for uri in secured_endpoints {
@@ -358,6 +359,7 @@ async fn test_catalog_and_assets_require_authenticated_session() {
         "/api/v1/artists/taylor/tracks",
         "/api/v1/assets/tracks/2147483000/artwork",
         "/api/v1/assets/providers/unknown_provider/tracks/1440857781/artwork",
+        "/api/v1/assets/artists/artwork?name=taylor",
         "/api/v1/assets/tracks/2147483000/lyrics",
     ];
     for uri in secured_endpoints {

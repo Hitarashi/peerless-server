@@ -66,6 +66,7 @@ impl Modify for SecurityAddon {
         crate::catalog::get_artist_tracks,
         crate::assets::get_artwork,
         crate::assets::get_provider_artwork,
+        crate::assets::get_artist_artwork,
         crate::assets::get_lyrics,
         crate::integrations::lastfm_login,
         crate::integrations::lastfm_status,

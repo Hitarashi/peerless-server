@@ -24,9 +24,25 @@ static LYRICS_CACHE: LazyLock<Cache<i32, LyricsResponse>> = LazyLock::new(|| {
         .build()
 });
 
+static ARTIST_ARTWORK_CACHE: LazyLock<Cache<(String, u16), String>> = LazyLock::new(|| {
+    Cache::builder()
+        .max_capacity(10_000)
+        .time_to_live(std::time::Duration::from_secs(86400 * 7))
+        .build()
+});
+
 /// Query parameters for fetching artwork images.
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct ArtworkQuery {
+    /// Desired square image dimension in pixels (e.g. 300, 600, 1200). Default is 600.
+    #[param(example = 600)]
+    pub size: Option<u16>,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct ArtistArtworkQuery {
+    /// Artist name used to resolve portrait artwork.
+    pub name: String,
     /// Desired square image dimension in pixels (e.g. 300, 600, 1200). Default is 600.
     #[param(example = 600)]
     pub size: Option<u16>,
@@ -181,6 +197,132 @@ pub async fn get_provider_artwork(
     )
     .await?;
     Ok(Json(ArtworkUrlResponse { url }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/assets/artists/artwork",
+    tag = "assets",
+    summary = "Get Artist Artwork URL",
+    description = "Resolves authentic portrait artwork for an artist by name and returns its image URL as JSON. The client fetches the image itself.",
+    params(
+        ArtistArtworkQuery
+    ),
+    responses(
+        (status = 200, description = "Resolved artist artwork URL", body = ArtworkUrlResponse),
+        (status = 400, description = "Artist name query parameter is missing or empty"),
+        (status = 401, description = "Unauthorized - Missing or invalid Bearer token"),
+        (status = 404, description = "No artist artwork could be resolved"),
+        (status = 500, description = "Internal error while resolving the artist artwork URL")
+    ),
+    security(("bearer_auth" = []))
+)]
+pub async fn get_artist_artwork(
+    State(state): State<Arc<ServerState>>,
+    _user: AuthedUser,
+    Query(query): Query<ArtistArtworkQuery>,
+) -> Result<Json<ArtworkUrlResponse>, ServerError> {
+    let artist_name = query.name.trim();
+    if artist_name.is_empty() {
+        return Err(ServerError::BadRequest(
+            "Query parameter 'name' must not be empty".to_string(),
+        ));
+    }
+    let size = query.size.unwrap_or(600).clamp(100, 3000);
+    let url = resolve_artist_artwork(&state, artist_name, size).await?;
+    Ok(Json(ArtworkUrlResponse { url }))
+}
+
+async fn resolve_artist_artwork(
+    state: &ServerState,
+    artist_name: &str,
+    size: u16,
+) -> Result<String, ServerError> {
+    let cache_key = (artist_name.to_lowercase().trim().to_string(), size);
+    if let Some(cached_url) = ARTIST_ARTWORK_CACHE.get(&cache_key).await {
+        return Ok(cached_url);
+    }
+
+    let encoded_name = music::url::urlencode(artist_name);
+
+    let search_url = format!(
+        "https://itunes.apple.com/search?term={encoded_name}&entity=musicArtist&limit=1"
+    );
+
+    let mut artist_id = None;
+    let mut artist_link_url = None;
+
+    if let Ok(resp) = state.http_client.get(&search_url).send().await
+        && resp.status().is_success()
+        && let Ok(json) = resp.json::<serde_json::Value>().await
+        && let Some(item) = json
+            .get("results")
+            .and_then(|r| r.as_array())
+            .and_then(|arr| arr.first())
+    {
+        artist_id = item.get("artistId").and_then(|id| id.as_i64());
+        artist_link_url = item.get("artistLinkUrl").and_then(|u| u.as_str()).map(String::from);
+    }
+
+    if let Some(id) = artist_id
+        && let Some(catalog) = &state.catalog_service
+        && let Some(token_prov) = catalog.token_provider()
+    {
+        let amp_url = format!("https://amp-api.music.apple.com/v1/catalog/us/artists/{id}");
+        if let Ok(body) = token_prov.fetch_amp(&amp_url, std::time::Duration::from_secs(6)).await
+            && let Ok(json) = serde_json::from_str::<serde_json::Value>(&body)
+            && let Some(url_template) = json
+                .get("data")
+                .and_then(|d| d.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|item| item.get("attributes"))
+                .and_then(|attr| attr.get("artwork"))
+                .and_then(|art| art.get("url"))
+                .and_then(|u| u.as_str())
+        {
+            let formatted = url_template
+                .replace("{w}", &size.to_string())
+                .replace("{h}", &size.to_string())
+                .replace("{f}", "jpg");
+            ARTIST_ARTWORK_CACHE.insert(cache_key, formatted.clone()).await;
+            return Ok(formatted);
+        }
+    }
+
+    if let Some(link) = artist_link_url {
+        let clean_link = if let Some((base, _)) = link.split_once('?') {
+            base
+        } else {
+            &link
+        };
+        if let Ok(resp) = state
+            .http_client
+            .get(clean_link)
+            .header(reqwest::header::USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .send()
+            .await
+            && resp.status().is_success()
+            && let Ok(html) = resp.text().await
+        {
+            if let Some(pos) = html.find("property=\"og:image\" content=\"") {
+                let rest = &html[pos + 29..];
+                if let Some(end) = rest.find('\"') {
+                    let og_image = &rest[..end];
+                    let formatted = if let Some(last_slash) = og_image.rfind('/') {
+                        format!("{}/{size}x{size}bb.jpg", &og_image[..last_slash])
+                    } else {
+                        og_image.to_string()
+                    };
+                    ARTIST_ARTWORK_CACHE.insert(cache_key, formatted.clone()).await;
+                    return Ok(formatted);
+                }
+            }
+        }
+    }
+
+    Err(ServerError::NotFound(format!(
+        "Artwork not found for artist {artist_name}"
+    )))
 }
 
 async fn resolve_artwork(
