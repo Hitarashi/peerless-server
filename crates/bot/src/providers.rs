@@ -1,9 +1,9 @@
-//! Statically compiled provider composition for the bot.
+//! Statically compiled provider registry for the bot.
 
 use apple::{ApplePresentation, AppleProduction};
 use engine::{
     orchestrator::deps::{
-        ArtworkProvider, CollectionResolver, ProviderComposition, ProviderPresentation,
+        ArtworkProvider, CollectionResolver, ProviderDeps, ProviderPresentation, Storefront,
         TrackAcquisition,
     },
     ripper::{AlacTrackRipper, RipError, RipperConfig},
@@ -11,51 +11,16 @@ use engine::{
 };
 use music::PlaylistData;
 
-/// Combined presentation handler for all supported providers.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ProviderRegistryPresentation {
-    apple: ApplePresentation,
-    qobuz: qobuz::QobuzPresentation,
-}
-
-impl ProviderRegistryPresentation {
-    pub const fn new() -> Self {
-        Self {
-            apple: ApplePresentation,
-            qobuz: qobuz::QobuzPresentation,
-        }
-    }
-}
-
-impl ProviderPresentation for ProviderRegistryPresentation {
-    fn default_job_header(&self) -> &str {
-        "ALAC Lossless Rip"
-    }
-
-    fn album_url(&self, album_id: &str, storefront: &str) -> Option<String> {
-        if storefront == "qobuz" {
-            self.qobuz.album_url(album_id, storefront)
-        } else {
-            self.apple.album_url(album_id, storefront)
-        }
-    }
-
-    fn unavailable_track_message(&self) -> &str {
-        "Unavailable on music provider (not streamable or georestricted)"
-    }
-
-    fn unavailable_track_log_message(&self) -> &str {
-        "Track is not streamable in provider catalog, skipping rip"
-    }
-}
-
 /// The bot's provider registry is deliberately closed and compiled in. A job
-/// selects one provider composition; there is no runtime plugin or provider
-/// map to negotiate against.
+/// names the provider it wants; this is the only place that maps a
+/// [`Provider`] onto an adapter, and the match is exhaustive, so a new
+/// provider cannot be silently routed to the wrong catalog.
 pub struct ProviderRegistry {
     apple: AppleProduction,
     qobuz: Option<qobuz::QobuzProduction>,
     ripper: AlacTrackRipper,
+    /// Market used when a caller did not name one. A region, never a provider.
+    default_storefront: String,
 }
 
 impl ProviderRegistry {
@@ -63,11 +28,13 @@ impl ProviderRegistry {
         apple: AppleProduction,
         qobuz: Option<qobuz::QobuzProduction>,
         ripper_config: RipperConfig,
+        default_storefront: impl Into<String>,
     ) -> Self {
         Self {
             apple,
             qobuz,
             ripper: AlacTrackRipper::new(ripper_config),
+            default_storefront: default_storefront.into(),
         }
     }
 
@@ -82,75 +49,102 @@ impl ProviderRegistry {
     pub fn qobuz(&self) -> Option<&qobuz::QobuzProduction> {
         self.qobuz.as_ref()
     }
+
+    /// Qobuz is optional at build time, so "configured" is the only thing
+    /// `supports_provider` can meaningfully answer for it.
+    fn qobuz_catalog(&self) -> Result<&qobuz::QobuzCatalog, &'static str> {
+        self.qobuz
+            .as_ref()
+            .map(qobuz::QobuzProduction::catalog)
+            .ok_or("Qobuz provider is not configured")
+    }
+
+    /// Resolve the market for one catalog call. A caller that named a region
+    /// wins; everyone else gets the configured default.
+    fn storefront<'a>(&'a self, requested: Storefront<'a>) -> &'a str {
+        requested.get().unwrap_or(self.default_storefront.as_str())
+    }
 }
 
 impl CollectionResolver for ProviderRegistry {
-    async fn fetch_album_tracks(&self, id: &str, storefront: &str) -> Result<AlbumTracks, String> {
-        if storefront == "qobuz" {
-            if let Some(qobuz) = &self.qobuz {
-                return qobuz.catalog().fetch_album_tracks(id, storefront).await;
-            } else {
-                return Err("Qobuz provider is not configured".to_string());
+    async fn fetch_album_tracks(
+        &self,
+        provider: Provider,
+        id: &str,
+        storefront: Storefront<'_>,
+    ) -> Result<AlbumTracks, String> {
+        match provider {
+            Provider::Apple => self
+                .catalog()
+                .fetch_album_tracks(id, self.storefront(storefront))
+                .await
+                .map_err(|error| error.to_string()),
+            Provider::Qobuz => {
+                self.qobuz_catalog()?
+                    .fetch_album_tracks(provider, id, storefront)
+                    .await
             }
         }
-        self.catalog()
-            .fetch_album_tracks(id, storefront)
-            .await
-            .map_err(|error| error.to_string())
     }
 
     async fn fetch_artist_tracks(
         &self,
+        provider: Provider,
         id: &str,
-        storefront: &str,
+        storefront: Storefront<'_>,
     ) -> Result<ArtistTracks, String> {
-        if storefront == "qobuz" {
-            if let Some(qobuz) = &self.qobuz {
-                return qobuz.catalog().fetch_artist_tracks(id, storefront).await;
-            } else {
-                return Err("Qobuz provider is not configured".to_string());
+        match provider {
+            Provider::Apple => self
+                .catalog()
+                .fetch_artist_tracks(id, self.storefront(storefront))
+                .await
+                .map_err(|error| error.to_string()),
+            Provider::Qobuz => {
+                self.qobuz_catalog()?
+                    .fetch_artist_tracks(provider, id, storefront)
+                    .await
             }
         }
-        self.catalog()
-            .fetch_artist_tracks(id, storefront)
-            .await
-            .map_err(|error| error.to_string())
     }
 
     async fn fetch_artist_album_ids(
         &self,
+        provider: Provider,
         id: &str,
-        storefront: &str,
+        storefront: Storefront<'_>,
     ) -> Result<Vec<String>, String> {
-        if storefront == "qobuz" {
-            if let Some(qobuz) = &self.qobuz {
-                return qobuz.catalog().fetch_artist_album_ids(id, storefront).await;
-            } else {
-                return Err("Qobuz provider is not configured".to_string());
+        match provider {
+            Provider::Apple => self
+                .catalog()
+                .fetch_artist_album_ids(id, self.storefront(storefront))
+                .await
+                .map_err(|error| error.to_string()),
+            Provider::Qobuz => {
+                self.qobuz_catalog()?
+                    .fetch_artist_album_ids(provider, id, storefront)
+                    .await
             }
         }
-        self.catalog()
-            .fetch_artist_album_ids(id, storefront)
-            .await
-            .map_err(|error| error.to_string())
     }
 
     async fn fetch_playlist_tracks(
         &self,
+        provider: Provider,
         id: &str,
-        storefront: &str,
+        storefront: Storefront<'_>,
     ) -> Result<PlaylistData, String> {
-        if storefront == "qobuz" {
-            if let Some(qobuz) = &self.qobuz {
-                return qobuz.catalog().fetch_playlist_tracks(id, storefront).await;
-            } else {
-                return Err("Qobuz provider is not configured".to_string());
+        match provider {
+            Provider::Apple => self
+                .playlist()
+                .fetch_playlist_tracks(id, self.storefront(storefront))
+                .await
+                .map_err(|error| error.to_string()),
+            Provider::Qobuz => {
+                self.qobuz_catalog()?
+                    .fetch_playlist_tracks(provider, id, storefront)
+                    .await
             }
         }
-        self.playlist()
-            .fetch_playlist_tracks(id, storefront)
-            .await
-            .map_err(|error| error.to_string())
     }
 }
 
@@ -186,46 +180,50 @@ impl ArtworkProvider for ProviderRegistry {
         engine::ripper::fetch_artwork_bytes(self.ripper.config(), url).await
     }
 
-    fn artwork_url_at_size(&self, url: &str, size: u16) -> String {
-        if url.contains("static.qobuz.com") || url.contains("qobuz") {
-            url.to_string()
-        } else {
-            apple::catalog::artwork_url_at_size(url, size)
+    fn artwork_url_at_size(&self, provider: Provider, url: &str, size: u16) -> String {
+        match provider {
+            // Qobuz serves a fixed-size CDN image; there is no Apple-style
+            // size parameter to rewrite.
+            Provider::Apple => apple::catalog::artwork_url_at_size(url, size),
+            Provider::Qobuz => url.to_string(),
         }
     }
 }
 
-impl ProviderComposition for ProviderRegistry {
-    type Collections = Self;
-    type Acquisition = Self;
-    type Artwork = Self;
-    type Presentation = ProviderRegistryPresentation;
-
-    fn provider(&self) -> Provider {
-        Provider::Apple
+impl ProviderPresentation for ProviderRegistry {
+    fn default_job_header(&self) -> &str {
+        "ALAC Lossless Rip"
     }
 
+    fn album_url(
+        &self,
+        provider: Provider,
+        album_id: &str,
+        storefront: Storefront<'_>,
+    ) -> Option<String> {
+        match provider {
+            Provider::Apple => {
+                ApplePresentation.album_url(provider, album_id, self.storefront(storefront).into())
+            }
+            // Qobuz album links carry no market, so the region is dropped.
+            Provider::Qobuz => qobuz::QobuzPresentation.album_url(provider, album_id, storefront),
+        }
+    }
+
+    fn unavailable_track_message(&self) -> &str {
+        "Unavailable on music provider (not streamable or georestricted)"
+    }
+
+    fn unavailable_track_log_message(&self) -> &str {
+        "Track is not streamable in provider catalog, skipping rip"
+    }
+}
+
+impl ProviderDeps for ProviderRegistry {
     fn supports_provider(&self, provider: Provider) -> bool {
         match provider {
             Provider::Apple => true,
             Provider::Qobuz => self.qobuz.is_some(),
         }
-    }
-
-    fn collections(&self) -> &Self::Collections {
-        self
-    }
-
-    fn acquisition(&self) -> &Self::Acquisition {
-        self
-    }
-
-    fn artwork(&self) -> &Self::Artwork {
-        self
-    }
-
-    fn presentation(&self) -> &Self::Presentation {
-        static PRESENTATION: ProviderRegistryPresentation = ProviderRegistryPresentation::new();
-        &PRESENTATION
     }
 }

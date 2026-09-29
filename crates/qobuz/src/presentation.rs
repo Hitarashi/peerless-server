@@ -1,6 +1,6 @@
 //! Presentation metadata and formatting for Qobuz.
 
-use engine::orchestrator::deps::ProviderPresentation;
+use engine::orchestrator::deps::{ProviderPresentation, Storefront};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct QobuzPresentation;
@@ -10,7 +10,12 @@ impl ProviderPresentation for QobuzPresentation {
         "Qobuz Lossless Rip"
     }
 
-    fn album_url(&self, album_id: &str, _storefront: &str) -> Option<String> {
+    fn album_url(
+        &self,
+        _provider: engine::types::Provider,
+        album_id: &str,
+        _storefront: Storefront<'_>,
+    ) -> Option<String> {
         (!album_id.is_empty()).then(|| format!("https://open.qobuz.com/album/{album_id}"))
     }
 

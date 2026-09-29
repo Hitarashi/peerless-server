@@ -1,5 +1,5 @@
-//! Provider-neutral ALAC domain logic: streaming, tagging, lyrics, and
-//! orchestration. Provider implementations live in separate crates.
+//! Rip orchestration, track ripping, ZIP assembly, streaming, and tagging/filename
+//! policy. Provider implementations live in separate crates.
 
 pub mod filename;
 pub mod limits;
@@ -10,7 +10,6 @@ pub mod queue;
 pub mod ripper;
 pub mod settings;
 pub mod streaming;
-pub mod tagger;
 pub mod types;
 pub mod zip;
 

@@ -7,12 +7,13 @@
 use std::collections::HashMap;
 
 use engine::orchestrator::types::{
-    ActiveRipJob, DownloadLane, JobActivity, JobPhase as EnginePhase, RipJobProgress, UploadLane,
+    ActiveRipTask, DownloadLane, RipTaskProgress, TaskActivity, TaskPhase as EnginePhase,
+    UploadLane,
 };
 
 use crate::dashboard::{DashboardJob, DashboardSnapshot, JobPhase};
 
-/// Cached per-job rendering context. `ActiveRipJob` snapshots carry the live
+/// Cached per-job rendering context. `ActiveRipTask` snapshots carry the live
 /// counters, but `job_header`/`user_name` are finalized early; remembering
 /// them keeps terminal rows (cancellation) renderable before removal.
 #[derive(Debug, Default)]
@@ -26,7 +27,7 @@ pub struct JobContext {
     pub header: String,
     /// Requester display name (`user_name` from options).
     pub requester_name: String,
-    pub job_activity: Option<JobActivity>,
+    pub job_activity: Option<TaskActivity>,
     pub download: Option<DownloadLane>,
     pub upload: Option<UploadLane>,
 }
@@ -39,7 +40,7 @@ impl JobContexts {
     }
 
     /// Remember a job's rendering context from its latest engine snapshot.
-    pub fn remember(&mut self, job: &ActiveRipJob) {
+    pub fn remember(&mut self, job: &ActiveRipTask) {
         let (job_activity, download, upload) = self
             .jobs
             .get(&job.id)
@@ -68,7 +69,7 @@ impl JobContexts {
 
     /// Remember the latest pipeline facts while retaining the job's
     /// presentation context across subsequent engine snapshots.
-    pub fn remember_progress(&mut self, progress: &RipJobProgress) {
+    pub fn remember_progress(&mut self, progress: &RipTaskProgress) {
         if let Some(context) = self.jobs.get_mut(&progress.job_id) {
             context.job_activity = progress.job_activity.clone();
             context.download = progress.download.clone();
@@ -110,26 +111,26 @@ pub fn phase_from(engine_phase: EnginePhase) -> JobPhase {
     }
 }
 
-fn fallback_job_activity(job: &ActiveRipJob) -> Option<JobActivity> {
+fn fallback_job_activity(job: &ActiveRipTask) -> Option<TaskActivity> {
     match job.phase {
-        EnginePhase::Resolving => Some(JobActivity::Resolving),
-        EnginePhase::CheckingCache => Some(JobActivity::CheckingCache {
+        EnginePhase::Resolving => Some(TaskActivity::Resolving),
+        EnginePhase::CheckingCache => Some(TaskActivity::CheckingCache {
             item: job.job_header.clone(),
         }),
-        EnginePhase::Queued => Some(JobActivity::Queued {
+        EnginePhase::Queued => Some(TaskActivity::Queued {
             position: job
                 .queue_position
                 .and_then(|position| u32::try_from(position).ok())
                 .unwrap_or(1),
         }),
         EnginePhase::Processing => None,
-        EnginePhase::Delivering => Some(JobActivity::CachedDelivered),
+        EnginePhase::Delivering => Some(TaskActivity::CachedDelivered),
         EnginePhase::WaitingDuplicate => None,
     }
 }
 
 /// Percent for the dashboard row, clamped to 100.
-pub fn percent_from(progress: &RipJobProgress) -> u8 {
+pub fn percent_from(progress: &RipTaskProgress) -> u8 {
     progress.percent.min(100) as u8
 }
 
@@ -137,7 +138,7 @@ pub fn percent_from(progress: &RipJobProgress) -> u8 {
 ///
 /// Cancel permission is `viewer == requester || viewer_is_admin` .
 pub fn job_to_dashboard(
-    job: &ActiveRipJob,
+    job: &ActiveRipTask,
     context: &JobContext,
     viewer_id: i64,
     viewer_is_admin: bool,
@@ -175,7 +176,7 @@ pub fn job_to_dashboard(
 /// Jobs missing a remembered context (e.g. an engine restart missed by the
 /// bridge) still render with a fallback header rather than disappearing.
 pub fn snapshot_from(
-    active: &[ActiveRipJob],
+    active: &[ActiveRipTask],
     contexts: &JobContexts,
     viewer_id: i64,
     viewer_is_admin: bool,
@@ -184,7 +185,7 @@ pub fn snapshot_from(
 ) -> DashboardSnapshot {
     let mut ordered = active.to_vec();
     ordered.sort_by(|left, right| {
-        fn key(job: &ActiveRipJob) -> (u8, u64, u64) {
+        fn key(job: &ActiveRipTask) -> (u8, u64, u64) {
             match job.phase {
                 // The currently running/delivering job is always listed before work
                 // waiting in the queue. Queue positions then order pending
@@ -270,9 +271,9 @@ mod tests {
         queue_position: Option<u64>,
         user: i64,
         user_name: Option<&str>,
-    ) -> ActiveRipJob {
+    ) -> ActiveRipTask {
         use tokio_util::sync::CancellationToken;
-        ActiveRipJob {
+        ActiveRipTask {
             id: "job_1".into(),
             provider: music::Provider::Apple,
             source_track_ids: vec!["album_1".into()],
@@ -282,7 +283,6 @@ mod tests {
             user_name: user_name.map(str::to_owned),
             job_header: "Album: <b>X</b> by <b>Y</b>".into(),
             total_tracks: 10,
-            status_msg_id: 55,
             controller: CancellationToken::new(),
             is_cancelled: false,
             cancelled_by: None,
@@ -411,7 +411,7 @@ mod tests {
         };
         let mut contexts = JobContexts::new();
         contexts.remember(&job);
-        contexts.remember_progress(&RipJobProgress {
+        contexts.remember_progress(&RipTaskProgress {
             job_id: job.id.clone(),
             total_tracks: 10,
             completed_tracks: 2,
@@ -420,7 +420,7 @@ mod tests {
             failed_count: 0,
             skipped_count: 0,
             percent: 20,
-            job_activity: Some(JobActivity::ProcessingNext),
+            job_activity: Some(TaskActivity::ProcessingNext),
             download: Some(download.clone()),
             upload: Some(upload.clone()),
         });
@@ -428,7 +428,7 @@ mod tests {
         let snapshot = snapshot_from(&[job], &contexts, 7, false, "live", None);
         assert_eq!(
             snapshot.jobs[0].job_activity,
-            Some(JobActivity::ProcessingNext)
+            Some(TaskActivity::ProcessingNext)
         );
         assert_eq!(snapshot.jobs[0].download, Some(download.clone()));
         assert_eq!(snapshot.jobs[0].upload, Some(upload.clone()));
@@ -448,7 +448,7 @@ mod tests {
                 total: None,
             },
         };
-        contexts.remember_progress(&RipJobProgress {
+        contexts.remember_progress(&RipTaskProgress {
             job_id: job.id.clone(),
             total_tracks: 1,
             completed_tracks: 0,
@@ -481,7 +481,7 @@ mod tests {
                 total: Some(2_097_152),
             },
         };
-        contexts.remember_progress(&RipJobProgress {
+        contexts.remember_progress(&RipTaskProgress {
             job_id: job.id.clone(),
             total_tracks: 1,
             completed_tracks: 0,
@@ -511,7 +511,7 @@ mod tests {
         let s_cache = snapshot_from(&[job_cache], &contexts, 1, false, "live", None);
         assert_eq!(
             s_cache.current_job_activity,
-            Some(JobActivity::CheckingCache {
+            Some(TaskActivity::CheckingCache {
                 item: "Album: <b>X</b> by <b>Y</b>".into()
             })
         );
@@ -519,13 +519,16 @@ mod tests {
 
         let job_resolve = engine_job(EnginePhase::Resolving, None, 1, Some("Alice"));
         let s_resolve = snapshot_from(&[job_resolve], &contexts, 1, false, "live", None);
-        assert_eq!(s_resolve.current_job_activity, Some(JobActivity::Resolving));
+        assert_eq!(
+            s_resolve.current_job_activity,
+            Some(TaskActivity::Resolving)
+        );
         assert_eq!(s_resolve.current_download, None);
     }
 
     #[test]
     fn percent_is_clamped_and_zero_total_renders_zero() {
-        let progress = RipJobProgress {
+        let progress = RipTaskProgress {
             job_id: "j".into(),
             total_tracks: 0,
             completed_tracks: 0,

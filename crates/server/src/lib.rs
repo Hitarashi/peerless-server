@@ -12,9 +12,10 @@ pub mod gateway;
 pub mod health;
 pub mod integrations;
 pub mod playback_sync;
+pub mod probe;
 pub mod rip_task_rpc;
+pub mod rip_tasks;
 pub mod streaming;
-pub mod tasks;
 
 use std::{collections::HashMap, net::IpAddr, sync::Arc, time::Duration};
 
@@ -26,23 +27,26 @@ pub use error::ServerError;
 use moka::future::Cache;
 use tokio::{net::TcpListener, sync::broadcast};
 use tokio_util::sync::CancellationToken;
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::trace::TraceLayer;
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub host: IpAddr,
     pub port: u16,
+    /// REQUIRED. Signs stream tickets and derives the at-rest encryption key for
+    /// provider session tokens. Must be supplied from the `APP_KEY` environment
+    /// variable; there is deliberately no built-in default.
     pub app_key: String,
-    pub cors_origins: Vec<String>,
 }
 
 impl Default for ServerConfig {
+    /// Leaves `app_key` empty on purpose; callers must set it, and `run_server`
+    /// refuses to start without one.
     fn default() -> Self {
         Self {
             host: [0, 0, 0, 0].into(),
             port: 4444,
-            app_key: "default_dev_key_change_in_production".to_string(),
-            cors_origins: vec!["*".to_string()],
+            app_key: String::new(),
         }
     }
 }
@@ -72,15 +76,14 @@ pub struct ServerState {
     pub token_cache: Arc<Cache<String, auth::AuthedUser>>,
     pub telegram_client: Option<ferogram::Client>,
     pub avatar_cache: Arc<Cache<i64, Option<Arc<Vec<u8>>>>>,
-    pub task_sync_tx: broadcast::Sender<tasks::TaskSyncEvent>,
-    pub active_tasks: Arc<parking_lot::RwLock<HashMap<String, tasks::ServerTaskMeta>>>,
+    pub task_sync_tx: broadcast::Sender<rip_tasks::TaskSyncEvent>,
+    pub active_tasks: Arc<parking_lot::RwLock<HashMap<String, rip_tasks::ServerTaskMeta>>>,
     pub admin_id: i64,
     pub sync_hub: playback_sync::PlaybackSyncHub,
     pub http_client: reqwest::Client,
     pub catalog_service: Option<apple::SharedCatalog>,
     pub rip_task_runner: RipTaskRunner,
     pub app_key: String,
-    pub cors_origins: Vec<String>,
     pub started_at: std::time::Instant,
 }
 
@@ -140,7 +143,6 @@ impl ServerState {
             catalog_service: None,
             rip_task_runner,
             app_key,
-            cors_origins: vec!["*".to_string()],
             started_at: std::time::Instant::now(),
         }
     }
@@ -165,14 +167,9 @@ impl ServerState {
         self
     }
 
-    pub fn with_cors_origins(mut self, cors_origins: Vec<String>) -> Self {
-        self.cors_origins = cors_origins;
-        self
-    }
-
-    fn remove_active_task(&self, task_id: &str) -> Option<tasks::ServerTaskMeta> {
+    fn remove_active_task(&self, task_id: &str) -> Option<rip_tasks::ServerTaskMeta> {
         let task = self.active_tasks.write().remove(task_id)?;
-        let _ = self.task_sync_tx.send(tasks::TaskSyncEvent::Dismissed {
+        let _ = self.task_sync_tx.send(rip_tasks::TaskSyncEvent::Dismissed {
             task_id: task_id.to_string(),
         });
         Some(task)
@@ -194,13 +191,14 @@ impl ServerState {
             return;
         };
         task.controller.cancel();
-        if let Some(job_id) = task.job_id {
-            self.rip_orchestrator.cancel_job(&job_id, Some("user"));
+        if !task.rip_task_id.is_empty() {
+            self.rip_orchestrator
+                .cancel_task(&task.rip_task_id, Some("user"));
         }
     }
 
     /// Updates current progress for an active task and broadcasts it over the playback WebSocket.
-    pub fn update_task_progress(&self, task_id: &str, progress: tasks::RipTaskProgress) {
+    pub fn update_task_progress(&self, task_id: &str, progress: rip_tasks::RipTaskProgress) {
         self.update_task_progress_extended(task_id, progress);
     }
 
@@ -208,7 +206,7 @@ impl ServerState {
     pub fn update_task_progress_extended(
         &self,
         task_id: &str,
-        mut progress: tasks::RipTaskProgress,
+        mut progress: rip_tasks::RipTaskProgress,
     ) {
         let mut tasks = self.active_tasks.write();
         let Some(task) = tasks.get_mut(task_id) else {
@@ -218,8 +216,8 @@ impl ServerState {
         let is_archive_stage = progress.upload.as_ref().is_some_and(|lane| {
             matches!(
                 lane.stage,
-                tasks::RipTaskUploadStage::BuildingArchive
-                    | tasks::RipTaskUploadStage::UploadingArchive
+                rip_tasks::RipTaskUploadStage::BuildingArchive
+                    | rip_tasks::RipTaskUploadStage::UploadingArchive
             )
         });
         progress.total_tracks = progress.total_tracks.or(previous.total_tracks);
@@ -244,28 +242,13 @@ impl ServerState {
         }
         task.latest_progress = progress;
         drop(tasks);
-        let _ = self.task_sync_tx.send(tasks::TaskSyncEvent::Updated {
+        let _ = self.task_sync_tx.send(rip_tasks::TaskSyncEvent::Updated {
             task_id: task_id.to_string(),
         });
     }
 }
 
 pub fn create_router(state: Arc<ServerState>) -> Router {
-    let cors = if state.cors_origins.iter().any(|o| o == "*") {
-        CorsLayer::permissive()
-    } else {
-        use tower_http::cors::Any;
-        let origins: Vec<axum::http::HeaderValue> = state
-            .cors_origins
-            .iter()
-            .filter_map(|o| o.parse().ok())
-            .collect();
-        CorsLayer::new()
-            .allow_origin(origins)
-            .allow_methods(Any)
-            .allow_headers(Any)
-    };
-
     Router::new()
         // Auth
         .route("/api/v1/auth/exchange", post(auth::exchange))
@@ -276,7 +259,7 @@ pub fn create_router(state: Arc<ServerState>) -> Router {
         // Streaming & Playback
         .route(
             "/api/v1/tracks/{id}/playback",
-            get(streaming::get_playback_info).post(streaming::get_playback_info),
+            get(streaming::issue_playback_ticket),
         )
         .route(
             "/api/v1/stream",
@@ -287,7 +270,7 @@ pub fn create_router(state: Arc<ServerState>) -> Router {
         .route("/api/v1/search", get(catalog::search_catalog))
         .route("/api/v1/tracks/{id}", get(catalog::get_track))
         .route("/api/v1/albums", get(catalog::list_albums))
-        .route("/api/v1/albums/{id}", get(catalog::get_album_tracks))
+        .route("/api/v1/albums/{album_ref}", get(catalog::get_album_tracks))
         .route(
             "/api/v1/artists/{name}/tracks",
             get(catalog::get_artist_tracks),
@@ -302,7 +285,7 @@ pub fn create_router(state: Arc<ServerState>) -> Router {
             get(assets::get_provider_artwork),
         )
         .route("/api/v1/assets/tracks/{id}/lyrics", get(assets::get_lyrics))
-        .nest("/api/v1/integrations/lastfm", integrations::router())
+        .nest("/api/v1/integrations/lastfm", integrations::lastfm_router())
         .nest(
             "/api/v1/integrations/listenbrainz",
             integrations::listenbrainz_router(),
@@ -316,7 +299,7 @@ pub fn create_router(state: Arc<ServerState>) -> Router {
         .route("/open", get(gateway::open_gateway))
         // Health & Telemetry
         .route("/api/v1/health", get(health::health_check))
-        .layer(cors)
+        .route("/api/v1/status", get(health::status_report))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -326,15 +309,11 @@ pub async fn run_server(
     state: Arc<ServerState>,
     shutdown: CancellationToken,
 ) -> Result<(), ServerError> {
-    let state = if state.cors_origins == vec!["*".to_string()]
-        && config.cors_origins != vec!["*".to_string()]
-    {
-        let mut s = (*state).clone();
-        s.cors_origins = config.cors_origins;
-        Arc::new(s)
-    } else {
-        state
-    };
+    if config.app_key.is_empty() {
+        return Err(ServerError::Internal(
+            "ServerConfig.app_key is required; set the APP_KEY environment variable".to_string(),
+        ));
+    }
     let addr = (config.host, config.port);
     let listener = TcpListener::bind(addr)
         .await

@@ -13,39 +13,39 @@ pub struct RequestLog {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum JobBookkeepingOperation {
+pub enum TaskBookkeepingOperation {
     LogRequest,
 }
 
-impl std::fmt::Display for JobBookkeepingOperation {
+impl std::fmt::Display for TaskBookkeepingOperation {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("log request")
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum JobBookkeepingError {
+pub enum TaskBookkeepingError {
     #[error("{operation} unavailable: {detail}")]
     Unavailable {
-        operation: JobBookkeepingOperation,
+        operation: TaskBookkeepingOperation,
         detail: String,
     },
     #[error("{operation} failed: {detail}")]
     Failed {
-        operation: JobBookkeepingOperation,
+        operation: TaskBookkeepingOperation,
         detail: String,
     },
 }
 
-impl JobBookkeepingError {
-    pub fn unavailable(operation: JobBookkeepingOperation, detail: impl Into<String>) -> Self {
+impl TaskBookkeepingError {
+    pub fn unavailable(operation: TaskBookkeepingOperation, detail: impl Into<String>) -> Self {
         Self::Unavailable {
             operation,
             detail: detail.into(),
         }
     }
 
-    pub fn failed(operation: JobBookkeepingOperation, detail: impl Into<String>) -> Self {
+    pub fn failed(operation: TaskBookkeepingOperation, detail: impl Into<String>) -> Self {
         Self::Failed {
             operation,
             detail: detail.into(),
@@ -53,9 +53,11 @@ impl JobBookkeepingError {
     }
 }
 
-pub trait JobBookkeeping: Send + Sync {
+pub trait TaskBookkeeping: Send + Sync {
     fn settings_snapshot(&self) -> BotSettings;
 
-    fn log_request<'a>(&'a self, log: RequestLog)
-    -> BoxFuture<'a, Result<(), JobBookkeepingError>>;
+    fn log_request<'a>(
+        &'a self,
+        log: RequestLog,
+    ) -> BoxFuture<'a, Result<(), TaskBookkeepingError>>;
 }

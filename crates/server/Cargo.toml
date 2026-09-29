@@ -26,7 +26,7 @@ base64.workspace = true
 moka.workspace = true
 parking_lot.workspace = true
 cuid2.workspace = true
-md-5 = "0.11"
+md-5.workspace = true
 
 reqwest = { workspace = true, features = ["json", "form"] }
 ferogram.workspace = true

@@ -18,10 +18,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::{
-    filename::StandardFilename,
+    filename::{StandardFilename, build_track_filename_with_codec},
     orchestrator::types::{ByteProgress, RipActivity, TrackLabel},
     streaming::{AudioStreamSource, ProgressCallback, SourceId, StreamError},
-    tagger,
     types::{TrackMeta, TrackRipResult},
 };
 
@@ -614,7 +613,7 @@ impl AlacTrackRipper {
             // returns, while the lane is removed on every outcome. Reserve the
             // normal human-readable name first, falling back to a unique name
             // rather than clobbering a concurrent rip's output.
-            let base_name = tagger::build_track_filename_with_codec(&meta, &stream.codec);
+            let base_name = build_track_filename_with_codec(&meta, &stream.codec);
             let mut final_name = base_name.clone();
             let mut final_path = target_dir.join(&final_name);
             loop {

@@ -1,4 +1,4 @@
-# ALAC Bot (Rust) — task recipes.
+# Peerless Server (Rust) — task recipes.
 #
 # Toolchains: stable for everything; nightly is ONLY needed for `fmt`,
 # because import grouping/sorting (rustfmt.toml) is a nightly-only option.
@@ -32,7 +32,7 @@ test:
         echo 'error: TEST_DATABASE_URL is required for tests' >&2
         exit 1
     fi
-    TEST_DATABASE_URL='{{ test_database_url }}' cargo nextest run --all-targets
+    TEST_DATABASE_URL='{{ test_database_url }}' cargo nextest run --all-targets --all-features
 
 # Debug build of the bot binary.
 build:
@@ -54,4 +54,4 @@ run: build
 
 # Build the production container image.
 docker:
-    docker build -t alac-bot:latest .
+    docker build -t peerless:latest .

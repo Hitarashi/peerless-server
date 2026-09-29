@@ -3,14 +3,12 @@ use std::sync::{Arc, LazyLock};
 use axum::{
     Json,
     extract::{Path, Query, State},
-    http::{StatusCode, header},
-    response::Response,
 };
 use moka::future::Cache;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
-use crate::{ServerState, error::ServerError};
+use crate::{ServerState, auth::AuthedUser, error::ServerError};
 
 static ARTWORK_CACHE: LazyLock<Cache<(String, u16), String>> = LazyLock::new(|| {
     Cache::builder()
@@ -45,6 +43,15 @@ pub struct ProviderArtworkQuery {
     pub artist: Option<String>,
 }
 
+/// Provider artwork URL resolved for a track.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ArtworkUrlResponse {
+    /// Direct provider CDN URL of the artwork image. The client is responsible
+    /// for fetching it; it is not an endpoint on this server.
+    #[schema(example = "https://is1-ssl.mzstatic.com/image/thumb/.../600x600bb.jpg")]
+    pub url: String,
+}
+
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct LyricsQuery {
     /// Skip the server result cache and query the lyric providers again.
@@ -55,29 +62,32 @@ pub struct LyricsQuery {
     get,
     path = "/api/v1/assets/tracks/{id}/artwork",
     tag = "assets",
-    summary = "Get Track Artwork (HTTP 307 Redirect)",
-    description = "Returns an HTTP 307 temporary redirect to provider artwork scaled to the requested pixel dimensions. If the selected track has no artwork, the handler tries tracks with the same non-empty ISRC and redirects to the first available sibling artwork.",
+    summary = "Get Track Artwork URL",
+    description = "Resolves provider artwork scaled to the requested pixel dimensions and returns it as a JSON provider CDN URL. If the selected track has no artwork, the handler tries tracks with the same non-empty ISRC and returns the first available sibling artwork URL. The client fetches the image itself.",
     params(
         ("id" = i32, Path, description = "Unique database track ID", example = 42),
         ArtworkQuery
     ),
     responses(
-        (status = 307, description = "Temporary redirect to the selected track's or an ISRC sibling track's provider artwork URL"),
+        (status = 200, description = "Provider artwork URL for the selected track or an ISRC sibling track", body = ArtworkUrlResponse),
+        (status = 401, description = "Unauthorized - Missing or invalid Bearer token"),
         (status = 404, description = "Track not found, or no artwork was found for the track or any ISRC sibling"),
         (status = 500, description = "Internal error while retrieving the track or searching its ISRC siblings")
-    )
+    ),
+    security(("bearer_auth" = []))
 )]
 pub async fn get_artwork(
     State(state): State<Arc<ServerState>>,
-    Path(track_id): Path<i32>,
+    _user: AuthedUser,
+    Path(db_track_id): Path<i32>,
     Query(query): Query<ArtworkQuery>,
-) -> Result<Response, ServerError> {
+) -> Result<Json<ArtworkUrlResponse>, ServerError> {
     let track = state
         .tracks_repo
-        .find_track_by_id(track_id)
+        .find_track_by_id(db_track_id)
         .await
         .map_err(|e| ServerError::Internal(e.to_string()))?
-        .ok_or_else(|| ServerError::NotFound(format!("Track {track_id} not found")))?;
+        .ok_or_else(|| ServerError::NotFound(format!("Track {db_track_id} not found")))?;
 
     let size = query.size.unwrap_or(600).clamp(100, 3000);
     match resolve_artwork(
@@ -90,11 +100,11 @@ pub async fn get_artwork(
     )
     .await
     {
-        Ok(response) => Ok(response),
+        Ok(url) => Ok(Json(ArtworkUrlResponse { url })),
         Err(ServerError::NotFound(_)) => {
             let Some(isrc) = track.isrc.as_deref().filter(|isrc| !isrc.trim().is_empty()) else {
                 return Err(ServerError::NotFound(format!(
-                    "Artwork not found for track {track_id}"
+                    "Artwork not found for track {db_track_id}"
                 )));
             };
             let sibling_tracks = state
@@ -117,14 +127,14 @@ pub async fn get_artwork(
                 )
                 .await
                 {
-                    Ok(response) => return Ok(response),
+                    Ok(url) => return Ok(Json(ArtworkUrlResponse { url })),
                     Err(ServerError::NotFound(_)) => continue,
                     Err(error) => return Err(error),
                 }
             }
 
             Err(ServerError::NotFound(format!(
-                "Artwork not found for track {track_id} or its provider siblings"
+                "Artwork not found for track {db_track_id} or its provider siblings"
             )))
         }
         Err(error) => Err(error),
@@ -135,30 +145,33 @@ pub async fn get_artwork(
     get,
     path = "/api/v1/assets/providers/{provider}/tracks/{track_id}/artwork",
     tag = "assets",
-    summary = "Get Provider Track Artwork (HTTP 307 Redirect)",
-    description = "Resolves artwork for a provider catalog track, including uncached tracks, and redirects to its image URL.",
+    summary = "Get Provider Track Artwork URL",
+    description = "Resolves artwork for a provider catalog track, including uncached tracks, and returns its image URL as JSON. The client fetches the image itself.",
     params(
         ("provider" = String, Path, description = "Provider name: apple or qobuz", example = "qobuz"),
         ("track_id" = String, Path, description = "Provider catalog track ID", example = "123456"),
         ProviderArtworkQuery
     ),
     responses(
-        (status = 307, description = "Temporary redirect to the resolved provider artwork URL"),
+        (status = 200, description = "Resolved provider artwork URL", body = ArtworkUrlResponse),
         (status = 400, description = "Unsupported provider"),
+        (status = 401, description = "Unauthorized - Missing or invalid Bearer token"),
         (status = 404, description = "No artwork could be resolved for the provider track"),
-        (status = 500, description = "Internal error while constructing the redirect response")
-    )
+        (status = 500, description = "Internal error while resolving the provider artwork URL")
+    ),
+    security(("bearer_auth" = []))
 )]
 pub async fn get_provider_artwork(
     State(state): State<Arc<ServerState>>,
+    _user: AuthedUser,
     Path((provider_name, provider_track_id)): Path<(String, String)>,
     Query(query): Query<ProviderArtworkQuery>,
-) -> Result<Response, ServerError> {
+) -> Result<Json<ArtworkUrlResponse>, ServerError> {
     let provider = provider_name
         .parse::<music::Provider>()
         .map_err(ServerError::BadRequest)?;
     let size = query.size.unwrap_or(600).clamp(100, 3000);
-    resolve_artwork(
+    let url = resolve_artwork(
         &state,
         provider,
         &provider_track_id,
@@ -166,7 +179,8 @@ pub async fn get_provider_artwork(
         query.artist.as_deref().unwrap_or_default(),
         size,
     )
-    .await
+    .await?;
+    Ok(Json(ArtworkUrlResponse { url }))
 }
 
 async fn resolve_artwork(
@@ -176,10 +190,10 @@ async fn resolve_artwork(
     title: &str,
     artist: &str,
     size: u16,
-) -> Result<Response, ServerError> {
+) -> Result<String, ServerError> {
     let cache_key = (format!("{}:{provider_track_id}", provider.as_str()), size);
     if let Some(cached_url) = ARTWORK_CACHE.get(&cache_key).await {
-        return artwork_redirect(cached_url);
+        return Ok(cached_url);
     }
 
     // If track is from Apple or Qobuz, try resolving CDN artwork
@@ -221,7 +235,7 @@ async fn resolve_artwork(
             // 2. Fallback: search iTunes catalog by title and artist
             if resolved.is_none() && !title.trim().is_empty() && !artist.trim().is_empty() {
                 let term = format!("{title} {artist}");
-                let encoded_term = urlencode(&term);
+                let encoded_term = music::url::urlencode(&term);
                 let search_countries = ["in", "us", "gb"];
                 for country in search_countries {
                     let search_url = format!(
@@ -307,22 +321,13 @@ async fn resolve_artwork(
 
     if let Some(url) = artwork_url {
         ARTWORK_CACHE.insert(cache_key, url.clone()).await;
-        artwork_redirect(url)
+        Ok(url)
     } else {
         Err(ServerError::NotFound(format!(
             "Artwork not found for {} track {provider_track_id}",
             provider.as_str()
         )))
     }
-}
-
-fn artwork_redirect(url: String) -> Result<Response, ServerError> {
-    Response::builder()
-        .status(StatusCode::TEMPORARY_REDIRECT)
-        .header(header::LOCATION, url)
-        .header(header::CACHE_CONTROL, "public, max-age=86400")
-        .body(axum::body::Body::empty())
-        .map_err(|e| ServerError::Internal(e.to_string()))
 }
 
 struct ReqwestLyricsHttp(reqwest::Client);
@@ -435,12 +440,18 @@ pub struct LyricsTranslationDto {
     pub text: String,
 }
 
+// NOTE: the field below is the local database row id (`db::Track::id`), renamed
+// from `track_id` to `db_track_id` to disambiguate it from a provider-native id.
+// `#[serde(rename = "track_id")]` keeps the serialized JSON key and the generated
+// OpenAPI property name exactly as they were, so the client contract is unchanged.
+
 /// Synchronized lyrics response.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct LyricsResponse {
     /// Track database identifier.
+    #[serde(rename = "track_id")]
     #[schema(example = 42)]
-    pub track_id: i32,
+    pub db_track_id: i32,
     /// Format of the returned lyrics (`ttml_synced`, `lrc_synced`, `plain`).
     #[schema(example = "ttml_synced")]
     pub format: String,
@@ -473,24 +484,27 @@ pub struct LyricsResponse {
     ),
     responses(
         (status = 200, description = "Provider lyrics or the track title-and-artist fallback", body = LyricsResponse),
+        (status = 401, description = "Unauthorized - Missing or invalid Bearer token"),
         (status = 404, description = "Track not found"),
         (status = 500, description = "Internal error while retrieving track metadata")
-    )
+    ),
+    security(("bearer_auth" = []))
 )]
 pub async fn get_lyrics(
     State(state): State<Arc<ServerState>>,
-    Path(track_id): Path<i32>,
+    _user: AuthedUser,
+    Path(db_track_id): Path<i32>,
     Query(query): Query<LyricsQuery>,
 ) -> Result<Json<LyricsResponse>, ServerError> {
     let track = state
         .tracks_repo
-        .find_track_by_id(track_id)
+        .find_track_by_id(db_track_id)
         .await
         .map_err(|e| ServerError::Internal(e.to_string()))?
-        .ok_or_else(|| ServerError::NotFound(format!("Track {track_id} not found")))?;
+        .ok_or_else(|| ServerError::NotFound(format!("Track {db_track_id} not found")))?;
 
     if !query.refresh.unwrap_or(false)
-        && let Some(cached) = LYRICS_CACHE.get(&track_id).await
+        && let Some(cached) = LYRICS_CACHE.get(&db_track_id).await
     {
         return Ok(Json(cached));
     }
@@ -651,7 +665,7 @@ pub async fn get_lyrics(
         }
 
         let response = LyricsResponse {
-            track_id,
+            db_track_id,
             format: format_str,
             sync_level,
             provider,
@@ -660,12 +674,12 @@ pub async fn get_lyrics(
             lines,
             duration_ms,
         };
-        LYRICS_CACHE.insert(track_id, response.clone()).await;
+        LYRICS_CACHE.insert(db_track_id, response.clone()).await;
         return Ok(Json(response));
     }
 
     Ok(Json(LyricsResponse {
-        track_id,
+        db_track_id,
         format: "plain".to_string(),
         sync_level: "plain".to_string(),
         provider: None,
@@ -733,23 +747,4 @@ fn instrumental_line(start_ms: i64, end_ms: i64) -> LyricsLineDto {
         romanization: None,
         is_instrumental: true,
     }
-}
-
-fn urlencode(s: &str) -> String {
-    let mut encoded = String::with_capacity(s.len() * 3);
-    for byte in s.bytes() {
-        if byte.is_ascii_alphanumeric()
-            || byte == b'-'
-            || byte == b'_'
-            || byte == b'.'
-            || byte == b'~'
-        {
-            encoded.push(byte as char);
-        } else if byte == b' ' {
-            encoded.push('+');
-        } else {
-            encoded.push_str(&format!("%{:02X}", byte));
-        }
-    }
-    encoded
 }

@@ -61,10 +61,15 @@ async fn info(msg: ferogram::update::IncomingMessage, state: Arc<BotState>) {
     let track_id = parsed.track_id;
 
     let result = async {
+        let settings = state.rip_deps.settings().get_settings();
+        let default_storefront = engine::settings::resolve_default_storefront(&settings);
         let meta = state
             .rip_deps
             .catalog()
-            .fetch_track_meta(&track_id, parsed.storefront.as_deref().unwrap_or("us"))
+            .fetch_track_meta(
+                &track_id,
+                parsed.storefront.as_deref().unwrap_or(default_storefront),
+            )
             .await
             .map_err(|error| error.to_string())?;
         let track_key = TrackKey::new(Provider::Apple, track_id.clone());

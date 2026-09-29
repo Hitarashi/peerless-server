@@ -20,22 +20,26 @@ type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamTicket {
-    pub track_id: i32,
+    /// Local database row id of the track (see `db::Track::id`).
+    pub db_track_id: i32,
     pub user_id: i64,
     pub expires_at: i64,
 }
 
 impl StreamTicket {
-    pub fn new(track_id: i32, user_id: i64, ttl_secs: i64) -> Self {
+    pub fn new(db_track_id: i32, user_id: i64, ttl_secs: i64) -> Self {
         Self {
-            track_id,
+            db_track_id,
             user_id,
             expires_at: Utc::now().timestamp() + ttl_secs,
         }
     }
 
+    // Positional (not name-based) encoding: the field name is not part of the
+    // signed payload, so renaming `track_id` -> `db_track_id` leaves every
+    // already-issued ticket byte-identical.
     fn payload(&self) -> String {
-        format!("{}:{}:{}", self.track_id, self.user_id, self.expires_at)
+        format!("{}:{}:{}", self.db_track_id, self.user_id, self.expires_at)
     }
 
     pub fn encode(&self, secret: &str) -> String {
@@ -60,7 +64,7 @@ impl StreamTicket {
             return Err(ServerError::Unauthorized("Malformed stream ticket".into()));
         }
 
-        let track_id: i32 = parts[0]
+        let db_track_id: i32 = parts[0]
             .parse()
             .map_err(|_| ServerError::Unauthorized("Invalid track ID in ticket".into()))?;
         let user_id: i64 = parts[1]
@@ -78,7 +82,7 @@ impl StreamTicket {
         }
 
         let ticket = Self {
-            track_id,
+            db_track_id,
             user_id,
             expires_at,
         };
@@ -97,13 +101,13 @@ impl StreamTicket {
     }
 }
 
-pub fn create_stream_ticket(secret: &str, track_id: i32, user_id: i64, ttl_secs: i64) -> String {
-    StreamTicket::new(track_id, user_id, ttl_secs).encode(secret)
+pub fn create_stream_ticket(secret: &str, db_track_id: i32, user_id: i64, ttl_secs: i64) -> String {
+    StreamTicket::new(db_track_id, user_id, ttl_secs).encode(secret)
 }
 
 pub fn verify_stream_ticket(secret: &str, ticket: &str) -> Result<(i32, i64), ServerError> {
     let t = StreamTicket::decode(secret, ticket)?;
-    Ok((t.track_id, t.user_id))
+    Ok((t.db_track_id, t.user_id))
 }
 
 pub use create_stream_ticket as create_playback_ticket;
@@ -139,11 +143,11 @@ pub struct PlaybackInfo {
 }
 
 #[utoipa::path(
-    method(get, post),
+    method(get),
     path = "/api/v1/tracks/{id}/playback",
     tag = "stream",
-    summary = "Generate Stream Ticket & Playback Info",
-    description = "Generates an HMAC-SHA256 signed playback ticket and metadata for serving original ripped audio bytes over HTTP byte ranges without server-side transcoding or re-encoding. GET and POST run the same operation: both require the track ID and Bearer authentication, read no request body, and return the same PlaybackInfo response.",
+    summary = "Issue Stream Ticket & Playback Info",
+    description = "Generates an HMAC-SHA256 signed playback ticket and metadata for serving original ripped audio bytes over HTTP byte ranges without server-side transcoding or re-encoding. Requires the track ID and Bearer authentication, and returns the same PlaybackInfo response.",
     params(
         ("id" = i32, Path, description = "Unique database track ID")
     ),
@@ -158,10 +162,10 @@ pub struct PlaybackInfo {
         ("bearer_auth" = [])
     )
 )]
-pub async fn get_playback_info(
+pub async fn issue_playback_ticket(
     State(state): State<Arc<ServerState>>,
     user: AuthedUser,
-    axum::extract::Path(track_id): axum::extract::Path<i32>,
+    axum::extract::Path(db_track_id): axum::extract::Path<i32>,
 ) -> Result<Json<PlaybackInfo>, ServerError> {
     if !db::integrations::has_integration(&state.db, user.telegram_id, "lastfm").await? {
         return Err(ServerError::Forbidden(
@@ -171,18 +175,18 @@ pub async fn get_playback_info(
 
     let track = state
         .tracks_repo
-        .find_track_by_id(track_id)
+        .find_track_by_id(db_track_id)
         .await
         .map_err(|e| ServerError::Internal(e.to_string()))?
-        .ok_or_else(|| ServerError::NotFound(format!("Track {track_id} not found")))?;
+        .ok_or_else(|| ServerError::NotFound(format!("Track {db_track_id} not found")))?;
 
     let expires_in = 7200; // 2 hours
-    let ticket = create_playback_ticket(&state.app_key, track_id, user.telegram_id, expires_in);
+    let ticket = create_playback_ticket(&state.app_key, db_track_id, user.telegram_id, expires_in);
     let stream_url = format!("/api/v1/stream?ticket={ticket}");
 
     let file_size = match state
         .stream_engine
-        .resolve_track_media(track_id, false)
+        .resolve_track_media(db_track_id, false)
         .await
     {
         Ok(meta) => meta.file_size as i64,
@@ -239,13 +243,13 @@ pub async fn stream_handler(
         .filter(|t| !t.is_empty())
         .ok_or_else(|| ServerError::BadRequest("Missing 'ticket' query parameter".into()))?;
 
-    let (track_id, _user_id) = verify_playback_ticket(&state.app_key, ticket)?;
+    let (db_track_id, _user_id) = verify_playback_ticket(&state.app_key, ticket)?;
 
     let range_header = headers.get(header::RANGE).and_then(|h| h.to_str().ok());
 
     let response = state
         .stream_engine
-        .open_stream(track_id, range_header)
+        .open_stream(db_track_id, range_header)
         .await?;
 
     let mut builder = Response::builder()

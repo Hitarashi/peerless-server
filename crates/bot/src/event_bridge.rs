@@ -10,7 +10,7 @@
 use std::sync::{Arc, Mutex};
 
 use engine::orchestrator::types::{
-    ActiveRipJob, FailedTrack, OrchestratorEvent, RipJobProgress, RipJobSummary,
+    ActiveRipTask, FailedTrack, OrchestratorEvent, RipTaskProgress, RipTaskSummary,
 };
 use tokio::sync::mpsc;
 
@@ -21,30 +21,30 @@ use crate::{
 };
 
 /// Owned copies of engine events, safe to move across an mpsc channel.
-/// `job` is boxed: `ActiveRipJob` is large enough that six inline copies
+/// `job` is boxed: `ActiveRipTask` is large enough that six inline copies
 /// would bloat every `BridgeEvent` to the size of the biggest variant.
 #[derive(Debug, Clone)]
 pub enum BridgeEvent {
     Created {
-        job: Box<ActiveRipJob>,
+        job: Box<ActiveRipTask>,
     },
     Progress {
-        job: Box<ActiveRipJob>,
-        progress: Box<RipJobProgress>,
+        job: Box<ActiveRipTask>,
+        progress: Box<RipTaskProgress>,
     },
     Started {
-        job: Box<ActiveRipJob>,
+        job: Box<ActiveRipTask>,
     },
     Completed {
-        job: Box<ActiveRipJob>,
-        summary: Box<RipJobSummary>,
+        job: Box<ActiveRipTask>,
+        summary: Box<RipTaskSummary>,
     },
     Cancelled {
-        job: Box<ActiveRipJob>,
+        job: Box<ActiveRipTask>,
         cancelled_by: Option<String>,
     },
     Failed {
-        job: Box<ActiveRipJob>,
+        job: Box<ActiveRipTask>,
         error: String,
     },
 }
@@ -102,14 +102,14 @@ impl BridgeRegistry {
     /// Remember a job's rendering context (header/requester) from its latest
     /// engine snapshot. `user_name` is set once at creation and the header is
     /// finalized post-resolution, so later snapshots are authoritative.
-    pub fn remember(&self, job: &ActiveRipJob) {
+    pub fn remember(&self, job: &ActiveRipTask) {
         self.contexts
             .lock()
             .expect("bridge contexts poisoned")
             .remember(job);
     }
 
-    pub fn remember_progress(&self, progress: &RipJobProgress) {
+    pub fn remember_progress(&self, progress: &RipTaskProgress) {
         self.contexts
             .lock()
             .expect("bridge contexts poisoned")
@@ -184,7 +184,7 @@ pub fn start(state: Arc<BotState>) {
 
 /// Build a global dashboard snapshot from the engine's current jobs.
 pub async fn current_snapshot(state: &BotState) -> crate::dashboard::DashboardSnapshot {
-    let active = state.rip_orchestrator.get_active_jobs();
+    let active = state.rip_orchestrator.get_active_tasks();
     let settings = state.rip_deps.settings_snapshot();
     let mode = settings.ripping_mode.as_str().to_owned();
     // Refresh mirror health opportunistically: the last-known value renders
@@ -258,7 +258,7 @@ async fn refresh_dashboard(state: &BotState, force: bool) {
 /// could not open one (for example, a transient Telegram send failure). The
 /// Created event is emitted after the job is admitted, so this is the first
 /// reliable point at which we can recover without losing the status surface.
-async fn refresh_dashboard_for_job(state: &BotState, job: &ActiveRipJob) {
+async fn refresh_dashboard_for_job(state: &BotState, job: &ActiveRipTask) {
     if job.chat_id <= 0 {
         return;
     }
@@ -357,7 +357,7 @@ fn format_failed_track(failed: &FailedTrack) -> String {
 /// callers.  The returned order is the delivery order and must not be
 /// reconstructed through a map or sorted by codec.
 fn zip_delivery_entries(
-    summary: &RipJobSummary,
+    summary: &RipTaskSummary,
 ) -> Vec<&engine::orchestrator::types::ZipDeliveryInfo> {
     if summary.zip_deliveries.is_empty() {
         summary.zip_delivery.iter().collect()
@@ -367,7 +367,7 @@ fn zip_delivery_entries(
 }
 
 fn zip_delivery_details_html(
-    job: &ActiveRipJob,
+    job: &ActiveRipTask,
     zip: &engine::orchestrator::types::ZipDeliveryInfo,
     include_label: bool,
 ) -> String {
@@ -401,7 +401,7 @@ fn zip_delivery_details_html(
 /// Send one terminal completion notice to the originating chat. Reply to the
 /// command when it still exists; otherwise mention the requester explicitly
 /// so completion remains visible even after message cleanup.
-async fn notify_job_completed(state: &BotState, job: &ActiveRipJob, summary: &RipJobSummary) {
+async fn notify_job_completed(state: &BotState, job: &ActiveRipTask, summary: &RipTaskSummary) {
     if job.chat_id <= 0 {
         return;
     }
@@ -545,13 +545,13 @@ async fn notify_job_completed(state: &BotState, job: &ActiveRipJob, summary: &Ri
 
 #[cfg(test)]
 mod tests {
-    use engine::orchestrator::types::JobPhase as EnginePhase;
+    use engine::orchestrator::types::TaskPhase as EnginePhase;
     use tokio_util::sync::CancellationToken;
 
     use super::*;
 
-    fn job(id: &str) -> ActiveRipJob {
-        ActiveRipJob {
+    fn job(id: &str) -> ActiveRipTask {
+        ActiveRipTask {
             id: id.into(),
             provider: music::Provider::Apple,
             source_track_ids: vec!["album_1".into()],
@@ -561,7 +561,6 @@ mod tests {
             user_name: Some("Alice".into()),
             job_header: "Album: <b>X</b>".into(),
             total_tracks: 2,
-            status_msg_id: 55,
             controller: CancellationToken::new(),
             is_cancelled: false,
             cancelled_by: None,
@@ -580,8 +579,8 @@ mod tests {
         }
     }
 
-    fn progress(job_id: &str) -> RipJobProgress {
-        RipJobProgress {
+    fn progress(job_id: &str) -> RipTaskProgress {
+        RipTaskProgress {
             job_id: job_id.into(),
             total_tracks: 2,
             completed_tracks: 1,
@@ -750,7 +749,7 @@ mod tests {
     fn sparse_zip_details_keep_delivery_order_and_rendition_labels() {
         let primary = zip_delivery("alac", 2);
         let atmos = zip_delivery("ec-3", 1);
-        let summary = RipJobSummary {
+        let summary = RipTaskSummary {
             job_id: "dual.zip".into(),
             job_header: "Album".into(),
             total_tracks: 2,

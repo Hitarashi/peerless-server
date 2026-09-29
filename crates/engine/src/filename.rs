@@ -2,8 +2,14 @@
 //!
 //! Enforces OS-level single-component path length limits (commonly 255 bytes on Linux
 //! filesystems) and zip entry constraints at the type level.
+//!
+//! Also holds the filename policy for finalized audio tracks: [`build_track_filename`]
+//! and [`build_track_filename_with_codec`] name a ripped track after its number,
+//! title, artist, and the codec that was actually delivered.
 
 use std::{borrow::Borrow, fmt, ops::Deref, path::Path};
+
+use crate::types::TrackMeta;
 
 /// Standard maximum byte length for a single filesystem path component on Linux.
 pub const MAX_FILENAME_BYTES: usize = 255;
@@ -182,6 +188,32 @@ pub fn is_forbidden_char(c: char) -> bool {
         c,
         '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' | '\0'
     ) || c.is_control()
+}
+
+/// Build the final output filename for a ripped track.
+pub fn build_track_filename(meta: &TrackMeta) -> TrackFilename {
+    build_track_filename_with_codec(meta, "alac")
+}
+
+/// Same as [`build_track_filename`], labeled with the actually delivered
+/// codec (`alac`, `aac`, `mp4a.40.2`, `ec-3`, `flac`, `mp3`).
+pub fn build_track_filename_with_codec(meta: &TrackMeta, codec: &str) -> TrackFilename {
+    let number = meta.track_number.filter(|number| *number != 0).unwrap_or(1);
+    let suffix = track_filename_suffix(meta.explicit, codec);
+    let combined = format!("{number:02}. {} - {}{suffix}", meta.title, meta.artist);
+    TrackFilename::sanitize_and_bound(&combined, Some(&suffix))
+}
+
+pub(crate) fn track_filename_suffix(explicit: bool, codec: &str) -> String {
+    let explicit = if explicit { " [E]" } else { "" };
+    let (label, ext) = match codec {
+        "ec-3" => ("Atmos", "m4a"),
+        "aac" | "mp4a.40.2" | "mp4a.40.5" => ("AAC", "m4a"),
+        "flac" => ("FLAC", "flac"),
+        "mp3" => ("MP3", "mp3"),
+        _ => ("ALAC", "m4a"),
+    };
+    format!("{explicit} [{label}].{ext}")
 }
 
 impl<const MAX: usize> Deref for BoundedName<MAX> {

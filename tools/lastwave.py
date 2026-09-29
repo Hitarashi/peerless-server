@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
-extract_backend.py — automate LastWave backend/secret extraction.
+tools/lastwave.py — automate LastWave backend/secret extraction.
+
+Requires `python3` and `apktool` on PATH (curl is not required).
 
 Pipeline:
   1. Download the latest LastWave release APK from GitHub (or use a local APK).
@@ -9,14 +11,12 @@ Pipeline:
   4. XOR-decode them cyclically with SECRET_MASK_BYTES (Gradle obfuscateSecret scheme).
   5. Print backend URLs / API keys. Optionally health-test the backends (--test).
 
-Requirements: python3, apktool (on PATH), curl not required.
-
-Usage:
-  python3 extract_backend.py                    # download latest release APK
-  python3 extract_backend.py path/to/app.apk    # use local APK
-  python3 extract_backend.py --test             # after extraction, GET each backend root
-  python3 extract_backend.py --smali dir/       # skip apktool, use existing decompile
-  python3 extract_backend.py --keep             # keep temp working dir
+Usage (run from the repository root):
+  python3 tools/lastwave.py                    # download latest release APK
+  python3 tools/lastwave.py path/to/app.apk    # use local APK
+  python3 tools/lastwave.py --test             # after extraction, GET each backend root
+  python3 tools/lastwave.py --smali dir/       # skip apktool, use existing decompile
+  python3 tools/lastwave.py --keep             # keep temp working dir
 """
 
 import argparse

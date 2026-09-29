@@ -14,7 +14,7 @@ use crate::types::{ParsedTargetItem, Provider, TargetKind};
 /// `terminal_state` below so consumers can retain the last useful phase while
 /// rendering a completed/cancelled job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum JobPhase {
+pub enum TaskPhase {
     Resolving,
     CheckingCache,
     Queued,
@@ -24,19 +24,16 @@ pub enum JobPhase {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TerminalJobState {
+pub enum TerminalTaskState {
     Completed,
     Cancelled,
     Failed,
 }
 
-/// Descriptive alias for callers that prefer the `Job*` naming convention.
-pub type JobTerminalState = TerminalJobState;
-
 /// Live job bookkeeping. The orchestrator owns it, mutates it from several
 /// tasks behind its mutex, and hands out read-only snapshots via events.
 #[derive(Debug, Clone)]
-pub struct ActiveRipJob {
+pub struct ActiveRipTask {
     pub id: String,
     pub provider: Provider,
     pub source_track_ids: Vec<String>,
@@ -48,7 +45,6 @@ pub struct ActiveRipJob {
     pub user_name: Option<String>,
     pub job_header: String,
     pub total_tracks: usize,
-    pub status_msg_id: i64,
     /// Shared cancellation token — cloned into every pipeline stage.
     pub controller: CancellationToken,
     pub is_cancelled: bool,
@@ -60,8 +56,8 @@ pub struct ActiveRipJob {
     pub start_time_ms: u64,
     /// Queue position, maintained by the queue rather than the job flow.
     pub queue_position: Option<u64>,
-    pub phase: JobPhase,
-    pub terminal_state: Option<TerminalJobState>,
+    pub phase: TaskPhase,
+    pub terminal_state: Option<TerminalTaskState>,
     pub skipped_count: usize,
     pub is_cache_only: bool,
     pub is_group: bool,
@@ -70,7 +66,7 @@ pub struct ActiveRipJob {
 
 /// Everything one rip request carries.
 #[derive(Debug, Clone)]
-pub struct RipJobOptions {
+pub struct RipTaskOptions {
     pub provider: Provider,
     pub chat_id: i64,
     pub user_id: i64,
@@ -84,7 +80,6 @@ pub struct RipJobOptions {
     pub single_storefront: Option<String>,
     pub parsed_items: Vec<ParsedTargetItem>,
     pub reply_to_message_id: Option<i64>,
-    pub status_msg_id: i64,
     pub is_admin: bool,
     /// Preferred audio codec/quality preference (e.g. for Qobuz).
     pub codec_preference: Option<CodecPreference>,
@@ -202,7 +197,7 @@ pub enum UploadLane {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum JobActivity {
+pub enum TaskActivity {
     Resolving,
     CheckingCache { item: String },
     Queued { position: u32 },
@@ -214,7 +209,7 @@ pub enum JobActivity {
 
 /// A progress snapshot; every display slot is optional.
 #[derive(Debug, Clone, PartialEq)]
-pub struct RipJobProgress {
+pub struct RipTaskProgress {
     pub job_id: String,
     pub total_tracks: usize,
     pub completed_tracks: usize,
@@ -223,7 +218,7 @@ pub struct RipJobProgress {
     pub failed_count: usize,
     pub skipped_count: usize,
     pub percent: u32,
-    pub job_activity: Option<JobActivity>,
+    pub job_activity: Option<TaskActivity>,
     pub download: Option<DownloadLane>,
     pub upload: Option<UploadLane>,
 }
@@ -303,7 +298,7 @@ impl FailedTrack {
 
 /// The end-of-job report for the requesting chat.
 #[derive(Debug, Clone, PartialEq)]
-pub struct RipJobSummary {
+pub struct RipTaskSummary {
     pub job_id: String,
     pub job_header: String,
     pub total_tracks: usize,
@@ -386,17 +381,17 @@ fn kind_name(kind: TargetKind) -> &'static str {
 #[derive(Debug, Clone)]
 pub enum OrchestratorEvent<'a> {
     /// `job:created`
-    Created(&'a ActiveRipJob),
+    Created(&'a ActiveRipTask),
     /// `job:started`
-    Started(&'a ActiveRipJob),
+    Started(&'a ActiveRipTask),
     /// `job:progress`
-    Progress(&'a ActiveRipJob, &'a RipJobProgress),
+    Progress(&'a ActiveRipTask, &'a RipTaskProgress),
     /// `job:completed`
-    Completed(&'a ActiveRipJob, &'a RipJobSummary),
+    Completed(&'a ActiveRipTask, &'a RipTaskSummary),
     /// `job:cancelled`
-    Cancelled(&'a ActiveRipJob, &'a Option<String>),
+    Cancelled(&'a ActiveRipTask, &'a Option<String>),
     /// `job:failed`
-    Failed(&'a ActiveRipJob, &'a str),
+    Failed(&'a ActiveRipTask, &'a str),
 }
 
 /// Callback type subscribed to orchestrator events.

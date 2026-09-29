@@ -1,6 +1,6 @@
 [package]
 name = "engine"
-description = "Pure ALAC domain logic: URL parsing, catalog lookup, streaming, tagging, lyrics. No Telegram, no DB."
+description = "Rip orchestration, track ripping, ZIP assembly, streaming, and tagging/filename policy."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -24,7 +24,10 @@ pub struct RipTaskRequest {
 #[derive(Debug, Clone)]
 pub struct ServerTaskMeta {
     pub task_id: String,
-    pub job_id: Option<String>,
+    /// Id of the engine rip task backing this record. Empty until the
+    /// orchestrator assigns one; `task_id` and this are minted separately
+    /// because an app request is reserved before its rip task exists.
+    pub rip_task_id: String,
     pub owner_id: i64,
     pub provider: music::Provider,
     pub track_id: String,
@@ -246,7 +249,7 @@ mod tests {
         };
         let task = ServerTaskMeta {
             task_id: "task-1".to_owned(),
-            job_id: Some("job-1".to_owned()),
+            rip_task_id: "task-1".to_owned(),
             owner_id: 1,
             provider: music::Provider::Apple,
             track_id: "source-1".to_owned(),

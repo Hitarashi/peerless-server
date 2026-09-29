@@ -555,13 +555,14 @@ impl engine::orchestrator::deps::ProviderPresentation for ApplePresentation {
         "Apple Music Lossless Rip"
     }
 
-    fn album_url(&self, album_id: &str, storefront: &str) -> Option<String> {
+    fn album_url(
+        &self,
+        _provider: engine::types::Provider,
+        album_id: &str,
+        storefront: engine::orchestrator::deps::Storefront<'_>,
+    ) -> Option<String> {
         (!album_id.is_empty()).then(|| {
-            let storefront = if storefront.is_empty() {
-                "us"
-            } else {
-                storefront
-            };
+            let storefront = storefront.get().unwrap_or("us");
             format!("https://music.apple.com/{storefront}/album/{album_id}")
         })
     }

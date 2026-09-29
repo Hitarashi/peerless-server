@@ -154,6 +154,11 @@ pub struct ParsedZipDumpMetadata {
 }
 
 /// Escape `& < > " '` with hex entities (mtcute-compatible).
+///
+/// The single workspace implementation of Telegram HTML escaping; the bot
+/// crate's `html::escape` delegates here so the two cannot drift. The exact
+/// set of replaced characters is a contract with Telegram's HTML parse mode,
+/// so it is pinned by tests in this module and in `bot::html`.
 pub fn html_escape(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     for ch in input.chars() {

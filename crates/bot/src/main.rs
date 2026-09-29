@@ -13,14 +13,18 @@ use tracing_subscriber::EnvFilter;
 
 const PROGRESS_UPDATE_INTERVAL: Duration = Duration::from_millis(250);
 
+/// Minimum accepted length of `APP_KEY`; the key signs stream tickets and
+/// encrypts provider session tokens at rest, so short values are rejected.
+const MIN_APP_KEY_LEN: usize = 32;
+
 #[derive(Default)]
 struct ProgressThrottle {
     last_emitted_at: Option<Instant>,
-    last_progress: Option<server::tasks::RipTaskProgress>,
+    last_progress: Option<server::rip_tasks::RipTaskProgress>,
 }
 
 impl ProgressThrottle {
-    fn should_emit(&mut self, now: Instant, progress: &server::tasks::RipTaskProgress) -> bool {
+    fn should_emit(&mut self, now: Instant, progress: &server::rip_tasks::RipTaskProgress) -> bool {
         let Some(previous) = &self.last_progress else {
             self.last_emitted_at = Some(now);
             self.last_progress = Some(progress.clone());
@@ -43,12 +47,12 @@ impl ProgressThrottle {
 }
 
 fn same_progress_phase(
-    previous: &server::tasks::RipTaskProgress,
-    current: &server::tasks::RipTaskProgress,
+    previous: &server::rip_tasks::RipTaskProgress,
+    current: &server::rip_tasks::RipTaskProgress,
 ) -> bool {
     fn same_download_phase(
-        previous: &Option<server::tasks::RipTaskDownloadLane>,
-        current: &Option<server::tasks::RipTaskDownloadLane>,
+        previous: &Option<server::rip_tasks::RipTaskDownloadLane>,
+        current: &Option<server::rip_tasks::RipTaskDownloadLane>,
     ) -> bool {
         match (previous, current) {
             (Some(previous), Some(current)) => {
@@ -62,8 +66,8 @@ fn same_progress_phase(
     }
 
     fn same_upload_phase(
-        previous: &Option<server::tasks::RipTaskUploadLane>,
-        current: &Option<server::tasks::RipTaskUploadLane>,
+        previous: &Option<server::rip_tasks::RipTaskUploadLane>,
+        current: &Option<server::rip_tasks::RipTaskUploadLane>,
     ) -> bool {
         match (previous, current) {
             (Some(previous), Some(current)) => {
@@ -91,24 +95,24 @@ fn lane_byte_values(
 ) -> (Option<u64>, Option<u64>, Option<f32>) {
     let bytes_done = Some(progress.completed);
     let bytes_total = progress.total;
-    let percent = server::tasks::lane_percent(bytes_done, bytes_total);
+    let percent = server::rip_tasks::lane_percent(bytes_done, bytes_total);
     (bytes_done, bytes_total, percent)
 }
 
 fn map_job_stage(
-    activity: Option<&engine::orchestrator::types::JobActivity>,
-) -> Option<server::tasks::RipTaskJobStage> {
-    use engine::orchestrator::types::JobActivity;
-    use server::tasks::RipTaskJobStage as Stage;
+    activity: Option<&engine::orchestrator::types::TaskActivity>,
+) -> Option<server::rip_tasks::RipTaskJobStage> {
+    use engine::orchestrator::types::TaskActivity;
+    use server::rip_tasks::RipTaskJobStage as Stage;
 
     match activity? {
-        JobActivity::Resolving => Some(Stage::Resolving),
-        JobActivity::CheckingCache { .. } => Some(Stage::CheckingCache),
-        JobActivity::Queued { .. } => Some(Stage::Queued),
-        JobActivity::SkippingUncached => Some(Stage::SkippingUncached),
-        JobActivity::CachedDelivered => Some(Stage::CachedDelivered),
-        JobActivity::ProcessingNext => Some(Stage::ProcessingNext),
-        JobActivity::WaitingDuplicate { .. } => Some(Stage::WaitingDuplicate),
+        TaskActivity::Resolving => Some(Stage::Resolving),
+        TaskActivity::CheckingCache { .. } => Some(Stage::CheckingCache),
+        TaskActivity::Queued { .. } => Some(Stage::Queued),
+        TaskActivity::SkippingUncached => Some(Stage::SkippingUncached),
+        TaskActivity::CachedDelivered => Some(Stage::CachedDelivered),
+        TaskActivity::ProcessingNext => Some(Stage::ProcessingNext),
+        TaskActivity::WaitingDuplicate { .. } => Some(Stage::WaitingDuplicate),
     }
 }
 
@@ -120,6 +124,7 @@ struct Env {
     admin_id: i64,
     dump_channel_id: i64,
     database_url: String,
+    app_key: String,
     log_level: String,
     stream_worker_bot_tokens: Vec<String>,
 }
@@ -168,6 +173,9 @@ fn load_env() -> Result<Env> {
     )
     .unwrap_or_default();
     let database_url = required("DATABASE_URL", &mut invalid);
+    // APP_KEY has no built-in fallback on purpose: it signs stream tickets and
+    // encrypts provider session tokens, so a shared default would be a known key.
+    let app_key = required("APP_KEY", &mut invalid);
     // Precedence: LOG_LEVEL || RUST_LOG || 'info'.
     let log_level = std::env::var("LOG_LEVEL")
         .or_else(|_| std::env::var("RUST_LOG"))
@@ -187,6 +195,15 @@ fn load_env() -> Result<Env> {
             invalid.join(", ")
         ));
     }
+    // `required` already treats a blank value as missing; this rejects short
+    // secrets. The length is measured on the trimmed value while the key itself
+    // is kept verbatim, matching how `db::crypto::CryptoCipher::from_env` reads it.
+    if app_key.trim().len() < MIN_APP_KEY_LEN {
+        return Err(anyhow!(
+            "invalid environment variable: APP_KEY must be at least {MIN_APP_KEY_LEN} characters; \
+             set it to a private, unique secret (for example: openssl rand -hex {MIN_APP_KEY_LEN})"
+        ));
+    }
     Ok(Env {
         api_id,
         api_hash,
@@ -194,6 +211,7 @@ fn load_env() -> Result<Env> {
         admin_id,
         dump_channel_id,
         database_url,
+        app_key,
         log_level,
         stream_worker_bot_tokens,
     })
@@ -306,8 +324,7 @@ async fn main() -> Result<()> {
     let session_manager = Arc::new(db::SessionManager::new(database.clone(), env.admin_id));
     let tracks_repo = Arc::new(db::TracksRepository::new(database.clone()));
     let settings_store = Arc::new(db::SettingsStore::new(database.clone()));
-    let app_key =
-        std::env::var("APP_KEY").unwrap_or_else(|_| "IQfVm8yrIR83zlWvEZ5Fr9fpN6lGgWhV".to_string());
+    let app_key = env.app_key.clone();
 
     let initial_settings = settings_store.get_settings();
     let port = std::env::var("STREAM_SERVER_PORT")
@@ -319,25 +336,29 @@ async fn main() -> Result<()> {
         host: [0, 0, 0, 0].into(),
         port,
         app_key: app_key.clone(),
-        cors_origins: vec!["*".to_string()],
     };
 
     let apple_catalog = Arc::new(apple::Catalog::new(apple::ReqwestTransport::new()));
     let orchestrator_for_tasks = orchestrator.clone();
     let rip_deps_for_tasks = rip_deps.clone();
+    let settings_store_for_tasks = Arc::clone(&settings_store);
     let admin_id = env.admin_id;
     let rip_task_runner: server::RipTaskRunner = Arc::new(
         move |state, task_id, provider, track_id, codec, user_id, controller| {
             let orchestrator = orchestrator_for_tasks.clone();
             let rip_deps = rip_deps_for_tasks.clone();
+            let settings_store = Arc::clone(&settings_store_for_tasks);
             tokio::spawn(async move {
                 if controller.is_cancelled() {
                     return;
                 }
+                let settings = settings_store.get_settings();
+                let default_storefront =
+                    engine::settings::resolve_default_storefront(&settings).to_owned();
                 let item = engine::types::ParsedTargetItem {
                     id: track_id.clone(),
                     kind: music::TargetKind::Track,
-                    storefront: Some("us".to_string()),
+                    storefront: Some(default_storefront.clone()),
                 };
                 let codec_preference = codec.map(|c| match c {
                     music::Codec::Alac | music::Codec::Flac => {
@@ -347,7 +368,7 @@ async fn main() -> Result<()> {
                     _ => music::CodecPreference::HighestQuality,
                 });
                 let is_admin = user_id == admin_id;
-                let options = engine::orchestrator::types::RipJobOptions {
+                let options = engine::orchestrator::types::RipTaskOptions {
                     provider,
                     chat_id: 0,
                     user_id,
@@ -356,17 +377,16 @@ async fn main() -> Result<()> {
                     is_group: false,
                     is_force: false,
                     is_cache_only: true,
-                    single_storefront: Some("us".to_string()),
+                    single_storefront: Some(default_storefront),
                     parsed_items: vec![item],
                     reply_to_message_id: None,
-                    status_msg_id: 0,
                     is_admin,
                     codec_preference,
                     rendition_policy: engine::orchestrator::types::RenditionPolicy::PrimaryOnly,
                 };
 
                 tracing::info!(task_id = %task_id, "Executing background rip task via RipOrchestrator");
-                if let Err(e) = orchestrator.start_job(rip_deps, &options).await {
+                if let Err(e) = orchestrator.start_task(rip_deps, &options).await {
                     tracing::warn!(task_id = %task_id, error = %e, "Background rip task failed");
                     state.fail_task(&task_id, &e.to_string());
                 }
@@ -427,9 +447,9 @@ async fn main() -> Result<()> {
 
         // Match app-created tasks first. Ordinary bot jobs get a server-owned
         // task record too, so every client sees the same active job feed.
-        let find_task = |job: &engine::orchestrator::types::ActiveRipJob,
+        let find_task = |job: &engine::orchestrator::types::ActiveRipTask,
                          register_if_missing: bool|
-         -> Option<server::tasks::ServerTaskMeta> {
+         -> Option<server::rip_tasks::ServerTaskMeta> {
             let mut tasks = state.active_tasks.write();
             let is_album = job.total_tracks > 1;
             let (parsed_title, parsed_artist) =
@@ -441,8 +461,8 @@ async fn main() -> Result<()> {
                 .as_ref()
                 .and_then(|uname| tasks.get_mut(uname))
             {
-                if task.job_id.is_none() {
-                    task.job_id = Some(job.id.clone());
+                if task.rip_task_id.is_empty() {
+                    task.rip_task_id = job.id.clone();
                 }
                 if is_album {
                     task.is_album = true;
@@ -451,7 +471,7 @@ async fn main() -> Result<()> {
             }
             // Repeated orchestrator events resolve through the assigned job ID.
             for task in tasks.values_mut() {
-                if task.job_id.as_deref() == Some(&job.id) {
+                if task.rip_task_id == job.id {
                     if task.task_id.starts_with("bot_") {
                         task.is_album = is_album;
                         task.title = Some(parsed_title.clone());
@@ -465,12 +485,12 @@ async fn main() -> Result<()> {
             // Recover a matching app task if its Created event raced the
             // orchestrator event bridge.
             for task in tasks.values_mut() {
-                if task.job_id.is_none()
+                if task.rip_task_id.is_empty()
                     && (task.owner_id == job.user_id || job.user_id == 0)
                     && task.provider == job.provider
                     && job.source_track_ids.iter().any(|id| id == &task.track_id)
                 {
-                    task.job_id = Some(job.id.clone());
+                    task.rip_task_id = job.id.clone();
                     if is_album {
                         task.is_album = true;
                     }
@@ -483,9 +503,9 @@ async fn main() -> Result<()> {
             }
 
             let task_id = format!("bot_{}", job.id);
-            let meta = server::tasks::ServerTaskMeta {
+            let meta = server::rip_tasks::ServerTaskMeta {
                 task_id: task_id.clone(),
-                job_id: Some(job.id.clone()),
+                rip_task_id: job.id.clone(),
                 owner_id: job.user_id,
                 provider: job.provider,
                 track_id: job
@@ -501,8 +521,8 @@ async fn main() -> Result<()> {
                 duration: None,
                 controller: tokio_util::sync::CancellationToken::new(),
                 created_at: std::time::Instant::now(),
-                latest_progress: server::tasks::RipTaskProgress {
-                    job_stage: Some(server::tasks::RipTaskJobStage::Queued),
+                latest_progress: server::rip_tasks::RipTaskProgress {
+                    job_stage: Some(server::rip_tasks::RipTaskJobStage::Queued),
                     download: None,
                     upload: None,
                     percent: Some(0.0),
@@ -518,7 +538,7 @@ async fn main() -> Result<()> {
             drop(tasks);
             let _ = state
                 .task_sync_tx
-                .send(server::tasks::TaskSyncEvent::Updated { task_id });
+                .send(server::rip_tasks::TaskSyncEvent::Updated { task_id });
             Some(meta)
         };
 
@@ -546,12 +566,12 @@ async fn main() -> Result<()> {
             OrchestratorEvent::Progress(job, progress) => {
                 if let Some(task) = find_task(job, true) {
                     let download = progress.download.as_ref().map(|download_lane| {
-                        use server::tasks::RipTaskDownloadStage as Stage;
+                        use server::rip_tasks::RipTaskDownloadStage as Stage;
 
                         match download_lane {
                             DownloadLane::Rip(activity) => match activity {
                                 RipActivity::ResolvingMetadata => {
-                                    server::tasks::RipTaskDownloadLane {
+                                    server::rip_tasks::RipTaskDownloadLane {
                                         stage: Stage::ResolvingMetadata,
                                         title: None,
                                         artist: None,
@@ -561,7 +581,7 @@ async fn main() -> Result<()> {
                                     }
                                 }
                                 RipActivity::Connecting { track } => {
-                                    server::tasks::RipTaskDownloadLane {
+                                    server::rip_tasks::RipTaskDownloadLane {
                                         stage: Stage::Connecting,
                                         title: Some(track.title.clone()),
                                         artist: Some(track.artist.clone()),
@@ -573,7 +593,7 @@ async fn main() -> Result<()> {
                                 RipActivity::Downloading { track, progress } => {
                                     let (bytes_done, bytes_total, percent) =
                                         lane_byte_values(progress);
-                                    server::tasks::RipTaskDownloadLane {
+                                    server::rip_tasks::RipTaskDownloadLane {
                                         stage: Stage::Downloading,
                                         title: Some(track.title.clone()),
                                         artist: Some(track.artist.clone()),
@@ -585,7 +605,7 @@ async fn main() -> Result<()> {
                                 RipActivity::MaterializingCachedMedia { track, progress } => {
                                     let (bytes_done, bytes_total, percent) =
                                         lane_byte_values(progress);
-                                    server::tasks::RipTaskDownloadLane {
+                                    server::rip_tasks::RipTaskDownloadLane {
                                         stage: Stage::MaterializingCachedMedia,
                                         title: Some(track.title.clone()),
                                         artist: Some(track.artist.clone()),
@@ -595,7 +615,7 @@ async fn main() -> Result<()> {
                                     }
                                 }
                                 RipActivity::Decrypting { track } => {
-                                    server::tasks::RipTaskDownloadLane {
+                                    server::rip_tasks::RipTaskDownloadLane {
                                         stage: Stage::Decrypting,
                                         title: Some(track.title.clone()),
                                         artist: Some(track.artist.clone()),
@@ -605,7 +625,7 @@ async fn main() -> Result<()> {
                                     }
                                 }
                                 RipActivity::Tagging { track } => {
-                                    server::tasks::RipTaskDownloadLane {
+                                    server::rip_tasks::RipTaskDownloadLane {
                                         stage: Stage::Tagging,
                                         title: Some(track.title.clone()),
                                         artist: Some(track.artist.clone()),
@@ -616,7 +636,7 @@ async fn main() -> Result<()> {
                                 }
                             },
                             DownloadLane::CachedDelivery { track } => {
-                                server::tasks::RipTaskDownloadLane {
+                                server::rip_tasks::RipTaskDownloadLane {
                                     stage: Stage::CachedDelivery,
                                     title: Some(track.title.clone()),
                                     artist: Some(track.artist.clone()),
@@ -629,7 +649,7 @@ async fn main() -> Result<()> {
                     });
 
                     let upload = progress.upload.as_ref().map(|upload_lane| {
-                        use server::tasks::RipTaskUploadStage as Stage;
+                        use server::rip_tasks::RipTaskUploadStage as Stage;
 
                         match upload_lane {
                             UploadLane::Track {
@@ -639,7 +659,7 @@ async fn main() -> Result<()> {
                             } => {
                                 let (bytes_done, bytes_total, percent) =
                                     lane_byte_values(byte_progress);
-                                server::tasks::RipTaskUploadLane {
+                                server::rip_tasks::RipTaskUploadLane {
                                     stage: Stage::UploadingTrack,
                                     title: Some(track.title.clone()),
                                     artist: Some(track.artist.clone()),
@@ -654,7 +674,7 @@ async fn main() -> Result<()> {
                             } => {
                                 let (bytes_done, bytes_total, percent) =
                                     lane_byte_values(byte_progress);
-                                server::tasks::RipTaskUploadLane {
+                                server::rip_tasks::RipTaskUploadLane {
                                     stage: Stage::BuildingArchive,
                                     title: Some("Album ZIP archive".to_owned()),
                                     artist: None,
@@ -669,7 +689,7 @@ async fn main() -> Result<()> {
                             } => {
                                 let (bytes_done, bytes_total, percent) =
                                     lane_byte_values(byte_progress);
-                                server::tasks::RipTaskUploadLane {
+                                server::rip_tasks::RipTaskUploadLane {
                                     stage: Stage::UploadingArchive,
                                     title: Some("Album ZIP archive".to_owned()),
                                     artist: None,
@@ -684,8 +704,8 @@ async fn main() -> Result<()> {
                     let is_archive = upload.as_ref().is_some_and(|lane| {
                         matches!(
                             lane.stage,
-                            server::tasks::RipTaskUploadStage::BuildingArchive
-                                | server::tasks::RipTaskUploadStage::UploadingArchive
+                            server::rip_tasks::RipTaskUploadStage::BuildingArchive
+                                | server::rip_tasks::RipTaskUploadStage::UploadingArchive
                         )
                     });
                     let lane_percent = upload
@@ -732,7 +752,7 @@ async fn main() -> Result<()> {
                         (None, None, None)
                     };
 
-                    let next_progress = server::tasks::RipTaskProgress {
+                    let next_progress = server::rip_tasks::RipTaskProgress {
                         job_stage: map_job_stage(progress.job_activity.as_ref()),
                         download,
                         upload,
@@ -876,7 +896,7 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use server::tasks::{RipTaskDownloadLane, RipTaskDownloadStage, RipTaskProgress};
+    use server::rip_tasks::{RipTaskDownloadLane, RipTaskDownloadStage, RipTaskProgress};
 
     use super::*;
 

@@ -4,10 +4,9 @@
 //! `https://music.apple.com/us/browse` index bundles. Shared across catalog and
 //! playlist modules to eliminate redundant scraping.
 
-use std::{
-    sync::Mutex,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{sync::Mutex, time::Duration};
+
+use music::time::now_ms;
 
 use crate::playlist::{
     PlaylistHttp, PlaylistHttpError, ReqwestPlaylistHttp, auth_headers, ua_header,
@@ -17,13 +16,6 @@ use crate::playlist::{
 struct TokenCache {
     token: Option<String>,
     expires_at_ms: u64,
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 /// Thread-safe manager for live Apple Music developer tokens.

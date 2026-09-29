@@ -3,7 +3,7 @@
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use engine::orchestrator::types::{
-    ByteProgress, DownloadLane, JobActivity, RipActivity, TrackLabel, UploadLane,
+    ByteProgress, DownloadLane, RipActivity, TaskActivity, TrackLabel, UploadLane,
 };
 use tokio::sync::Mutex;
 
@@ -52,7 +52,7 @@ pub struct DashboardJob {
     pub failed: u64,
     pub total: u64,
     pub percent: u8,
-    pub job_activity: Option<JobActivity>,
+    pub job_activity: Option<TaskActivity>,
     pub download: Option<DownloadLane>,
     pub upload: Option<UploadLane>,
     pub is_cancel_allowed_for_viewer: bool,
@@ -63,7 +63,7 @@ pub struct DashboardSnapshot {
     pub ripping_mode: String,
     pub mirror_health: Option<String>,
     /// First active job's independent job activity, hidden when idle.
-    pub current_job_activity: Option<JobActivity>,
+    pub current_job_activity: Option<TaskActivity>,
     /// First active lane-1 job's download facts, hidden when idle.
     pub current_download: Option<DownloadLane>,
     /// First active lane-2 job's upload facts, hidden when idle.
@@ -198,19 +198,19 @@ fn esc(s: &str) -> String {
     crate::html::escape(s)
 }
 
-fn render_job_activity(activity: &JobActivity) -> String {
+fn render_job_activity(activity: &TaskActivity) -> String {
     match activity {
-        JobActivity::Resolving => "<b>🔍 Resolving...</b>\n".to_owned(),
-        JobActivity::CheckingCache { item } => {
+        TaskActivity::Resolving => "<b>🔍 Resolving...</b>\n".to_owned(),
+        TaskActivity::CheckingCache { item } => {
             format!("<b>🔍 Checking cache:</b> {}\n", esc(item))
         }
-        JobActivity::Queued { position } => {
+        TaskActivity::Queued { position } => {
             format!("<b>⏳ Queued:</b> position #{position}\n")
         }
-        JobActivity::SkippingUncached => "<b>⏭️ Skipping uncached tracks...</b>\n".to_owned(),
-        JobActivity::CachedDelivered => "<b>✅ Delivered cached tracks...</b>\n".to_owned(),
-        JobActivity::ProcessingNext => "<b>⏭️ Processing next track...</b>\n".to_owned(),
-        JobActivity::WaitingDuplicate { inflight_job_id } => {
+        TaskActivity::SkippingUncached => "<b>⏭️ Skipping uncached tracks...</b>\n".to_owned(),
+        TaskActivity::CachedDelivered => "<b>✅ Delivered cached tracks...</b>\n".to_owned(),
+        TaskActivity::ProcessingNext => "<b>⏭️ Processing next track...</b>\n".to_owned(),
+        TaskActivity::WaitingDuplicate { inflight_job_id } => {
             format!("<b>⏳ Waiting on active download</b> <code>#{inflight_job_id}</code>\n")
         }
     }
@@ -798,7 +798,7 @@ mod tests {
         };
 
         let s_checking = DashboardSnapshot {
-            current_job_activity: Some(JobActivity::CheckingCache {
+            current_job_activity: Some(TaskActivity::CheckingCache {
                 item: "Album".into(),
             }),
             jobs: vec![base_job.clone()],
@@ -808,7 +808,7 @@ mod tests {
         assert!(text.contains("<b>🔍 Checking cache:</b> Album"));
 
         let s_resolving = DashboardSnapshot {
-            current_job_activity: Some(JobActivity::Resolving),
+            current_job_activity: Some(TaskActivity::Resolving),
             jobs: vec![base_job.clone()],
             ..DashboardSnapshot::default()
         };

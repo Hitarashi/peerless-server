@@ -44,7 +44,8 @@ pub fn parse_qobuz_entities(text: &str) -> Vec<ParsedTargetItem> {
             items.push(ParsedTargetItem {
                 id: entity.id,
                 kind,
-                storefront: Some("qobuz".to_string()),
+                // Qobuz has no storefronts; the provider field carries that fact.
+                storefront: None,
             });
         }
     }
@@ -59,7 +60,7 @@ pub fn parse_text(text: &str, reply: Option<&str>, force_override: bool) -> Opti
             provider: engine::types::Provider::Qobuz,
             items: direct_qobuz,
             force: force_override || has_force_token(text),
-            storefront: Some("qobuz".to_string()),
+            storefront: None,
             document: false,
             from_reply: false,
             reply_sender_id: None,
@@ -76,7 +77,7 @@ pub fn parse_text(text: &str, reply: Option<&str>, force_override: bool) -> Opti
                 provider: engine::types::Provider::Qobuz,
                 items: reply_qobuz,
                 force: force_override || has_force_token(text),
-                storefront: Some("qobuz".to_string()),
+                storefront: None,
                 document: false,
                 from_reply: true,
                 reply_sender_id: None,
@@ -224,11 +225,7 @@ pub async fn parse_message(
                 let qobuz_items = parse_qobuz_entities(&content);
 
                 let (provider, items, sf) = if !qobuz_items.is_empty() && apple_items.is_empty() {
-                    (
-                        engine::types::Provider::Qobuz,
-                        qobuz_items,
-                        Some("qobuz".to_string()),
-                    )
+                    (engine::types::Provider::Qobuz, qobuz_items, None)
                 } else {
                     (engine::types::Provider::Apple, apple_items, None)
                 };

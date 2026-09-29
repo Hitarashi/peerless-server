@@ -7,14 +7,15 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
-use crate::{ServerState, error::ServerError};
+use crate::{ServerState, auth::AuthedUser, error::ServerError};
 
 /// Summary information for a track in catalog listings.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct TrackSummaryDto {
-    /// Unique database track ID (0 for uncached live tracks).
+    /// Unique database track ID. `None` when the track is not yet cached
+    /// locally, so there is no local row to reference.
     #[schema(example = 42)]
-    pub id: i32,
+    pub id: Option<i32>,
     /// Music provider name (`apple`, `qobuz`).
     #[schema(example = "apple")]
     pub provider: String,
@@ -33,9 +34,10 @@ pub struct TrackSummaryDto {
     /// Duration of the audio track in seconds.
     #[schema(example = 231)]
     pub duration: i32,
-    /// Lossless or compressed audio codec.
+    /// Lossless or compressed audio codec. `None` when the codec that will
+    /// actually be delivered is not known (e.g. not yet ripped).
     #[schema(example = "alac")]
-    pub codec: String,
+    pub codec: Option<String>,
     /// Audio bit depth (e.g. 16 or 24).
     #[schema(example = 24)]
     pub bit_depth: Option<i32>,
@@ -53,14 +55,14 @@ pub struct TrackSummaryDto {
 impl From<db::Track> for TrackSummaryDto {
     fn from(t: db::Track) -> Self {
         Self {
-            id: t.id,
+            id: Some(t.id),
             provider: t.provider.as_str().to_string(),
             track_id: t.track_id,
             title: t.title,
             artist: t.artist,
             album: t.album,
             duration: t.duration,
-            codec: t.codec.as_str().to_string(),
+            codec: Some(t.codec.as_str().to_string()),
             bit_depth: Some(t.bit_depth),
             sample_rate: Some(t.sample_rate),
             is_cached: true,
@@ -159,10 +161,16 @@ impl From<db::Track> for TrackDetailDto {
 /// A specific audio source/rendition available for a canonical track.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct TrackSourceDto {
-    pub id: i32,
+    /// Unique database track ID. `None` when the track is not present in the
+    /// local database, so there is no local row to reference.
+    #[schema(example = 42)]
+    pub id: Option<i32>,
     pub provider: String,
     pub track_id: String,
-    pub codec: String,
+    /// Lossless or compressed audio codec. `None` when the codec that will
+    /// actually be delivered is not known (e.g. the source is not yet ripped).
+    #[schema(example = "alac")]
+    pub codec: Option<String>,
     pub bit_depth: Option<i32>,
     pub sample_rate: Option<i32>,
     pub is_cached: bool,
@@ -254,11 +262,14 @@ pub struct SearchResponse {
     ),
     responses(
         (status = 200, description = "Deduplicated cached and live search results", body = SearchResponse),
+        (status = 401, description = "Unauthorized - Missing or invalid Bearer token"),
         (status = 500, description = "Internal error while searching cached tracks")
-    )
+    ),
+    security(("bearer_auth" = []))
 )]
 pub async fn search_catalog(
     State(state): State<Arc<ServerState>>,
+    _user: AuthedUser,
     Query(query): Query<SearchQuery>,
 ) -> Result<Json<SearchResponse>, ServerError> {
     let limit = query.limit.unwrap_or(20).clamp(1, 100) as usize;
@@ -278,11 +289,15 @@ pub async fn search_catalog(
     // Query live catalog from catalog_service if available
     let mut live = Vec::new();
     let mut live_results: Vec<music::TrackMeta> = Vec::new();
+    let settings = state.settings_store.get_settings();
+    let default_storefront = engine::settings::resolve_default_storefront(&settings);
     if let Some(ref catalog) = state.catalog_service {
         let provider = query.provider.as_deref().unwrap_or("apple");
         if provider.eq_ignore_ascii_case("apple")
             && !query.q.trim().is_empty()
-            && let Ok(results) = catalog.search_catalog(&query.q, 10, "us").await
+            && let Ok(results) = catalog
+                .search_catalog(&query.q, 10, default_storefront)
+                .await
         {
             let cached_track_ids: std::collections::HashSet<&str> =
                 cached.iter().map(|c| c.track_id.as_str()).collect();
@@ -387,13 +402,15 @@ pub fn build_canonical_tracks(
             if !existing.sources.iter().any(|s| {
                 s.provider.eq_ignore_ascii_case(provider)
                     && s.track_id == *track_id
-                    && s.codec.eq_ignore_ascii_case(t.codec.as_str())
+                    && s.codec
+                        .as_deref()
+                        .is_some_and(|c| c.eq_ignore_ascii_case(t.codec.as_str()))
             }) {
                 existing.sources.push(TrackSourceDto {
-                    id: t.id,
+                    id: Some(t.id),
                     provider: provider.to_string(),
                     track_id: track_id.clone(),
-                    codec: t.codec.as_str().to_string(),
+                    codec: Some(t.codec.as_str().to_string()),
                     bit_depth: Some(t.bit_depth),
                     sample_rate: Some(t.sample_rate),
                     is_cached: true,
@@ -410,10 +427,10 @@ pub fn build_canonical_tracks(
                 artwork_url: None,
                 isrc: isrc.map(ToOwned::to_owned),
                 sources: vec![TrackSourceDto {
-                    id: t.id,
+                    id: Some(t.id),
                     provider: provider.to_string(),
                     track_id: track_id.clone(),
-                    codec: t.codec.as_str().to_string(),
+                    codec: Some(t.codec.as_str().to_string()),
                     bit_depth: Some(t.bit_depth),
                     sample_rate: Some(t.sample_rate),
                     is_cached: true,
@@ -452,10 +469,11 @@ pub fn build_canonical_tracks(
                 .any(|s| s.provider.eq_ignore_ascii_case(provider) && s.track_id == *track_id)
             {
                 existing.sources.push(TrackSourceDto {
-                    id: 0,
+                    id: None,
                     provider: provider.to_string(),
                     track_id: track_id.clone(),
-                    codec: "alac".to_string(),
+                    // The delivered codec is only known once the track is ripped.
+                    codec: None,
                     bit_depth: None,
                     sample_rate: None,
                     is_cached: false,
@@ -476,10 +494,11 @@ pub fn build_canonical_tracks(
                 },
                 isrc: isrc.map(ToOwned::to_owned),
                 sources: vec![TrackSourceDto {
-                    id: 0,
+                    id: None,
                     provider: provider.to_string(),
                     track_id: track_id.clone(),
-                    codec: "alac".to_string(),
+                    // The delivered codec is only known once the track is ripped.
+                    codec: None,
                     bit_depth: None,
                     sample_rate: None,
                     is_cached: false,
@@ -502,20 +521,23 @@ pub fn build_canonical_tracks(
     ),
     responses(
         (status = 200, description = "Comprehensive track metadata", body = TrackDetailDto),
+        (status = 401, description = "Unauthorized - Missing or invalid Bearer token"),
         (status = 404, description = "Track not found in database cache"),
         (status = 500, description = "Internal error while retrieving track metadata")
-    )
+    ),
+    security(("bearer_auth" = []))
 )]
 pub async fn get_track(
     State(state): State<Arc<ServerState>>,
-    Path(track_id): Path<i32>,
+    _user: AuthedUser,
+    Path(db_track_id): Path<i32>,
 ) -> Result<Json<TrackDetailDto>, ServerError> {
     let track = state
         .tracks_repo
-        .find_track_by_id(track_id)
+        .find_track_by_id(db_track_id)
         .await
         .map_err(|e| ServerError::Internal(e.to_string()))?
-        .ok_or_else(|| ServerError::NotFound(format!("Track {track_id} not found")))?;
+        .ok_or_else(|| ServerError::NotFound(format!("Track {db_track_id} not found")))?;
 
     Ok(Json(track.into()))
 }
@@ -553,11 +575,14 @@ pub struct PaginationQuery {
     ),
     responses(
         (status = 200, description = "Paginated list of distinct cached albums", body = Vec<AlbumSummaryDto>),
+        (status = 401, description = "Unauthorized - Missing or invalid Bearer token"),
         (status = 500, description = "Internal error while retrieving cached albums")
-    )
+    ),
+    security(("bearer_auth" = []))
 )]
 pub async fn list_albums(
     State(state): State<Arc<ServerState>>,
+    _user: AuthedUser,
     Query(query): Query<PaginationQuery>,
 ) -> Result<Json<Vec<AlbumSummaryDto>>, ServerError> {
     let limit = query.limit.unwrap_or(30).clamp(1, 100);
@@ -599,32 +624,35 @@ pub struct AlbumDetailsDto {
 
 #[utoipa::path(
     get,
-    path = "/api/v1/albums/{id}",
+    path = "/api/v1/albums/{album_ref}",
     tag = "catalog",
     summary = "Get Album Tracklist",
     description = "Returns the complete ordered tracklist for an album, checking the database cache first and falling back to live Apple Music catalog if uncached.",
     params(
-        ("id" = String, Path, description = "Album title, collection ID, or track ID", example = "1989")
+        ("album_ref" = String, Path, description = "Album reference: an album title, a provider collection ID, or a cached track ID whose album is used", example = "1989")
     ),
     responses(
         (status = 200, description = "Album metadata and ordered tracklist", body = AlbumDetailsDto),
+        (status = 401, description = "Unauthorized - Missing or invalid Bearer token"),
         (status = 404, description = "Album not found in cache or live catalog"),
         (status = 500, description = "Internal error while retrieving cached album tracks")
-    )
+    ),
+    security(("bearer_auth" = []))
 )]
 pub async fn get_album_tracks(
     State(state): State<Arc<ServerState>>,
-    Path(id_or_name): Path<String>,
+    _user: AuthedUser,
+    Path(album_ref): Path<String>,
 ) -> Result<Json<AlbumDetailsDto>, ServerError> {
     let mut tracks = state
         .tracks_repo
-        .find_tracks_by_album(&id_or_name)
+        .find_tracks_by_album(&album_ref)
         .await
         .map_err(|e| ServerError::Internal(e.to_string()))?;
 
     if tracks.is_empty()
-        && let Ok(track_id) = id_or_name.parse::<i32>()
-        && let Ok(Some(track)) = state.tracks_repo.find_track_by_id(track_id).await
+        && let Ok(db_track_id) = album_ref.parse::<i32>()
+        && let Ok(Some(track)) = state.tracks_repo.find_track_by_id(db_track_id).await
     {
         tracks = state
             .tracks_repo
@@ -634,8 +662,12 @@ pub async fn get_album_tracks(
     }
 
     if tracks.is_empty() {
+        let settings = state.settings_store.get_settings();
+        let default_storefront = engine::settings::resolve_default_storefront(&settings);
         if let Some(ref catalog) = state.catalog_service
-            && let Ok(album_res) = catalog.fetch_album_tracks(&id_or_name, "us").await
+            && let Ok(album_res) = catalog
+                .fetch_album_tracks(&album_ref, default_storefront)
+                .await
         {
             let album = album_res.album.album.clone();
             let artist = album_res.album.artist.clone();
@@ -644,14 +676,16 @@ pub async fn get_album_tracks(
                 .tracks
                 .into_iter()
                 .map(|t| TrackSummaryDto {
-                    id: 0,
+                    // Live catalog tracks are not in the local database yet.
+                    id: None,
                     provider: "apple".to_string(),
                     track_id: t.id,
                     title: t.title,
                     artist: t.artist,
                     album: album.clone(),
                     duration: t.duration_secs as i32,
-                    codec: "alac".to_string(),
+                    // The codec is only known once the track is ripped.
+                    codec: None,
                     bit_depth: None,
                     sample_rate: None,
                     is_cached: false,
@@ -666,7 +700,7 @@ pub async fn get_album_tracks(
             }));
         }
         return Err(ServerError::NotFound(format!(
-            "Album '{id_or_name}' not found"
+            "Album '{album_ref}' not found"
         )));
     }
 
@@ -694,11 +728,14 @@ pub async fn get_album_tracks(
     ),
     responses(
         (status = 200, description = "List of up to 50 cached tracks by artist", body = Vec<TrackSummaryDto>),
+        (status = 401, description = "Unauthorized - Missing or invalid Bearer token"),
         (status = 500, description = "Internal error while retrieving the artist's cached tracks")
-    )
+    ),
+    security(("bearer_auth" = []))
 )]
 pub async fn get_artist_tracks(
     State(state): State<Arc<ServerState>>,
+    _user: AuthedUser,
     Path(artist_name): Path<String>,
 ) -> Result<Json<Vec<TrackSummaryDto>>, ServerError> {
     let tracks = state
@@ -852,13 +889,13 @@ mod tests {
             track
                 .sources
                 .iter()
-                .any(|s| s.provider == "apple" && s.id == 1)
+                .any(|s| s.provider == "apple" && s.id == Some(1))
         );
         assert!(
             track
                 .sources
                 .iter()
-                .any(|s| s.provider == "qobuz" && s.id == 2)
+                .any(|s| s.provider == "qobuz" && s.id == Some(2))
         );
     }
 
@@ -893,8 +930,18 @@ mod tests {
         assert_eq!(canonical.len(), 1);
         let track = &canonical[0];
         assert_eq!(track.sources.len(), 2);
-        assert!(track.sources.iter().any(|s| s.codec == "alac"));
-        assert!(track.sources.iter().any(|s| s.codec == "ec-3"));
+        assert!(
+            track
+                .sources
+                .iter()
+                .any(|s| s.codec.as_deref() == Some("alac"))
+        );
+        assert!(
+            track
+                .sources
+                .iter()
+                .any(|s| s.codec.as_deref() == Some("ec-3"))
+        );
     }
 
     #[test]
@@ -928,6 +975,16 @@ mod tests {
         assert_eq!(
             track.artwork_url.as_deref(),
             Some("https://artwork.url/thumb.jpg")
+        );
+        let live_source = track
+            .sources
+            .iter()
+            .find(|s| s.id.is_none())
+            .expect("live catalog source should be present");
+        assert!(!live_source.is_cached);
+        assert_eq!(
+            live_source.codec, None,
+            "live catalog codec is unknown until the track is ripped"
         );
     }
 

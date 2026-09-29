@@ -20,7 +20,7 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "s
 tokio.workspace = true
 tokio-util.workspace = true
 base64.workspace = true
-md-5 = "0.11"
+md-5.workspace = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time", "test-util"] }

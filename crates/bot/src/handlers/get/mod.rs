@@ -11,7 +11,7 @@ pub mod input;
 
 use std::sync::Arc;
 
-use engine::orchestrator::deps::{CollectionResolver, ProviderAccess, ProviderComposition};
+use engine::orchestrator::deps::CollectionResolver;
 use ferogram::{
     InputMessage,
     filters::{self, Dispatcher},
@@ -194,22 +194,29 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
         .any(|it| it.kind == engine::types::TargetKind::Artist);
 
     if has_artist {
+        let settings = state.rip_deps.settings().get_settings();
+        let default_storefront = engine::settings::resolve_default_storefront(&settings);
         let mut expanded_albums = Vec::new();
         for item in &parsed.items {
             if item.kind == engine::types::TargetKind::Artist {
+                // Qobuz has no regional catalog, so it gets no region at all
+                // rather than a placeholder the adapter has to ignore.
                 let effective_sf = match parsed.provider {
-                    engine::Provider::Qobuz => "qobuz",
-                    engine::Provider::Apple => item
-                        .storefront
-                        .as_deref()
-                        .or(parsed.storefront.as_deref())
-                        .unwrap_or("us"),
+                    engine::Provider::Qobuz => None,
+                    engine::Provider::Apple => Some(
+                        item.storefront
+                            .as_deref()
+                            .or(parsed.storefront.as_deref())
+                            .unwrap_or(default_storefront),
+                    ),
                 };
                 match state
                     .rip_deps
-                    .providers()
-                    .collections()
-                    .fetch_artist_album_ids(&item.id, effective_sf)
+                    .fetch_artist_album_ids(
+                        parsed.provider,
+                        &item.id,
+                        effective_sf.map(Into::into).unwrap_or_default(),
+                    )
                     .await
                 {
                     Ok(album_ids) => {
@@ -217,7 +224,7 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
                             expanded_albums.push(engine::types::ParsedTargetItem {
                                 id: aid,
                                 kind: engine::types::TargetKind::Album,
-                                storefront: Some(effective_sf.to_string()),
+                                storefront: effective_sf.map(str::to_owned),
                             });
                         }
                     }
@@ -240,7 +247,7 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
         let max_collection_limit = settings.max_collection_tracks;
         let rip_orchestrator = Arc::clone(&state.rip_orchestrator);
         let rip_deps = Arc::clone(&state.rip_deps);
-        let base_options = engine::orchestrator::types::RipJobOptions {
+        let base_options = engine::orchestrator::types::RipTaskOptions {
             provider: parsed.provider,
             chat_id: chat,
             user_id: owner_id,
@@ -252,7 +259,6 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
             single_storefront: parsed.storefront.clone(),
             parsed_items: Vec::new(),
             reply_to_message_id: Some(i64::from(msg.id())),
-            status_msg_id: 0,
             is_admin: owner_is_admin,
             codec_preference: parsed.codec_preference,
             rendition_policy,
@@ -278,7 +284,7 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
                 album_options.parsed_items = vec![album_item];
 
                 match rip_orchestrator
-                    .start_job(Arc::clone(&rip_deps), &album_options)
+                    .start_task(Arc::clone(&rip_deps), &album_options)
                     .await
                 {
                     Ok(summary) => {
@@ -300,7 +306,7 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
         return;
     }
 
-    let options = engine::orchestrator::types::RipJobOptions {
+    let options = engine::orchestrator::types::RipTaskOptions {
         provider: parsed.provider,
         chat_id: chat,
         user_id: owner_id,
@@ -312,10 +318,6 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
         single_storefront: parsed.storefront,
         parsed_items: parsed.items,
         reply_to_message_id: Some(i64::from(msg.id())),
-        // Status is rendered by the chat dashboard rather than a per-job
-        // message. The zero sentinel keeps the engine type stable for other
-        // orchestration callers.
-        status_msg_id: 0,
         is_admin: owner_is_admin,
         codec_preference: parsed.codec_preference,
         rendition_policy,
@@ -323,10 +325,10 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
 
     // Engine owns everything from here: resolution, cache-first, queue,
     // pipeline, and terminal events. The bridge refreshes the dashboard;
-    // start_job errors are logged only.
+    // start_task errors are logged only.
     if let Err(error) = state
         .rip_orchestrator
-        .start_job(Arc::clone(&state.rip_deps), &options)
+        .start_task(Arc::clone(&state.rip_deps), &options)
         .await
     {
         tracing::error!(error = %error, "get job failed");

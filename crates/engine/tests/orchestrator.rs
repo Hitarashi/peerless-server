@@ -13,15 +13,15 @@ use engine::{
             AlbumCache, AlbumCacheError, AlbumCacheOperation, AlbumReplacementExpectation,
             AlbumReplacementResult, AlbumUpload, ArtworkProvider, CachedAlbum, CachedTrack,
             ChatDelivery, ChatMessageRef, CollectionResolver, Delivery, DeliveryError,
-            DeliveryReceipt, DumpMessageRef, DumpPublication, DumpPublish, JobBookkeeping,
-            JobBookkeepingError, JobBookkeepingOperation, OrchestratorConfig, ProviderAccess,
-            ProviderComposition, ProviderPresentation, RequestLog, SaveTrackInput,
-            StorageRetryPolicy, TrackAcquisition, TrackCache, TrackCacheError, TrackCacheOperation,
+            DeliveryReceipt, DumpMessageRef, DumpPublication, DumpPublish, OrchestratorConfig,
+            ProviderDeps, ProviderPresentation, RequestLog, SaveTrackInput, StorageRetryPolicy,
+            Storefront, TaskBookkeeping, TaskBookkeepingError, TaskBookkeepingOperation,
+            TrackAcquisition, TrackCache, TrackCacheError, TrackCacheOperation,
             UploadProgressCallback,
         },
         types::{
-            DownloadLane, JobActivity, JobPhase, OrchestratorEvent, RipJobOptions, RipJobProgress,
-            RipJobSummary, UploadLane,
+            DownloadLane, OrchestratorEvent, RipTaskOptions, RipTaskProgress, RipTaskSummary,
+            TaskActivity, TaskPhase, UploadLane,
         },
     },
     ripper::RipError,
@@ -40,7 +40,13 @@ impl ProviderPresentation for FakePresentation {
     fn default_job_header(&self) -> &str {
         "Apple Music Lossless Rip"
     }
-    fn album_url(&self, album_id: &str, storefront: &str) -> Option<String> {
+    fn album_url(
+        &self,
+        _provider: Provider,
+        album_id: &str,
+        storefront: Storefront<'_>,
+    ) -> Option<String> {
+        let storefront = storefront.get().unwrap_or("us");
         (!album_id.is_empty())
             .then(|| format!("https://music.apple.com/{storefront}/album/{album_id}"))
     }
@@ -481,8 +487,12 @@ impl Delivery for FakeSink {
 }
 
 impl CollectionResolver for FakeDeps {
-    async fn fetch_album_tracks(&self, id: &str, storefront: &str) -> Result<AlbumTracks, String> {
-        let _ = storefront;
+    async fn fetch_album_tracks(
+        &self,
+        _provider: Provider,
+        id: &str,
+        _storefront: Storefront<'_>,
+    ) -> Result<AlbumTracks, String> {
         self.albums
             .lock()
             .unwrap()
@@ -493,10 +503,10 @@ impl CollectionResolver for FakeDeps {
 
     async fn fetch_artist_tracks(
         &self,
+        _provider: Provider,
         id: &str,
-        storefront: &str,
+        _storefront: Storefront<'_>,
     ) -> Result<ArtistTracks, String> {
-        let _ = storefront;
         self.artists
             .lock()
             .unwrap()
@@ -507,10 +517,10 @@ impl CollectionResolver for FakeDeps {
 
     async fn fetch_playlist_tracks(
         &self,
+        _provider: Provider,
         id: &str,
-        storefront: &str,
+        _storefront: Storefront<'_>,
     ) -> Result<PlaylistData, String> {
-        let _ = storefront;
         self.playlists
             .lock()
             .unwrap()
@@ -639,45 +649,38 @@ impl ArtworkProvider for FakeDeps {
         self.state.lock().unwrap().artwork_bytes.clone()
     }
 
-    fn artwork_url_at_size(&self, url: &str, size: u16) -> String {
+    fn artwork_url_at_size(&self, _provider: Provider, url: &str, size: u16) -> String {
         let _ = size;
         url.to_owned()
     }
 }
 
-impl ProviderComposition for FakeDeps {
-    type Collections = Self;
-    type Acquisition = Self;
-    type Artwork = Self;
-    type Presentation = FakePresentation;
-
-    fn provider(&self) -> Provider {
-        Provider::Apple
+impl ProviderPresentation for FakeDeps {
+    fn default_job_header(&self) -> &str {
+        FakePresentation.default_job_header()
     }
 
-    fn collections(&self) -> &Self::Collections {
-        self
+    fn album_url(
+        &self,
+        provider: Provider,
+        album_id: &str,
+        storefront: Storefront<'_>,
+    ) -> Option<String> {
+        FakePresentation.album_url(provider, album_id, storefront)
     }
 
-    fn acquisition(&self) -> &Self::Acquisition {
-        self
+    fn unavailable_track_message(&self) -> &str {
+        FakePresentation.unavailable_track_message()
     }
 
-    fn artwork(&self) -> &Self::Artwork {
-        self
-    }
-
-    fn presentation(&self) -> &Self::Presentation {
-        static PRESENTATION: FakePresentation = FakePresentation;
-        &PRESENTATION
+    fn unavailable_track_log_message(&self) -> &str {
+        FakePresentation.unavailable_track_log_message()
     }
 }
 
-impl ProviderAccess for FakeDeps {
-    type Providers = Self;
-
-    fn providers(&self) -> &Self::Providers {
-        self
+impl ProviderDeps for FakeDeps {
+    fn supports_provider(&self, provider: Provider) -> bool {
+        provider == Provider::Apple
     }
 }
 
@@ -766,7 +769,7 @@ impl TrackCache for FakeDeps {
     }
 }
 
-impl JobBookkeeping for FakeDeps {
+impl TaskBookkeeping for FakeDeps {
     fn settings_snapshot(&self) -> BotSettings {
         self.settings.lock().unwrap().clone()
     }
@@ -774,7 +777,7 @@ impl JobBookkeeping for FakeDeps {
     fn log_request<'a>(
         &'a self,
         log: RequestLog,
-    ) -> engine::orchestrator::deps::BoxFuture<'a, Result<(), JobBookkeepingError>> {
+    ) -> engine::orchestrator::deps::BoxFuture<'a, Result<(), TaskBookkeepingError>> {
         let error = {
             let mut state = self.state.lock().unwrap();
             state.request_logs.push(log);
@@ -782,8 +785,8 @@ impl JobBookkeeping for FakeDeps {
         };
         Box::pin(async move {
             error.map_or(Ok(()), |detail| {
-                Err(JobBookkeepingError::failed(
-                    JobBookkeepingOperation::LogRequest,
+                Err(TaskBookkeepingError::failed(
+                    TaskBookkeepingOperation::LogRequest,
                     detail,
                 ))
             })
@@ -954,7 +957,7 @@ impl Delivery for FakeDeps {
 #[derive(Clone)]
 struct EventLog {
     records: Arc<Mutex<Vec<String>>>,
-    progress: Arc<Mutex<Vec<RipJobProgress>>>,
+    progress: Arc<Mutex<Vec<RipTaskProgress>>>,
     upload_progress: Arc<Mutex<Vec<UploadLane>>>,
 }
 
@@ -997,13 +1000,13 @@ impl EventLog {
         self.upload_progress.lock().unwrap().clone()
     }
 
-    fn progress_snapshot(&self) -> Vec<RipJobProgress> {
+    fn progress_snapshot(&self) -> Vec<RipTaskProgress> {
         self.progress.lock().unwrap().clone()
     }
 }
 
-fn options(items: Vec<ParsedTargetItem>, is_admin: bool) -> RipJobOptions {
-    RipJobOptions {
+fn options(items: Vec<ParsedTargetItem>, is_admin: bool) -> RipTaskOptions {
+    RipTaskOptions {
         provider: engine::types::Provider::Apple,
         chat_id: 100,
         user_id: 42,
@@ -1015,7 +1018,6 @@ fn options(items: Vec<ParsedTargetItem>, is_admin: bool) -> RipJobOptions {
         single_storefront: None,
         parsed_items: items,
         reply_to_message_id: Some(555),
-        status_msg_id: 999,
         is_admin,
         codec_preference: None,
         rendition_policy: engine::orchestrator::types::RenditionPolicy::PrimaryOnly,
@@ -1076,9 +1078,9 @@ fn setup() -> (
 async fn run_async(
     orch: &RipOrchestrator,
     deps: &Arc<FakeDeps>,
-    opts: &RipJobOptions,
-) -> Result<RipJobSummary, OrchestratorError> {
-    orch.start_job(Arc::clone(deps), opts).await
+    opts: &RipTaskOptions,
+) -> Result<RipTaskSummary, OrchestratorError> {
+    orch.start_task(Arc::clone(deps), opts).await
 }
 
 // tests
@@ -1141,7 +1143,7 @@ async fn happy_path_single_track() {
     );
 
     // Job is gone from the map after completion.
-    assert!(orch.get_active_jobs().is_empty());
+    assert!(orch.get_active_tasks().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1254,9 +1256,12 @@ async fn album_resolution_refines_header_and_lists_tracks() {
         .unwrap()
         .insert("t2".into(), RipScript::OkWithFile(vec![4, 5, 6]));
 
-    let summary = run_async(&orch, &deps, &options(vec![album_item("alb.1")], true))
-        .await
-        .expect("job succeeds");
+    // Pin the storefront: this test is about album URL resolution and header
+    // rendering, not about which storefront the operator default resolves to.
+    let mut opts = options(vec![album_item("alb.1")], true);
+    opts.single_storefront = Some("us".to_string());
+
+    let summary = run_async(&orch, &deps, &opts).await.expect("job succeeds");
 
     assert_eq!(summary.total_tracks, 2);
     assert_eq!(
@@ -1303,7 +1308,7 @@ async fn all_cached_uses_ordered_pipeline_once() {
             && snapshot.percent == 100
             && matches!(
                 snapshot.job_activity.as_ref(),
-                Some(JobActivity::CachedDelivered)
+                Some(TaskActivity::CachedDelivered)
             )
             && snapshot.download.is_none()
     }));
@@ -1494,7 +1499,7 @@ async fn artist_album_ids_resolution() {
     );
 
     let album_ids = deps
-        .fetch_artist_album_ids("art.1", "us")
+        .fetch_artist_album_ids(Provider::Apple, "art.1", "us".into())
         .await
         .expect("artist album ids resolved");
     assert_eq!(album_ids, vec!["alb.1".to_string(), "alb.2".to_string()]);
@@ -1651,7 +1656,7 @@ async fn resolution_error_bubbles_with_prefix() {
         *ev.last().unwrap(),
         "failed:Failed to resolve any tracks: album missing: Album missing not found"
     );
-    assert!(orch.get_active_jobs().is_empty());
+    assert!(orch.get_active_tasks().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2023,7 +2028,7 @@ async fn panicking_track_upload_fails_once_and_cleans_workspace() {
         terminal_events[0],
         "failed:lane-2 task panicked for panic.track: track sink panic"
     );
-    assert!(orch.get_active_jobs().is_empty());
+    assert!(orch.get_active_tasks().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2233,9 +2238,9 @@ async fn failed_first_cache_slot_preserves_order_while_other_job_uploads() {
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
             if orch
-                .get_active_jobs()
+                .get_active_tasks()
                 .iter()
-                .any(|job| job.phase == JobPhase::Queued && job.queue_position == Some(1))
+                .any(|job| job.phase == TaskPhase::Queued && job.queue_position == Some(1))
             {
                 break;
             }
@@ -2254,9 +2259,9 @@ async fn failed_first_cache_slot_preserves_order_while_other_job_uploads() {
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
             if orch
-                .get_active_jobs()
+                .get_active_tasks()
                 .iter()
-                .any(|job| job.phase == JobPhase::Queued && job.queue_position == Some(1))
+                .any(|job| job.phase == TaskPhase::Queued && job.queue_position == Some(1))
             {
                 break;
             }
@@ -2507,11 +2512,11 @@ async fn cancelled_cached_wait_drops_gated_lane_two_send() {
         notified.await;
     }
     let job = orch
-        .get_active_jobs()
+        .get_active_tasks()
         .into_iter()
         .next()
         .expect("cached job remains active while the send is gated");
-    assert!(orch.cancel_job(&job.id, Some("tester")));
+    assert!(orch.cancel_task(&job.id, Some("tester")));
 
     let result = tokio::time::timeout(std::time::Duration::from_secs(2), task)
         .await
@@ -2568,7 +2573,7 @@ async fn gated_cached_work_does_not_hold_another_jobs_lane_one() {
         notified.await;
     }
     assert!(!fresh_job.is_finished(), "fresh job still awaits lane two");
-    assert_eq!(orch.get_active_jobs().len(), 2);
+    assert_eq!(orch.get_active_tasks().len(), 2);
 
     gate.cancel();
     cached_job
@@ -2596,14 +2601,14 @@ async fn gated_cached_work_does_not_hold_another_jobs_lane_one() {
 async fn cancel_job_semantics() {
     let (orch, deps, _, _) = setup();
 
-    assert!(!orch.cancel_job("missing", None), "unknown id → false");
+    assert!(!orch.cancel_task("missing", None), "unknown id → false");
 
     // Run a quick job to completion.
     run_async(&orch, &deps, &options(vec![track_item("t1")], true))
         .await
         .expect("job succeeds");
     // The job map is emptied after completion — nothing to cancel.
-    assert!(!orch.cancel_job("whatever", None));
+    assert!(!orch.cancel_task("whatever", None));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2614,7 +2619,7 @@ async fn queue_position_field_defaults_none() {
         .expect("job succeeds");
     // The command handler sets queue_position; the job flow never does,
     // and the job map is empty after completion.
-    assert!(orch.get_active_jobs().is_empty());
+    assert!(orch.get_active_tasks().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2623,7 +2628,7 @@ async fn queued_position_and_pending_cancel_are_terminally_safe() {
     *deps.rip_delay_ms.lock().unwrap() = 100;
     let orch = Arc::new(RipOrchestrator::new(OrchestratorConfig::test()));
     let terminal_events = Arc::new(Mutex::new(Vec::<(String, &'static str)>::new()));
-    let phase_snapshots = Arc::new(Mutex::new(Vec::<(JobPhase, Option<u64>)>::new()));
+    let phase_snapshots = Arc::new(Mutex::new(Vec::<(TaskPhase, Option<u64>)>::new()));
     let terminals = Arc::clone(&terminal_events);
     let phases = Arc::clone(&phase_snapshots);
     orch.subscribe(Arc::new(move |event: &OrchestratorEvent<'_>| {
@@ -2657,23 +2662,24 @@ async fn queued_position_and_pending_cancel_are_terminally_safe() {
     let first_orch = Arc::clone(&orch);
     let first_deps = Arc::clone(&deps);
     let first_options = options(vec![track_item("first")], true);
-    let first = tokio::spawn(async move { first_orch.start_job(first_deps, &first_options).await });
+    let first =
+        tokio::spawn(async move { first_orch.start_task(first_deps, &first_options).await });
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
     let second_orch = Arc::clone(&orch);
     let second_deps = Arc::clone(&deps);
     let second_options = options(vec![track_item("second")], true);
     let second =
-        tokio::spawn(async move { second_orch.start_job(second_deps, &second_options).await });
+        tokio::spawn(async move { second_orch.start_task(second_deps, &second_options).await });
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
     let queued = orch
-        .get_active_jobs()
+        .get_active_tasks()
         .into_iter()
-        .find(|job| job.phase == JobPhase::Queued)
+        .find(|job| job.phase == TaskPhase::Queued)
         .expect("second job is queued");
     assert_eq!(queued.queue_position, Some(1));
-    assert!(orch.cancel_job(&queued.id, Some("tester")));
+    assert!(orch.cancel_task(&queued.id, Some("tester")));
 
     let second_result = second.await.unwrap();
     assert!(second_result.is_err());
@@ -2691,7 +2697,7 @@ async fn queued_position_and_pending_cancel_are_terminally_safe() {
             .lock()
             .unwrap()
             .iter()
-            .any(|(phase, position)| *phase == JobPhase::Processing && *position == Some(0))
+            .any(|(phase, position)| *phase == TaskPhase::Processing && *position == Some(0))
     );
 }
 
@@ -2703,14 +2709,14 @@ async fn active_cancel_emits_only_cancelled_terminal_event() {
     let run_orch = Arc::clone(&orch);
     let run_deps = Arc::clone(&deps);
     let run_options = options(vec![track_item("cancel")], true);
-    let task = tokio::spawn(async move { run_orch.start_job(run_deps, &run_options).await });
+    let task = tokio::spawn(async move { run_orch.start_task(run_deps, &run_options).await });
     tokio::time::sleep(std::time::Duration::from_millis(15)).await;
     let job = orch
-        .get_active_jobs()
+        .get_active_tasks()
         .into_iter()
         .next()
         .expect("active job");
-    assert!(orch.cancel_job(&job.id, Some("tester")));
+    assert!(orch.cancel_task(&job.id, Some("tester")));
     let _ = task.await.unwrap();
     let terminal_count = events
         .snapshot()
@@ -2769,9 +2775,9 @@ async fn empty_tracks_after_cap_edge() {
 }
 
 // album ZIP: generation-hash reuse and cover handling
-/// Builds RipJobOptions for a single album item.
-fn album_options(album: &str, cache_only: bool, force: bool) -> RipJobOptions {
-    RipJobOptions {
+/// Builds RipTaskOptions for a single album item.
+fn album_options(album: &str, cache_only: bool, force: bool) -> RipTaskOptions {
+    RipTaskOptions {
         provider: engine::types::Provider::Apple,
         chat_id: 100,
         user_id: 42,
@@ -2783,14 +2789,13 @@ fn album_options(album: &str, cache_only: bool, force: bool) -> RipJobOptions {
         single_storefront: None,
         parsed_items: vec![album_item(album)],
         reply_to_message_id: Some(555),
-        status_msg_id: 999,
         is_admin: true,
         codec_preference: None,
         rendition_policy: engine::orchestrator::types::RenditionPolicy::PrimaryOnly,
     }
 }
 
-fn dual_zip_options(album: &str) -> RipJobOptions {
+fn dual_zip_options(album: &str) -> RipTaskOptions {
     let mut opts = album_options(album, false, false);
     opts.rendition_policy = music::RenditionPolicy::PrimaryWithOptionalAtmos;
     opts
@@ -3372,11 +3377,11 @@ async fn zip_cancel_after_replacement_commit_never_deletes_new_document() {
         notified.await;
     }
     let job = orch
-        .get_active_jobs()
+        .get_active_tasks()
         .into_iter()
         .next()
         .expect("job remains active while replacement future is gated");
-    assert!(orch.cancel_job(&job.id, Some("tester")));
+    assert!(orch.cancel_task(&job.id, Some("tester")));
     replacement_gate.cancel();
 
     tokio::time::timeout(std::time::Duration::from_secs(2), task)
@@ -4027,13 +4032,13 @@ async fn gated_upload_does_not_hold_lane_one_or_terminalize_job_early() {
     // A's lane-1 task has returned and B has ripped while A's first upload is
     // still gated. A remains active because its FIFO marker has not settled.
     assert!(!a.is_finished(), "A must await its lane-2 marker");
-    assert_eq!(orch.get_active_jobs().len(), 2);
+    assert_eq!(orch.get_active_tasks().len(), 2);
     assert!(!events.snapshot().iter().any(|event| event == "completed"));
 
     gate.cancel();
     a.await.unwrap().expect("A succeeds after gate release");
     b.await.unwrap().expect("B succeeds after gate release");
-    assert!(orch.get_active_jobs().is_empty());
+    assert!(orch.get_active_tasks().is_empty());
     assert_eq!(
         events
             .snapshot()
@@ -4047,7 +4052,7 @@ async fn gated_upload_does_not_hold_lane_one_or_terminalize_job_early() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancel_during_lane_two_upload_still_resolves() {
     // Cancelling after lane 1 finished its rips (uploads gated open on
-    // lane 2) must not hang start_job: the finalize marker still runs,
+    // lane 2) must not hang start_task: the finalize marker still runs,
     // cleans the workspaces, and resolves the summary.
     let (orch, deps, state, events) = setup();
     let meta = |id: &str| FakeDeps::track_meta(id, "Track", "Artist");
@@ -4092,11 +4097,11 @@ async fn cancel_during_lane_two_upload_still_resolves() {
     };
     rip_done.await;
     let job = orch
-        .get_active_jobs()
+        .get_active_tasks()
         .into_iter()
         .next()
         .expect("active job");
-    assert!(orch.cancel_job(&job.id, Some("tester")));
+    assert!(orch.cancel_task(&job.id, Some("tester")));
     // Release the gated uploads; the marker then runs and resolves.
     gate.cancel();
     let summary = task.await.unwrap().expect("summary still resolves");
@@ -4257,7 +4262,7 @@ async fn inflight_duplicate_job_waits_for_primary_and_delivers_from_cache() {
     let o1 = Arc::clone(&orch);
     let d1 = Arc::clone(&deps);
     let opts1 = options(vec![track_item("shared_dup")], true);
-    let task1 = tokio::spawn(async move { o1.start_job(d1, &opts1).await });
+    let task1 = tokio::spawn(async move { o1.start_task(d1, &opts1).await });
 
     // Wait until job 1 starts ripping
     loop {
@@ -4272,17 +4277,17 @@ async fn inflight_duplicate_job_waits_for_primary_and_delivers_from_cache() {
     let o2 = Arc::clone(&orch);
     let d2 = Arc::clone(&deps);
     let opts2 = options(vec![track_item("shared_dup")], false);
-    let task2 = tokio::spawn(async move { o2.start_job(d2, &opts2).await });
+    let task2 = tokio::spawn(async move { o2.start_task(d2, &opts2).await });
 
     // Wait a brief moment and verify job 2 is WaitingDuplicate
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    let active_jobs = orch.get_active_jobs();
+    let active_jobs = orch.get_active_tasks();
     assert_eq!(active_jobs.len(), 2);
     let job2 = active_jobs
         .iter()
-        .find(|j| j.phase == JobPhase::WaitingDuplicate)
+        .find(|j| j.phase == TaskPhase::WaitingDuplicate)
         .expect("job 2 in WaitingDuplicate");
-    assert_eq!(job2.phase, JobPhase::WaitingDuplicate);
+    assert_eq!(job2.phase, TaskPhase::WaitingDuplicate);
 
     // Release job 1's rip gate
     rip_gate.cancel();
@@ -4320,7 +4325,7 @@ async fn inflight_duplicate_job_can_be_cancelled_independently() {
     let o1 = Arc::clone(&orch);
     let d1 = Arc::clone(&deps);
     let opts1 = options(vec![track_item("cancel_dup")], true);
-    let task1 = tokio::spawn(async move { o1.start_job(d1, &opts1).await });
+    let task1 = tokio::spawn(async move { o1.start_task(d1, &opts1).await });
 
     loop {
         let notified = deps.rip_notify.notified();
@@ -4333,18 +4338,18 @@ async fn inflight_duplicate_job_can_be_cancelled_independently() {
     let o2 = Arc::clone(&orch);
     let d2 = Arc::clone(&deps);
     let opts2 = options(vec![track_item("cancel_dup")], false);
-    let task2 = tokio::spawn(async move { o2.start_job(d2, &opts2).await });
+    let task2 = tokio::spawn(async move { o2.start_task(d2, &opts2).await });
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    let active_jobs = orch.get_active_jobs();
+    let active_jobs = orch.get_active_tasks();
     let job2 = active_jobs
         .iter()
-        .find(|j| j.phase == JobPhase::WaitingDuplicate)
+        .find(|j| j.phase == TaskPhase::WaitingDuplicate)
         .expect("job 2 in WaitingDuplicate");
     let job2_id = job2.id.clone();
 
     // Cancel job 2 independently
-    assert!(orch.cancel_job(&job2_id, Some("tester")));
+    assert!(orch.cancel_task(&job2_id, Some("tester")));
 
     let res2 = task2.await.unwrap();
     assert!(
@@ -4379,7 +4384,7 @@ async fn inflight_duplicate_job_takes_over_rip_if_primary_fails() {
     let o1 = Arc::clone(&orch);
     let d1 = Arc::clone(&deps);
     let opts1 = options(vec![track_item("fail_dup")], true);
-    let task1 = tokio::spawn(async move { o1.start_job(d1, &opts1).await });
+    let task1 = tokio::spawn(async move { o1.start_task(d1, &opts1).await });
 
     loop {
         let notified = deps.rip_notify.notified();
@@ -4392,18 +4397,18 @@ async fn inflight_duplicate_job_takes_over_rip_if_primary_fails() {
     let o2 = Arc::clone(&orch);
     let d2 = Arc::clone(&deps);
     let opts2 = options(vec![track_item("fail_dup")], false);
-    let task2 = tokio::spawn(async move { o2.start_job(d2, &opts2).await });
+    let task2 = tokio::spawn(async move { o2.start_task(d2, &opts2).await });
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    let active_jobs = orch.get_active_jobs();
+    let active_jobs = orch.get_active_tasks();
     let job1 = active_jobs
         .iter()
-        .find(|j| j.phase != JobPhase::WaitingDuplicate)
+        .find(|j| j.phase != TaskPhase::WaitingDuplicate)
         .expect("job 1 active");
     let job1_id = job1.id.clone();
 
     // Cancel job 1 (the primary)
-    assert!(orch.cancel_job(&job1_id, Some("tester")));
+    assert!(orch.cancel_task(&job1_id, Some("tester")));
     rip_gate.cancel();
     let _ = task1.await;
 
@@ -4429,7 +4434,7 @@ async fn single_track_cached_album_bypasses_rip_queue_while_rip_queue_is_occupie
     let o1 = Arc::clone(&orch);
     let d1 = Arc::clone(&deps);
     let opts1 = options(vec![track_item("blocking_rip_single")], false);
-    let task1 = tokio::spawn(async move { o1.start_job(d1, &opts1).await });
+    let task1 = tokio::spawn(async move { o1.start_task(d1, &opts1).await });
 
     // Wait until Job 1 has actually entered lane one (ripping)
     loop {
@@ -4455,7 +4460,7 @@ async fn single_track_cached_album_bypasses_rip_queue_while_rip_queue_is_occupie
     let d2 = Arc::clone(&deps);
     let mut opts2 = album_options("alb.single_cached", false, false);
     opts2.delivery_chat_id = 777;
-    let task2 = tokio::spawn(async move { o2.start_job(d2, &opts2).await });
+    let task2 = tokio::spawn(async move { o2.start_task(d2, &opts2).await });
 
     // Job 2 MUST complete immediately via the cache delivery lane
     let res2 = tokio::time::timeout(std::time::Duration::from_secs(2), task2)

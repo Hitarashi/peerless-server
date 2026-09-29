@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use engine::{
     orchestrator::deps::{
-        ChatDelivery, ChatRef, Delivery, DeliveryReceipt, DumpMessageRef, JobBookkeeping,
+        ChatDelivery, ChatRef, Delivery, DeliveryReceipt, DumpMessageRef, TaskBookkeeping,
         TrackCache,
     },
     types::{ParsedTargetItem, Provider, TargetKind, TrackKey, TrackMeta},
@@ -171,9 +171,14 @@ async fn search(state: Arc<BotState>, msg: IncomingMessage) {
         return;
     }
 
+    let settings = state.rip_deps.settings().get_settings();
+    let default_storefront = engine::settings::resolve_default_storefront(&settings);
     let (cached, live) = tokio::join!(
         state.rip_deps.tracks().search_cached_tracks(&query, 5),
-        state.rip_deps.catalog().search_catalog(&query, 10, "us"),
+        state
+            .rip_deps
+            .catalog()
+            .search_catalog(&query, 10, default_storefront),
     );
     let cached = cached.unwrap_or_default();
     let live = live.unwrap_or_default();
@@ -418,7 +423,7 @@ async fn get(state: Arc<BotState>, query: CallbackQuery, track_id: String) {
 
     let user_display =
         crate::presentation::resolve_user_display_name(&state.client, query.user_id).await;
-    let options = engine::orchestrator::types::RipJobOptions {
+    let options = engine::orchestrator::types::RipTaskOptions {
         provider: engine::Provider::Apple,
         chat_id: marked_chat,
         user_id: query.user_id,
@@ -434,14 +439,13 @@ async fn get(state: Arc<BotState>, query: CallbackQuery, track_id: String) {
             storefront: None,
         }],
         reply_to_message_id: None,
-        status_msg_id: 0,
         is_admin,
         codec_preference: None,
         rendition_policy: engine::orchestrator::types::RenditionPolicy::PrimaryOnly,
     };
     match state
         .rip_orchestrator
-        .start_job(Arc::clone(&state.rip_deps), &options)
+        .start_task(Arc::clone(&state.rip_deps), &options)
         .await
     {
         Ok(_) => {

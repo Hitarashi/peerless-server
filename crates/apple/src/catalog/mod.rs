@@ -25,7 +25,7 @@ use std::{
 };
 
 use cache::Cache;
-use music::{AlbumTracks, ArtistTracks, TrackMeta};
+use music::{AlbumTracks, ArtistTracks, TrackMeta, url::urlencode};
 use serde::Deserialize;
 use tracing::{debug, error, info, info_span};
 pub use transport::{
@@ -587,21 +587,6 @@ fn is_track_item(item: &ItunesRawItem) -> bool {
 fn normalize_storefront(storefront: &str) -> String {
     let sf = storefront.to_lowercase();
     if sf.is_empty() { "us".to_owned() } else { sf }
-}
-
-/// URL-encode a query component (percent-encoding, unreserved chars kept) —
-/// equivalent to JS `encodeURIComponent` for our inputs.
-fn urlencode(value: &str) -> String {
-    let mut encoded = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                encoded.push(byte as char)
-            }
-            _ => encoded.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    encoded
 }
 
 /// Storefront fallback chain shared by track/album/artist lookups, inlined

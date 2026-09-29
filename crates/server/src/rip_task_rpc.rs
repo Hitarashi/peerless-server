@@ -6,9 +6,12 @@
 
 use std::{collections::HashMap, sync::Arc};
 
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
+
 use crate::{
     ServerError, ServerState,
-    tasks::{RipTaskProgress, RipTaskRequest, ServerTaskMeta},
+    rip_tasks::{RipTaskProgress, RipTaskRequest, ServerTaskMeta},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,15 +19,17 @@ pub struct AuthenticatedIdentity {
     pub telegram_id: i64,
 }
 
-/// Core result classification. The transport maps this to its wire enum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Result classification for a create-rip-task reply. This is also the wire enum.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum RipTaskRpcStatus {
     Queued,
     Completed,
 }
 
-/// Core error classification. The transport maps this to its wire enum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Protocol error taxonomy. This is also the wire enum.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum RipTaskRpcErrorCode {
     Validation,
     NotFound,
@@ -206,7 +211,8 @@ async fn create_task(
     let controller = tokio_util::sync::CancellationToken::new();
     let meta = ServerTaskMeta {
         task_id: task_id.clone(),
-        job_id: None,
+        // Reserved before the engine rip task exists; the bridge fills it in.
+        rip_task_id: String::new(),
         owner_id: identity.telegram_id,
         provider,
         track_id: request.track_id.clone(),
@@ -218,7 +224,7 @@ async fn create_task(
         controller: controller.clone(),
         created_at: std::time::Instant::now(),
         latest_progress: RipTaskProgress {
-            job_stage: Some(crate::tasks::RipTaskJobStage::Queued),
+            job_stage: Some(crate::rip_tasks::RipTaskJobStage::Queued),
             download: None,
             upload: None,
             percent: Some(0.0),
@@ -247,7 +253,7 @@ async fn create_task(
 
     let _ = state
         .task_sync_tx
-        .send(crate::tasks::TaskSyncEvent::Updated {
+        .send(crate::rip_tasks::TaskSyncEvent::Updated {
             task_id: reserved_task_id.clone(),
         });
 
@@ -313,12 +319,14 @@ fn cancel_task(
 
     let _ = state
         .task_sync_tx
-        .send(crate::tasks::TaskSyncEvent::Dismissed {
+        .send(crate::rip_tasks::TaskSyncEvent::Dismissed {
             task_id: task_id.clone(),
         });
     task.controller.cancel();
-    if let Some(job_id) = task.job_id {
-        state.rip_orchestrator.cancel_job(&job_id, Some("user"));
+    if !task.rip_task_id.is_empty() {
+        state
+            .rip_orchestrator
+            .cancel_task(&task.rip_task_id, Some("user"));
     }
 
     Ok(RipTaskRpcSuccess::Cancelled {
@@ -378,7 +386,7 @@ mod tests {
     fn test_task(task_id: &str, owner_id: i64) -> ServerTaskMeta {
         ServerTaskMeta {
             task_id: task_id.to_owned(),
-            job_id: None,
+            rip_task_id: String::new(),
             owner_id,
             provider: music::Provider::Apple,
             track_id: "track-1".to_owned(),
@@ -390,7 +398,7 @@ mod tests {
             controller: tokio_util::sync::CancellationToken::new(),
             created_at: std::time::Instant::now(),
             latest_progress: RipTaskProgress {
-                job_stage: Some(crate::tasks::RipTaskJobStage::Queued),
+                job_stage: Some(crate::rip_tasks::RipTaskJobStage::Queued),
                 download: None,
                 upload: None,
                 percent: Some(0.0),

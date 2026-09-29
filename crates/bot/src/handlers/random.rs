@@ -561,6 +561,9 @@ async fn random(state: Arc<BotState>, msg: IncomingMessage) {
         .skip(1)
         .map(str::to_owned)
         .collect();
+    let settings = state.rip_deps.settings().get_settings();
+    let configured_default_storefront =
+        engine::settings::resolve_default_storefront(&settings).to_owned();
     let source_arg = tokens.first().map(|s| s.to_lowercase());
     let storefront_arg = tokens.get(1).map(|s| s.to_lowercase()).unwrap_or_else(|| {
         if let Some(src) = &source_arg
@@ -568,7 +571,7 @@ async fn random(state: Arc<BotState>, msg: IncomingMessage) {
         {
             return "in".to_owned();
         }
-        "us".to_owned()
+        configured_default_storefront.clone()
     });
 
     let Some(source_arg) = source_arg else {
@@ -740,7 +743,7 @@ pub async fn callback(state: Arc<BotState>, query: CallbackQuery, action: Discov
             // The collapsed orchestrator handles this as a cache-only job.
             let user_display =
                 crate::presentation::resolve_user_display_name(&state.client, query.user_id).await;
-            let options = engine::orchestrator::types::RipJobOptions {
+            let options = engine::orchestrator::types::RipTaskOptions {
                 provider: engine::Provider::Apple,
                 chat_id: marked_chat,
                 user_id: query.user_id,
@@ -757,7 +760,6 @@ pub async fn callback(state: Arc<BotState>, query: CallbackQuery, action: Discov
                 }],
                 reply_to_message_id: None,
                 // The shared dashboard is the only live status surface.
-                status_msg_id: 0,
                 is_admin: true,
                 codec_preference: None,
                 rendition_policy: engine::orchestrator::types::RenditionPolicy::PrimaryOnly,
@@ -766,7 +768,7 @@ pub async fn callback(state: Arc<BotState>, query: CallbackQuery, action: Discov
 
             if let Err(error) = state
                 .rip_orchestrator
-                .start_job(Arc::clone(&state.rip_deps), &options)
+                .start_task(Arc::clone(&state.rip_deps), &options)
                 .await
             {
                 tracing::warn!(%error, "random album dump job failed to start");

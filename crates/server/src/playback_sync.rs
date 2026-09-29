@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use axum::{
     extract::{
-        Query, State,
+        State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::HeaderMap,
@@ -34,46 +34,6 @@ pub struct ConnectedDeviceInfo {
     pub device_name: String,
     /// Client-reported platform, such as `ios`, `android`, `web`, or `desktop`.
     pub platform: String,
-}
-
-/// Wire status for a create-rip-task reply.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum RipTaskStatus {
-    Queued,
-    Completed,
-}
-
-/// Wire taxonomy for protocol errors.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum RpcErrorCode {
-    Validation,
-    NotFound,
-    NotAuthorized,
-    Unavailable,
-    Internal,
-}
-
-impl From<RipTaskRpcStatus> for RipTaskStatus {
-    fn from(status: RipTaskRpcStatus) -> Self {
-        match status {
-            RipTaskRpcStatus::Queued => Self::Queued,
-            RipTaskRpcStatus::Completed => Self::Completed,
-        }
-    }
-}
-
-impl From<RipTaskRpcErrorCode> for RpcErrorCode {
-    fn from(code: RipTaskRpcErrorCode) -> Self {
-        match code {
-            RipTaskRpcErrorCode::Validation => Self::Validation,
-            RipTaskRpcErrorCode::NotFound => Self::NotFound,
-            RipTaskRpcErrorCode::NotAuthorized => Self::NotAuthorized,
-            RipTaskRpcErrorCode::Unavailable => Self::Unavailable,
-            RipTaskRpcErrorCode::Internal => Self::Internal,
-        }
-    }
 }
 
 /// Messages sent by a client to the playback synchronization server.
@@ -119,7 +79,7 @@ pub enum ClientMessage {
         /// Client-generated identifier echoed in the RPC reply.
         request_id: String,
         /// Task request data.
-        request: crate::tasks::RipTaskRequest,
+        request: crate::rip_tasks::RipTaskRequest,
     },
     /// Cancel an active rip task and correlate its direct reply using `request_id`.
     #[serde(rename = "cancel_rip_task")]
@@ -156,8 +116,8 @@ pub enum ServerMessage {
         snapshot: serde_json::Value,
     },
     /// A room-wide command to execute locally; this is also delivered back to its sender.
-    #[serde(rename = "execute_command")]
-    ExecuteCommand {
+    #[serde(rename = "command")]
+    Command {
         /// Action name supplied by the client that issued the command.
         action: String,
         /// Optional action-specific data supplied by the sender.
@@ -167,13 +127,13 @@ pub enum ServerMessage {
     #[serde(rename = "rip_tasks_snapshot")]
     RipTasksSnapshot {
         /// Current active server-owned task snapshots; each task's `is_owner` identifies ownership.
-        tasks: Vec<crate::tasks::RipTaskSnapshot>,
+        tasks: Vec<crate::rip_tasks::RipTaskSnapshot>,
     },
     /// Updated state for one server-owned rip task.
     #[serde(rename = "rip_task_updated")]
     RipTaskUpdated {
         /// Updated task snapshot.
-        task: Box<crate::tasks::RipTaskSnapshot>,
+        task: Box<crate::rip_tasks::RipTaskSnapshot>,
     },
     /// Notification that a task was dismissed or is no longer active.
     #[serde(rename = "rip_task_dismissed")]
@@ -189,11 +149,11 @@ pub enum ServerMessage {
         /// Empty for a cache hit, which has no cancellable task; see `result_track_id`.
         task_id: String,
         /// Whether a task was queued or an existing cached result completed the request.
-        status: RipTaskStatus,
+        status: RipTaskRpcStatus,
         /// Database track id when the request was satisfied from cache.
         result_track_id: Option<i32>,
         /// Initial active-task snapshot for queued requests; null when there is no active task.
-        task: Option<Box<crate::tasks::RipTaskSnapshot>>,
+        task: Option<Box<crate::rip_tasks::RipTaskSnapshot>>,
     },
     /// Direct reply to a cancel request; sent only to the initiating connection.
     #[serde(rename = "rip_task_cancelled")]
@@ -209,7 +169,7 @@ pub enum ServerMessage {
         /// Request id when it could be recovered from the incoming frame.
         request_id: Option<String>,
         /// Stable protocol error category.
-        code: RpcErrorCode,
+        code: RipTaskRpcErrorCode,
         /// Sanitized client-facing description.
         message: String,
         /// Whether retrying the same operation may succeed.
@@ -255,35 +215,26 @@ impl PlaybackSyncHub {
     }
 }
 
-#[derive(Debug, Deserialize)]
-pub struct WsAuthQuery {
-    pub token: Option<String>,
-}
-
 #[utoipa::path(
     get,
     path = "/api/v1/ws/playback",
     tag = "ws",
     summary = "Upgrade to the playback synchronization WebSocket",
     description = "This operation documents only the HTTP WebSocket upgrade handshake. The bidirectional WebSocket message contract is documented separately in the [Playback WebSocket AsyncAPI document](/api/v1/docs-ws.json), which is also available from the Scalar API reference.",
-    params(
-        ("token" = Option<String>, Query, description = "Optional session token query parameter. Prefer the Authorization: Bearer header because query-string tokens can appear in URLs, proxy/access logs, and browser history. A blank query value falls back to the header.")
-    ),
     responses(
         (status = 101, description = "WebSocket protocol switch; the connection is upgraded."),
-        (status = 401, description = "Unauthorized: token is missing, empty, or invalid.")
+        (status = 401, description = "Unauthorized: the Authorization: Bearer header is missing, empty, or carries an invalid token.")
     ),
     security(("bearer_auth" = []))
 )]
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<Arc<ServerState>>,
-    Query(query): Query<WsAuthQuery>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, ServerError> {
-    let token = if let Some(t) = query.token.filter(|t| !t.trim().is_empty()) {
-        t
-    } else if let Some(auth_val) = headers
+    // The Authorization: Bearer header is the only accepted credential. Query-string
+    // tokens are rejected because they land in URLs, proxy/access logs, and history.
+    let token = if let Some(auth_val) = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|h| h.to_str().ok())
     {
@@ -296,7 +247,7 @@ pub async fn ws_handler(
         stripped.to_string()
     } else {
         return Err(ServerError::Unauthorized(
-            "Missing token query parameter or Authorization header".into(),
+            "Missing Authorization header".into(),
         ));
     };
 
@@ -369,7 +320,7 @@ async fn handle_socket(
             }
             task_event = task_rx.recv() => {
                 let outgoing = match task_event {
-                    Ok(crate::tasks::TaskSyncEvent::Updated { task_id }) if my_device_id.is_some() => {
+                    Ok(crate::rip_tasks::TaskSyncEvent::Updated { task_id }) if my_device_id.is_some() => {
                         let tasks = state.active_tasks.read();
                         tasks.get(&task_id).map(|task| {
                             let is_owner = task.owner_id == telegram_id;
@@ -378,7 +329,7 @@ async fn handle_socket(
                             }
                         })
                     }
-                    Ok(crate::tasks::TaskSyncEvent::Dismissed { task_id })
+                    Ok(crate::rip_tasks::TaskSyncEvent::Dismissed { task_id })
                         if my_device_id.is_some() =>
                     {
                         Some(ServerMessage::RipTaskDismissed { task_id })
@@ -408,7 +359,7 @@ async fn handle_socket(
                                     Err(_) => {
                                         let error = ServerMessage::Error {
                                             request_id: recover_request_id(&text),
-                                            code: RpcErrorCode::Validation,
+                                            code: RipTaskRpcErrorCode::Validation,
                                             message: "malformed client message".to_owned(),
                                             retryable: false,
                                         };
@@ -470,10 +421,7 @@ async fn handle_socket(
                                     }
                                     ClientMessage::Command { action, data } => {
                                         let room = room_arc.lock().await;
-                                        let cmd_msg = ServerMessage::ExecuteCommand {
-                                            action,
-                                            data,
-                                        };
+                                        let cmd_msg = ServerMessage::Command { action, data };
                                         let _ = room.tx.send(cmd_msg);
                                     }
                                     ClientMessage::TransferPlayback { target_device_id } => {
@@ -585,7 +533,7 @@ async fn dispatch_rip_task_rpc(
                 sender,
                 ServerMessage::Error {
                     request_id: Some(request_id),
-                    code: RpcErrorCode::NotAuthorized,
+                    code: RipTaskRpcErrorCode::NotAuthorized,
                     message: "session is no longer authorized".to_owned(),
                     retryable: false,
                 },
@@ -613,7 +561,7 @@ async fn dispatch_rip_task_rpc(
             ServerMessage::RipTaskCreated {
                 request_id,
                 task_id,
-                status: status.into(),
+                status,
                 result_track_id,
                 task,
             }
@@ -632,7 +580,7 @@ async fn dispatch_rip_task_rpc(
             retryable,
         }) => ServerMessage::Error {
             request_id,
-            code: code.into(),
+            code,
             message,
             retryable,
         },
@@ -662,7 +610,7 @@ fn recover_request_id(text: &str) -> Option<String> {
 fn task_snapshots_for_user(
     state: &ServerState,
     telegram_id: i64,
-) -> Vec<crate::tasks::RipTaskSnapshot> {
+) -> Vec<crate::rip_tasks::RipTaskSnapshot> {
     let tasks = state.active_tasks.read();
     let mut snapshots = tasks
         .values()
@@ -737,7 +685,7 @@ mod tests {
 
         let create = ClientMessage::CreateRipTask {
             request_id: "create-1".to_owned(),
-            request: crate::tasks::RipTaskRequest {
+            request: crate::rip_tasks::RipTaskRequest {
                 provider: "apple".to_owned(),
                 track_id: "123".to_owned(),
                 codec: Some("flac".to_owned()),
@@ -799,14 +747,14 @@ mod tests {
             ServerMessage::RipTaskCreated {
                 request_id: "create-1".to_owned(),
                 task_id: "task-1".to_owned(),
-                status: RipTaskStatus::Queued,
+                status: RipTaskRpcStatus::Queued,
                 result_track_id: None,
                 task: None,
             },
             ServerMessage::RipTaskCreated {
                 request_id: "create-2".to_owned(),
                 task_id: String::new(),
-                status: RipTaskStatus::Completed,
+                status: RipTaskRpcStatus::Completed,
                 result_track_id: Some(42),
                 task: None,
             },
@@ -816,13 +764,13 @@ mod tests {
             },
             ServerMessage::Error {
                 request_id: Some("error-1".to_owned()),
-                code: RpcErrorCode::Unavailable,
+                code: RipTaskRpcErrorCode::Unavailable,
                 message: "temporarily unavailable".to_owned(),
                 retryable: true,
             },
             ServerMessage::Error {
                 request_id: None,
-                code: RpcErrorCode::Validation,
+                code: RipTaskRpcErrorCode::Validation,
                 message: "malformed client message".to_owned(),
                 retryable: false,
             },
@@ -840,6 +788,56 @@ mod tests {
             let parsed: ServerMessage = serde_json::from_str(&serialized).unwrap();
             assert_eq!(message, parsed);
         }
+    }
+
+    /// Locks the exact snake_case wire strings the AsyncAPI document and clients rely on.
+    #[test]
+    fn rip_task_taxonomy_wire_strings_are_stable() {
+        let statuses = [
+            (RipTaskRpcStatus::Queued, "\"queued\""),
+            (RipTaskRpcStatus::Completed, "\"completed\""),
+        ];
+        for (status, expected) in statuses {
+            assert_eq!(serde_json::to_string(&status).unwrap(), expected);
+        }
+
+        let codes = [
+            (RipTaskRpcErrorCode::Validation, "\"validation\""),
+            (RipTaskRpcErrorCode::NotFound, "\"not_found\""),
+            (RipTaskRpcErrorCode::NotAuthorized, "\"not_authorized\""),
+            (RipTaskRpcErrorCode::Unavailable, "\"unavailable\""),
+            (RipTaskRpcErrorCode::Internal, "\"internal\""),
+        ];
+        for (code, expected) in codes {
+            assert_eq!(serde_json::to_string(&code).unwrap(), expected);
+        }
+    }
+
+    /// The room-wide command uses one name in both directions.
+    #[test]
+    fn command_wire_name_is_shared_in_both_directions() {
+        let client = ClientMessage::Command {
+            action: "play".to_owned(),
+            data: None,
+        };
+        assert_eq!(client_serde_type(&client), "command");
+
+        let server = ServerMessage::Command {
+            action: "play".to_owned(),
+            data: None,
+        };
+        assert_eq!(client_serde_type(&server), "command");
+        assert_eq!(
+            serde_json::to_value(&server).unwrap(),
+            serde_json::json!({"type": "command", "payload": {"action": "play", "data": null}})
+        );
+    }
+
+    fn client_serde_type<T: Serialize>(message: &T) -> String {
+        serde_json::to_value(message).unwrap()["type"]
+            .as_str()
+            .unwrap()
+            .to_owned()
     }
 
     #[test]

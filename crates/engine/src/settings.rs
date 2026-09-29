@@ -20,6 +20,14 @@ fn default_storefronts() -> Vec<String> {
     vec!["us".to_string()]
 }
 
+/// The storefront every Apple Music catalog call falls back to when the caller
+/// did not supply one.
+pub const FALLBACK_STOREFRONT: &str = "in";
+
+fn default_storefront() -> String {
+    FALLBACK_STOREFRONT.to_string()
+}
+
 fn default_stream_server_port() -> u16 {
     4444
 }
@@ -84,6 +92,11 @@ pub struct BotSettings {
     pub stream_public_url: Option<String>,
     #[serde(default = "default_stream_server_port")]
     pub stream_server_port: u16,
+    /// Storefront used for Apple Music catalog lookups when the caller did not
+    /// supply one. Distinct from `auto_dump_storefronts`, which is the list of
+    /// storefronts auto-dump sweeps.
+    #[serde(default = "default_storefront")]
+    pub default_storefront: String,
     #[serde(flatten, default)]
     pub extra: HashMap<String, serde_json::Value>,
 }
@@ -104,6 +117,7 @@ impl Default for BotSettings {
             qobuz_rip_enabled: true,
             stream_public_url: None,
             stream_server_port: 4444,
+            default_storefront: default_storefront(),
             extra: HashMap::new(),
         }
     }
@@ -181,6 +195,21 @@ pub fn default_settings() -> BotSettings {
     BotSettings::default()
 }
 
+/// The configured default storefront, trimmed and guaranteed non-empty.
+///
+/// A stored value that is empty or whitespace-only would otherwise be handed
+/// straight to the Apple API, so it falls back to [`FALLBACK_STOREFRONT`].
+/// Call this wherever `default_storefront` is about to become a request
+/// parameter.
+pub fn resolve_default_storefront(settings: &BotSettings) -> &str {
+    let trimmed = settings.default_storefront.trim();
+    if trimmed.is_empty() {
+        FALLBACK_STOREFRONT
+    } else {
+        trimmed
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,6 +230,56 @@ mod tests {
         assert!(d.qobuz_rip_enabled);
         assert_eq!(d.stream_public_url, None);
         assert_eq!(d.stream_server_port, 4444);
+        assert_eq!(d.default_storefront, "in");
+    }
+
+    #[test]
+    fn default_storefront_is_independent_of_auto_dump_storefronts() {
+        let d = default_settings();
+        assert_eq!(d.default_storefront, "in");
+        assert_eq!(d.auto_dump_storefronts, vec!["us".to_string()]);
+    }
+
+    #[test]
+    fn resolve_default_storefront_falls_back_when_blank() {
+        let mut s = default_settings();
+        assert_eq!(resolve_default_storefront(&s), "in");
+
+        // A stored value wins once it is non-blank.
+        s.default_storefront = "gb".to_string();
+        assert_eq!(resolve_default_storefront(&s), "gb");
+
+        // Surrounding whitespace is trimmed, not rejected.
+        s.default_storefront = "  jp  ".to_string();
+        assert_eq!(resolve_default_storefront(&s), "jp");
+
+        // Empty / whitespace-only never reaches the Apple API.
+        s.default_storefront = String::new();
+        assert_eq!(resolve_default_storefront(&s), "in");
+        s.default_storefront = "   \t ".to_string();
+        assert_eq!(resolve_default_storefront(&s), "in");
+    }
+
+    #[test]
+    fn missing_default_storefront_key_deserializes_to_default() {
+        // Rows persisted before the field existed have no `default_storefront`
+        // key; serde must fall back rather than fail the whole decode.
+        let decoded: BotSettings =
+            serde_json::from_str(r#"{"rippingMode":"live","albumRipEnabled":true}"#)
+                .expect("deserialize legacy row");
+        assert_eq!(decoded.default_storefront, "in");
+        assert_eq!(resolve_default_storefront(&decoded), "in");
+    }
+
+    #[test]
+    fn default_storefront_roundtrips_through_json() {
+        let mut s = default_settings();
+        s.default_storefront = "ca".to_string();
+        let json_str = serde_json::to_string(&s).expect("serialize");
+        let decoded: BotSettings = serde_json::from_str(&json_str).expect("deserialize");
+        assert_eq!(decoded.default_storefront, "ca");
+        // The flattened `extra` map must not shadow the typed field.
+        assert!(!decoded.extra.contains_key("default_storefront"));
     }
 
     #[test]

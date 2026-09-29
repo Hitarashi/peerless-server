@@ -76,56 +76,86 @@ mirrors with native client applications (such as [Peerless KMP](https://github.c
 
 ## Workspace Crates
 
-| Crate    | Responsibility                                                           |
-|:---------|:-------------------------------------------------------------------------|
-| `music`  | Provider-neutral music domain types.                                     |
-| `lyrics` | Lyrics lookup, ranking, and rendering across providers.                  |
-| `engine` | Provider-neutral ripping, orchestration, streaming, and tagging logic.   |
-| `apple`  | Apple Music catalog, playlist, wrapper, and audio acquisition.           |
-| `qobuz`  | Qobuz catalog, hosted/native adapters, and audio acquisition.            |
-| `db`     | PostgreSQL models, migrations, persistence, and repositories.            |
-| `media`  | Audio inspection, tagging, and spectrogram rendering.                    |
-| `stream` | Telegram MTProto worker pool, chunk cache, and byte-range stream engine. |
-| `server` | Axum API, playback synchronization, and OpenAPI documentation.           |
-| `bot`    | Telegram bot commands and application startup.                           |
+| Crate    | Responsibility                                                                          |
+|:---------|:----------------------------------------------------------------------------------------|
+| `music`  | Provider-neutral music domain types.                                                    |
+| `lyrics` | Lyrics lookup, ranking, and rendering across providers.                                 |
+| `engine` | Rip orchestration, track ripping, ZIP assembly, streaming, and tagging/filename policy. |
+| `apple`  | Apple Music catalog, playlist, wrapper, and audio acquisition.                          |
+| `qobuz`  | Qobuz catalog, hosted/native adapters, and audio acquisition.                           |
+| `db`     | PostgreSQL models, migrations, persistence, and repositories.                           |
+| `media`  | Audio inspection, tagging, and spectrogram rendering.                                   |
+| `stream` | Telegram MTProto worker pool, chunk cache, and byte-range stream engine.                |
+| `server` | Axum API, playback synchronization, and OpenAPI documentation.                          |
+| `bot`    | Telegram bot commands and application startup.                                          |
 
 ---
 
 ## API Endpoints Reference (`/api/v1`)
 
-| Group            | Method     | Endpoint                                                        | Description                                             |
-|:-----------------|:-----------|:----------------------------------------------------------------|:--------------------------------------------------------|
-| **Auth**         | `POST`     | `/api/v1/auth/exchange`                                         | Exchange one-time Telegram OTP for opaque session token |
-|                  | `POST`     | `/api/v1/auth/refresh`                                          | Slide 3-day expiration window forward                   |
-|                  | `POST`     | `/api/v1/auth/logout`                                           | Revoke active session token                             |
-|                  | `GET`      | `/api/v1/auth/me`                                               | Fetch authenticated user profile & sessions             |
-|                  | `GET`      | `/api/v1/auth/me/avatar`                                        | Fetch the authenticated user's Telegram avatar          |
-| **Streaming**    | `GET/POST` | `/api/v1/tracks/{id}/playback`                                  | Acquire short-lived signed stream ticket                |
-|                  | `GET/HEAD` | `/api/v1/stream?ticket=...`                                     | HTTP byte-range streaming (206 for Range requests)      |
-|                  | `GET`      | `/api/v1/ws/playback`                                           | Playback sync; create, cancel, and observe rip tasks    |
-| **Catalog**      | `GET`      | `/api/v1/search?q=...`                                          | Hybrid search (cached PostgreSQL + live catalog)        |
-|                  | `GET`      | `/api/v1/tracks/{id}`                                           | Complete track metadata and audio specifications        |
-|                  | `GET`      | `/api/v1/albums`                                                | Paginated list of cached albums                         |
-|                  | `GET`      | `/api/v1/albums/{id}`                                           | Album tracks with cache resolution                      |
-|                  | `GET`      | `/api/v1/artists/{name}/tracks`                                 | All cached tracks by an artist                          |
-| **Assets**       | `GET`      | `/api/v1/assets/tracks/{id}/artwork`                            | Track album cover art redirect                          |
-|                  | `GET`      | `/api/v1/assets/providers/{provider}/tracks/{track_id}/artwork` | Direct provider cover art proxy                         |
-|                  | `GET`      | `/api/v1/assets/tracks/{id}/lyrics`                             | Synced TTML/LRC word-level lyrics                       |
-| **Library**      | `GET`      | `/api/v1/me/favorites`                                          | List favorite tracks                                    |
-|                  | `POST`     | `/api/v1/me/favorites/{track_id}`                               | Add a favorite track                                    |
-|                  | `DELETE`   | `/api/v1/me/favorites/{track_id}`                               | Remove a favorite track                                 |
-|                  | `GET/POST` | `/api/v1/me/playlists`                                          | List or create playlists                                |
-|                  | `GET`      | `/api/v1/me/playlists/{id}`                                     | Fetch a playlist and its tracks                         |
-|                  | `PUT`      | `/api/v1/me/playlists/{id}`                                     | Update a playlist                                       |
-|                  | `DELETE`   | `/api/v1/me/playlists/{id}`                                     | Delete a playlist                                       |
-| **Integrations** | `POST`     | `/api/v1/integrations/lastfm/login`                             | Connect Last.fm account (AES-256-GCM encrypted)         |
-|                  | `GET`      | `/api/v1/integrations/lastfm/status`                            | Get Last.fm connection status                           |
-|                  | `DELETE`   | `/api/v1/integrations/lastfm`                                   | Disconnect Last.fm account                              |
-| **Docs**         | `GET`      | `/api/v1/docs`                                                  | Interactive OpenAPI 3.1 Scalar documentation            |
-|                  | `GET`      | `/api/v1/docs.json`                                             | OpenAPI document in JSON format                         |
-|                  | `GET`      | `/api/v1/docs.yaml`                                             | OpenAPI document in YAML format                         |
-| **Other**        | `GET`      | `/open`                                                         | Open the client connection gateway                      |
-|                  | `GET`      | `/api/v1/health`                                                | Health check                                            |
+| **Auth**         | `POST`     | `/api/v1/auth/exchange`                                         | Exchange one-time Telegram OTP for opaque session token      |
+|:-----------------|:-----------|:----------------------------------------------------------------|:-------------------------------------------------------------|
+|                  | `POST`     | `/api/v1/auth/refresh`                                          | Slide 3-day expiration window forward                        |
+|                  | `POST`     | `/api/v1/auth/logout`                                           | Revoke active session token                                  |
+|                  | `GET`      | `/api/v1/auth/me`                                               | Fetch authenticated user profile & sessions                  |
+|                  | `GET`      | `/api/v1/auth/me/avatar`                                        | Fetch the authenticated user's Telegram avatar               |
+| **Streaming**    | `GET`      | `/api/v1/tracks/{id}/playback`                                  | Acquire short-lived signed stream ticket                     |
+|                  | `GET/HEAD` | `/api/v1/stream?ticket=...`                                     | HTTP byte-range streaming (206 for Range requests)           |
+|                  | `GET`      | `/api/v1/ws/playback`                                           | Playback sync; create, cancel, and observe rip tasks         |
+| **Catalog**      | `GET`      | `/api/v1/search?q=...`                                          | Hybrid search (cached PostgreSQL + live catalog)             |
+|                  | `GET`      | `/api/v1/tracks/{id}`                                           | Complete track metadata and audio specifications             |
+|                  | `GET`      | `/api/v1/albums`                                                | Paginated list of cached albums                              |
+|                  | `GET`      | `/api/v1/albums/{album_ref}`                                    | Album tracks by title, provider id, or track id              |
+|                  | `GET`      | `/api/v1/artists/{name}/tracks`                                 | All cached tracks by an artist                               |
+| **Assets**       | `GET`      | `/api/v1/assets/tracks/{id}/artwork`                            | Provider artwork URL as JSON                                 |
+|                  | `GET`      | `/api/v1/assets/providers/{provider}/tracks/{track_id}/artwork` | Provider artwork URL as JSON                                 |
+|                  | `GET`      | `/api/v1/assets/tracks/{id}/lyrics`                             | Synced TTML/LRC word-level lyrics                            |
+| **Integrations** | `POST`     | `/api/v1/integrations/lastfm/login`                             | Connect Last.fm account (AES-256-GCM encrypted)              |
+|                  | `GET`      | `/api/v1/integrations/lastfm/status`                            | Get Last.fm connection status                                |
+|                  | `DELETE`   | `/api/v1/integrations/lastfm`                                   | Disconnect Last.fm account                                   |
+|                  | `POST`     | `/api/v1/integrations/listenbrainz/login`                       | Connect ListenBrainz account (AES-256-GCM encrypted)         |
+|                  | `GET`      | `/api/v1/integrations/listenbrainz/status`                      | Get ListenBrainz connection status                           |
+|                  | `DELETE`   | `/api/v1/integrations/listenbrainz`                             | Disconnect ListenBrainz account                              |
+| **Docs**         | `GET`      | `/api/v1/docs`                                                  | Interactive OpenAPI 3.1 Scalar documentation                 |
+|                  | `GET`      | `/api/v1/docs.json`                                             | OpenAPI document in JSON format                              |
+|                  | `GET`      | `/api/v1/docs.yaml`                                             | OpenAPI document in YAML format                              |
+|                  | `GET`      | `/api/v1/docs-ws.json`                                          | AsyncAPI document for the playback WebSocket                 |
+| **Other**        | `GET`      | /open                                                           | Open the client connection gateway                           |
+| **Health**       | `GET`      | `/api/v1/health`                                                | Liveness check; 503 when database or stream workers are down |
+|                  | `GET`      | `/api/v1/status`                                                | DB, workers, cache, Apple, Qobuz state; always HTTP 200      |
+
+### Authentication
+
+The catalog and asset routes are **not** open. Every row above except the public routes listed below requires an
+`Authorization: Bearer <token>` header, where `<token>` is the opaque session token returned by
+`POST /api/v1/auth/exchange` (and slid forward by `POST /api/v1/auth/refresh`). A missing or invalid header is rejected
+with `401`.
+
+```bash
+curl https://server.example/api/v1/search?q=blue%20monday \
+  -H 'Authorization: Bearer <token>'
+```
+
+Authenticated routes: the whole **Catalog** group (`/api/v1/search`, `/api/v1/tracks/{id}`, `/api/v1/albums`,
+`/api/v1/albums/{album_ref}`, `/api/v1/artists/{name}/tracks`), every **Assets** route (both artwork routes and
+`/api/v1/assets/tracks/{id}/lyrics`), `/api/v1/tracks/{id}/playback`, all **Integrations** routes, and the
+`/api/v1/auth/me`, `/api/v1/auth/me/avatar`, and `/api/v1/auth/logout` routes (logout also accepts the token in its JSON
+body).
+
+Public routes, which need no session bearer token:
+
+- `POST /api/v1/auth/exchange` and `POST /api/v1/auth/refresh` — these are how you obtain and renew the token.
+- `GET /open?code=...` — the client connection gateway; the single-use OTP in `code` is the credential.
+- `GET /api/v1/health` and `GET /api/v1/status` — unauthenticated liveness and diagnostics.
+- `GET /api/v1/docs`, `/api/v1/docs.json`, `/api/v1/docs.yaml`, and `/api/v1/docs-ws.json` — the rendered and
+  machine-readable contracts.
+- `GET`/`HEAD /api/v1/stream?ticket=...` — authorized by its own short-lived HMAC-signed ticket derived from `APP_KEY`,
+  not by a session bearer token. Get one from `GET /api/v1/tracks/{id}/playback`.
+
+The playback WebSocket `GET /api/v1/ws/playback` requires the same `Authorization: Bearer <token>` header during the
+HTTP upgrade. It previously also accepted the session token as a `?token=` query parameter; **that form has been
+removed and a `token` query parameter is rejected**, because query-string credentials end up in URLs, proxy and access
+logs, and browser history.
 
 ---
 
@@ -229,9 +259,11 @@ LOG_LEVEL=info
 # Optional: tracing-subscriber filter directives; also used as the log-level fallback when LOG_LEVEL is unset.
 # RUST_LOG=info
 
-# Optional: used for signed stream tickets and encrypting Last.fm session keys; startup has a built-in default.
+# Required: used to sign stream tickets and to encrypt stored Last.fm/ListenBrainz session keys; startup fails if it is unset.
+# Must be a private, unique, high-entropy secret of at least 32 characters (e.g. `openssl rand -hex 32`); never share or commit it.
 # APP_KEY=replace-with-a-private-secret
-# Optional: encrypts stored worker sessions when APP_KEY is not set in the environment.
+# Optional: fallback secret for the AES-256-GCM encryption of stored Telegram worker sessions.
+# Only consulted when APP_KEY is absent from the process environment; APP_KEY normally wins.
 # SESSION_ENCRYPTION_KEY=replace-with-a-private-secret
 
 # Optional: Apple wrapper endpoint; defaults to http://127.0.0.1:12340.

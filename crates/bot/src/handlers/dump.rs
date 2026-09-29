@@ -310,7 +310,7 @@ async fn run_auto_dump_pipeline_inner(
     )
     .await;
 
-    let options = engine::orchestrator::types::RipJobOptions {
+    let options = engine::orchestrator::types::RipTaskOptions {
         provider: engine::Provider::Apple,
         chat_id: target_chat,
         user_id: target_user,
@@ -330,14 +330,13 @@ async fn run_auto_dump_pipeline_inner(
             })
             .collect(),
         reply_to_message_id: None,
-        status_msg_id: 0,
         is_admin: true,
         codec_preference: None,
         rendition_policy: engine::orchestrator::types::RenditionPolicy::PrimaryOnly,
     };
     let job = state
         .rip_orchestrator
-        .start_job(Arc::clone(&state.rip_deps), &options)
+        .start_task(Arc::clone(&state.rip_deps), &options)
         .await;
 
     match job {

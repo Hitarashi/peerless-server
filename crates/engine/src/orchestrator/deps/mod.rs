@@ -7,7 +7,9 @@ pub mod cache;
 pub mod delivery;
 pub mod providers;
 
-pub use bookkeeping::{JobBookkeeping, JobBookkeepingError, JobBookkeepingOperation, RequestLog};
+pub use bookkeeping::{
+    RequestLog, TaskBookkeeping, TaskBookkeepingError, TaskBookkeepingOperation,
+};
 pub use cache::{
     AlbumCache, AlbumCacheError, AlbumCacheOperation, AlbumReplacementExpectation,
     AlbumReplacementResult, AlbumUpload, CachedAlbum, CachedTrack, SaveTrackInput, TrackCache,
@@ -18,7 +20,7 @@ pub use delivery::{
     DeliveryRejection, DumpMessageRef, DumpPublication, DumpPublish, UploadProgressCallback,
 };
 pub use providers::{
-    ArtworkProvider, CollectionResolver, ProviderAccess, ProviderComposition, ProviderPresentation,
+    ArtworkProvider, CollectionResolver, ProviderDeps, ProviderPresentation, Storefront,
     TrackAcquisition,
 };
 
@@ -80,12 +82,12 @@ impl Default for OrchestratorConfig {
     }
 }
 
-pub trait JobDeps:
-    TrackCache + AlbumCache + ProviderAccess + JobBookkeeping + Delivery + Send + Sync + 'static
+pub trait TaskDeps:
+    TrackCache + AlbumCache + ProviderDeps + TaskBookkeeping + Delivery + Send + Sync + 'static
 {
 }
 
-impl<T> JobDeps for T where
-    T: TrackCache + AlbumCache + ProviderAccess + JobBookkeeping + Delivery + Send + Sync + 'static
+impl<T> TaskDeps for T where
+    T: TrackCache + AlbumCache + ProviderDeps + TaskBookkeeping + Delivery + Send + Sync + 'static
 {
 }

@@ -87,19 +87,10 @@ pub fn rendition_label(codec: Option<&str>) -> &'static str {
 }
 
 /// Humanize a byte count the way mirror-leech does: two decimals, 1024-based
-/// units (B, KB, MB, GB, TB, PB).
+/// units (B, KB, MB, GB, TB, PB). The single workspace byte formatter lives in
+/// `engine::progress`; this is the compact (no-separator) style.
 pub fn readable_file_size(bytes: u64) -> String {
-    const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
-    if bytes == 0 {
-        return "0B".to_owned();
-    }
-    let mut value = bytes as f64;
-    let mut index = 0;
-    while value >= 1024.0 && index < UNITS.len() - 1 {
-        value /= 1024.0;
-        index += 1;
-    }
-    format!("{value:.2}{}", UNITS[index])
+    engine::progress::format_bytes(bytes)
 }
 
 /// Compact elapsed time like "1d11h47m30s", "3m36s", "45s". Only periods
@@ -182,6 +173,16 @@ mod tests {
             "✓ <b>Complete</b>"
         );
         assert_eq!(heading(FeedbackKind::Warning, "Paused"), "! <b>Paused</b>");
+    }
+
+    /// `presentation::escape` is a re-export of the one workspace escaper, so
+    /// it must produce byte-identical output to `html::escape` and to the
+    /// engine's `html_escape`.
+    #[test]
+    fn escape_matches_the_single_workspace_escaper() {
+        for input in ["&", "<b>", "a&b", "\"'&<>", "", "plain — 文字"] {
+            assert_eq!(escape(input), crate::html::escape(input));
+        }
     }
 
     #[test]

@@ -24,10 +24,10 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
     sync::{Arc, Mutex},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
-use music::Rendition;
+use music::{Rendition, time::now_ms};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -40,23 +40,21 @@ use crate::{
         },
         deps::{
             AlbumCache, AlbumCacheError, AlbumReplacementExpectation, AlbumReplacementResult,
-            AlbumUpload, ArtworkProvider, CachedAlbum, CachedTrack, ChatDelivery, ChatMessageRef,
-            ChatRef, CollectionResolver, Delivery, DeliveryError, DeliveryReceipt,
-            DeliveryRejection, DumpMessageRef, DumpPublication, DumpPublish, JobBookkeeping,
-            JobDeps, OrchestratorConfig, ProviderAccess, ProviderComposition, ProviderPresentation,
-            RequestLog, SaveTrackInput, StorageRetryPolicy, TrackAcquisition, TrackCache,
-            UploadProgressCallback,
+            AlbumUpload, CachedAlbum, CachedTrack, ChatDelivery, ChatMessageRef, ChatRef, Delivery,
+            DeliveryError, DeliveryReceipt, DeliveryRejection, DumpMessageRef, DumpPublication,
+            DumpPublish, OrchestratorConfig, ProviderDeps, RequestLog, SaveTrackInput,
+            StorageRetryPolicy, TaskBookkeeping, TaskDeps, TrackCache, UploadProgressCallback,
         },
         types::{
-            ActiveRipJob, ByteProgress, DownloadLane, EventCallback, FailedTrack, FailedTrackKind,
-            JobActivity, JobPhase, OrchestratorEvent, ResolutionFailure, RipActivity,
-            RipJobOptions, RipJobProgress, RipJobSummary, TerminalJobState, TrackLabel, UploadLane,
+            ActiveRipTask, ByteProgress, DownloadLane, EventCallback, FailedTrack, FailedTrackKind,
+            OrchestratorEvent, ResolutionFailure, RipActivity, RipTaskOptions, RipTaskProgress,
+            RipTaskSummary, TaskActivity, TaskPhase, TerminalTaskState, TrackLabel, UploadLane,
             ZipDeliveryInfo,
         },
     },
     queue::{EnqueueOptions, SequentialRipQueue},
     ripper::{RipError, RipOptions, RipProgressCallback},
-    settings::BotSettings,
+    settings::{BotSettings, resolve_default_storefront},
     types::{AlbumTracks, ArtistTracks, Codec, Provider, TargetKind, TrackKey, TrackRipResult},
     zip::{
         TELEGRAM_SPLIT_THRESHOLD_BYTES, ZipTrackEntry, album_generation_hash,
@@ -112,13 +110,6 @@ impl From<crate::queue::QueueError> for OrchestratorError {
     fn from(e: crate::queue::QueueError) -> Self {
         OrchestratorError::Message(e.to_string())
     }
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 async fn find_cached_tracks_with_retry<D: TrackCache>(
@@ -202,9 +193,9 @@ struct ZipState {
 
 /// Everything the two lanes need about one job, shared by `Arc` into the
 /// lane-2 upload items and the finalize marker.
-struct JobContext {
+struct TaskContext {
     config: OrchestratorConfig,
-    options: RipJobOptions,
+    options: RipTaskOptions,
     zip_build: bool,
     zip_deliver: bool,
     zip_states: Vec<Arc<ZipState>>,
@@ -248,7 +239,7 @@ struct JobContext {
     zip_delivery_infos: Arc<Mutex<Vec<ZipDeliveryInfo>>>,
 }
 
-impl JobContext {
+impl TaskContext {
     fn zip_state(&self, rendition: Rendition) -> Option<&Arc<ZipState>> {
         self.zip_states
             .iter()
@@ -256,21 +247,21 @@ impl JobContext {
     }
 }
 
-fn set_fatal_error(ctx: &JobContext, error: impl Into<String>) {
+fn set_fatal_error(ctx: &TaskContext, error: impl Into<String>) {
     let mut fatal_error = ctx.fatal_error.lock().expect("fatal error poisoned");
     if fatal_error.is_none() {
         *fatal_error = Some(error.into());
     }
 }
 
-fn fatal_error(ctx: &JobContext) -> Option<String> {
+fn fatal_error(ctx: &TaskContext) -> Option<String> {
     ctx.fatal_error
         .lock()
         .expect("fatal error poisoned")
         .clone()
 }
 
-fn set_primary_zip_error(ctx: &JobContext, error: impl Into<String>) {
+fn set_primary_zip_error(ctx: &TaskContext, error: impl Into<String>) {
     let mut primary_zip_error = ctx
         .primary_zip_error
         .lock()
@@ -280,14 +271,14 @@ fn set_primary_zip_error(ctx: &JobContext, error: impl Into<String>) {
     }
 }
 
-fn primary_zip_error(ctx: &JobContext) -> Option<String> {
+fn primary_zip_error(ctx: &TaskContext) -> Option<String> {
     ctx.primary_zip_error
         .lock()
         .expect("primary ZIP error poisoned")
         .clone()
 }
 
-fn remember_zip_dump_message(ctx: &JobContext, message_id: DumpMessageRef) {
+fn remember_zip_dump_message(ctx: &TaskContext, message_id: DumpMessageRef) {
     ctx.zip_new_dump_messages
         .lock()
         .expect("ZIP messages poisoned")
@@ -299,7 +290,7 @@ fn remember_zip_dump_message(ctx: &JobContext, message_id: DumpMessageRef) {
 /// a retried fake transport) may expose the same numeric id more than once;
 /// one committed upload must not accidentally transfer a different pending
 /// upload with the same id.
-fn transfer_zip_dump_messages(ctx: &JobContext, committed: &[DumpMessageRef]) {
+fn transfer_zip_dump_messages(ctx: &TaskContext, committed: &[DumpMessageRef]) {
     let mut pending = ctx
         .zip_new_dump_messages
         .lock()
@@ -314,7 +305,7 @@ fn transfer_zip_dump_messages(ctx: &JobContext, committed: &[DumpMessageRef]) {
     }
 }
 
-fn take_uncommitted_zip_dump_messages(ctx: &JobContext) -> Vec<DumpMessageRef> {
+fn take_uncommitted_zip_dump_messages(ctx: &TaskContext) -> Vec<DumpMessageRef> {
     let mut pending = ctx
         .zip_new_dump_messages
         .lock()
@@ -331,8 +322,8 @@ fn archive_codec_replaced(replacement: Codec, existing: Codec) -> bool {
 }
 
 fn record_lane_task_panic(
-    shared: &Arc<Mutex<JobShared>>,
-    ctx: &JobContext,
+    shared: &Arc<Mutex<TaskShared>>,
+    ctx: &TaskContext,
     item_id: &str,
     message: String,
 ) {
@@ -381,14 +372,14 @@ fn codec_allowed_for_rendition(rendition: Rendition, codec: Codec) -> bool {
 
 /// Job state shared by the orchestrator and both lanes (mutated by
 /// reference from several concurrent stages).
-struct JobShared {
-    job: ActiveRipJob,
+struct TaskShared {
+    job: ActiveRipTask,
     progress: PipelineState,
 }
 
 #[derive(Default)]
 struct PipelineState {
-    job_activity: Mutex<Option<JobActivity>>,
+    job_activity: Mutex<Option<TaskActivity>>,
     download: Mutex<Option<DownloadLane>>,
     upload: Mutex<Option<UploadLane>>,
 }
@@ -399,9 +390,16 @@ struct EventBus {
     subscribers: Arc<Mutex<Vec<EventCallback>>>,
 }
 
+/// Admission facts retained for one in-flight job so the per-user and global
+/// caps can be recomputed without consulting the job itself.
+struct Admission {
+    user_id: i64,
+    is_admin: bool,
+}
+
 #[derive(Default)]
 struct Admissions {
-    jobs: HashMap<String, (i64, bool)>,
+    jobs: HashMap<String, Admission>,
 }
 
 impl EventBus {
@@ -426,7 +424,7 @@ impl EventBus {
         }
     }
 
-    fn set_job_activity(&self, shared: &Arc<Mutex<JobShared>>, activity: Option<JobActivity>) {
+    fn set_job_activity(&self, shared: &Arc<Mutex<TaskShared>>, activity: Option<TaskActivity>) {
         let guard = shared.lock().expect("job poisoned");
         *guard
             .progress
@@ -435,7 +433,7 @@ impl EventBus {
             .expect("job activity poisoned") = activity;
     }
 
-    fn set_download(&self, shared: &Arc<Mutex<JobShared>>, lane: Option<DownloadLane>) {
+    fn set_download(&self, shared: &Arc<Mutex<TaskShared>>, lane: Option<DownloadLane>) {
         let guard = shared.lock().expect("job poisoned");
         *guard
             .progress
@@ -444,7 +442,7 @@ impl EventBus {
             .expect("download progress poisoned") = lane;
     }
 
-    fn set_upload(&self, shared: &Arc<Mutex<JobShared>>, lane: Option<UploadLane>) {
+    fn set_upload(&self, shared: &Arc<Mutex<TaskShared>>, lane: Option<UploadLane>) {
         let guard = shared.lock().expect("job poisoned");
         *guard
             .progress
@@ -453,7 +451,7 @@ impl EventBus {
             .expect("upload progress poisoned") = lane;
     }
 
-    fn emit_progress(&self, shared: &Arc<Mutex<JobShared>>) {
+    fn emit_progress(&self, shared: &Arc<Mutex<TaskShared>>) {
         let (job, progress) = {
             let guard = shared.lock().expect("job poisoned");
             let completed_tracks = guard.job.cached_count
@@ -465,7 +463,7 @@ impl EventBus {
             } else {
                 0
             };
-            let progress = RipJobProgress {
+            let progress = RipTaskProgress {
                 job_id: guard.job.id.clone(),
                 total_tracks: guard.job.total_tracks,
                 completed_tracks,
@@ -501,7 +499,7 @@ impl EventBus {
 
 struct DownloadProgressGuard {
     bus: EventBus,
-    shared: Arc<Mutex<JobShared>>,
+    shared: Arc<Mutex<TaskShared>>,
 }
 
 impl Drop for DownloadProgressGuard {
@@ -579,7 +577,7 @@ impl Drop for InflightGuard {
 pub struct RipOrchestrator {
     config: OrchestratorConfig,
     bus: EventBus,
-    jobs: Arc<Mutex<HashMap<String, Arc<Mutex<JobShared>>>>>,
+    jobs: Arc<Mutex<HashMap<String, Arc<Mutex<TaskShared>>>>>,
     queue: SequentialRipQueue,
     /// Lane 2: a single global dispatcher serializing every Telegram-I/O
     /// task (track uploads, zip packaging, deliveries). Items from ALL
@@ -611,7 +609,7 @@ struct LaneTask {
     on_panic: Option<Box<dyn FnOnce(String) + Send>>,
 }
 
-type FinalizeResult = Result<RipJobSummary, String>;
+type FinalizeResult = Result<RipTaskSummary, String>;
 type FinalizeSender = tokio::sync::oneshot::Sender<FinalizeResult>;
 
 /// Owns the one result that closes a job's two-lane pipeline.
@@ -620,7 +618,7 @@ type FinalizeSender = tokio::sync::oneshot::Sender<FinalizeResult>;
 /// sender. Keeping the workspace paths in the same guard closes the two
 /// failure holes around a bounded queue: a marker can be dropped before it
 /// starts, or its future can panic after it starts. In either case `Drop`
-/// both wakes `start_job` with an error and removes the files synchronously as
+/// both wakes `start_task` with an error and removes the files synchronously as
 /// a last-resort cleanup. The normal path uses the async cleanup below.
 struct FinalizationGuard {
     summary_tx: Arc<Mutex<Option<FinalizeSender>>>,
@@ -662,7 +660,7 @@ impl FinalizationGuard {
 }
 
 /// Releases a global admission slot if a job unwinds before the ordinary
-/// `start_job` epilogue gets to do so.
+/// `start_task` epilogue gets to do so.
 struct AdmissionGuard {
     admissions: Arc<Mutex<Admissions>>,
     job_id: String,
@@ -698,13 +696,13 @@ impl Drop for AdmissionGuard {
 
 /// Removes a job table entry if setup or a dependency panics after admission.
 struct JobTableGuard {
-    jobs: Arc<Mutex<HashMap<String, Arc<Mutex<JobShared>>>>>,
+    jobs: Arc<Mutex<HashMap<String, Arc<Mutex<TaskShared>>>>>,
     job_id: String,
     armed: bool,
 }
 
 impl JobTableGuard {
-    fn new(jobs: Arc<Mutex<HashMap<String, Arc<Mutex<JobShared>>>>>, job_id: String) -> Self {
+    fn new(jobs: Arc<Mutex<HashMap<String, Arc<Mutex<TaskShared>>>>>, job_id: String) -> Self {
         Self {
             jobs,
             job_id,
@@ -897,7 +895,7 @@ impl RipOrchestrator {
     }
 
     /// All jobs that have not reached a terminal state.
-    pub fn get_active_jobs(&self) -> Vec<ActiveRipJob> {
+    pub fn get_active_tasks(&self) -> Vec<ActiveRipTask> {
         self.jobs
             .lock()
             .expect("jobs poisoned")
@@ -910,7 +908,7 @@ impl RipOrchestrator {
     }
 
     /// Look up one job's live snapshot.
-    pub fn get_job(&self, id: &str) -> Option<ActiveRipJob> {
+    pub fn get_task(&self, id: &str) -> Option<ActiveRipTask> {
         self.jobs
             .lock()
             .expect("jobs poisoned")
@@ -918,7 +916,7 @@ impl RipOrchestrator {
             .map(|shared| shared.lock().expect("job poisoned").job.clone())
     }
 
-    fn set_phase(&self, shared: &Arc<Mutex<JobShared>>, phase: JobPhase) {
+    fn set_phase(&self, shared: &Arc<Mutex<TaskShared>>, phase: TaskPhase) {
         shared.lock().expect("job poisoned").job.phase = phase;
     }
 
@@ -927,9 +925,9 @@ impl RipOrchestrator {
     /// cannot manufacture a second terminal event.
     fn terminalize(
         &self,
-        shared: &Arc<Mutex<JobShared>>,
-        state: TerminalJobState,
-        summary: Option<&RipJobSummary>,
+        shared: &Arc<Mutex<TaskShared>>,
+        state: TerminalTaskState,
+        summary: Option<&RipTaskSummary>,
         error: Option<&str>,
     ) -> bool {
         let (job, cancelled_by, state) = {
@@ -941,10 +939,10 @@ impl RipOrchestrator {
             // cancellation and terminalization. A cancellation accepted
             // before this lock is acquired wins; one accepted afterwards
             // observes the terminal state and is rejected.
-            let state = if state != TerminalJobState::Cancelled
+            let state = if state != TerminalTaskState::Cancelled
                 && (guard.job.is_cancelled || guard.job.controller.is_cancelled())
             {
-                TerminalJobState::Cancelled
+                TerminalTaskState::Cancelled
             } else {
                 state
             };
@@ -953,16 +951,16 @@ impl RipOrchestrator {
             (guard.job.clone(), guard.job.cancelled_by.clone(), state)
         };
         match state {
-            TerminalJobState::Completed => {
+            TerminalTaskState::Completed => {
                 if let Some(summary) = summary {
                     self.bus.emit(&OrchestratorEvent::Completed(&job, summary));
                 }
             }
-            TerminalJobState::Cancelled => {
+            TerminalTaskState::Cancelled => {
                 self.bus
                     .emit(&OrchestratorEvent::Cancelled(&job, &cancelled_by));
             }
-            TerminalJobState::Failed => {
+            TerminalTaskState::Failed => {
                 if let Some(error) = error {
                     self.bus.emit(&OrchestratorEvent::Failed(&job, error));
                 }
@@ -974,7 +972,7 @@ impl RipOrchestrator {
     /// Request cancellation; false when missing, already cancelled, or
     /// completed. The terminal event and admission slot are retained until
     /// the lane-2 finalization marker has cleaned up the job's workspaces.
-    pub fn cancel_job(&self, id: &str, cancelled_by: Option<&str>) -> bool {
+    pub fn cancel_task(&self, id: &str, cancelled_by: Option<&str>) -> bool {
         let Some(shared) = self.jobs.lock().expect("jobs poisoned").get(id).cloned() else {
             return false;
         };
@@ -992,12 +990,12 @@ impl RipOrchestrator {
     }
 
     /// Run the whole rip flow for one request. Deps arrive per call.
-    pub async fn start_job<D: JobDeps>(
+    pub async fn start_task<D: TaskDeps>(
         &self,
         deps: Arc<D>,
-        options: &RipJobOptions,
-    ) -> Result<RipJobSummary, OrchestratorError> {
-        if !deps.providers().supports_provider(options.provider) {
+        options: &RipTaskOptions,
+    ) -> Result<RipTaskSummary, OrchestratorError> {
+        if !deps.supports_provider(options.provider) {
             return Err(OrchestratorError::Message(format!(
                 "provider {} is not available",
                 options.provider
@@ -1012,11 +1010,7 @@ impl RipOrchestrator {
         let settings = deps.settings_snapshot();
 
         let job_controller = CancellationToken::new();
-        let mut job_header = deps
-            .providers()
-            .presentation()
-            .default_job_header()
-            .to_owned();
+        let mut job_header = deps.default_job_header().to_owned();
         if options.parsed_items.len() == 1 {
             let it = &options.parsed_items[0];
             job_header = match it.kind {
@@ -1029,8 +1023,8 @@ impl RipOrchestrator {
             job_header = format!("Batch ({} links)", options.parsed_items.len());
         }
 
-        let shared: Arc<Mutex<JobShared>> = Arc::new(Mutex::new(JobShared {
-            job: ActiveRipJob {
+        let shared: Arc<Mutex<TaskShared>> = Arc::new(Mutex::new(TaskShared {
+            job: ActiveRipTask {
                 id: job_id.clone(),
                 provider: options.provider,
                 source_track_ids: options
@@ -1044,7 +1038,6 @@ impl RipOrchestrator {
                 user_name: options.user_name.clone(),
                 job_header,
                 total_tracks: 0,
-                status_msg_id: options.status_msg_id,
                 controller: job_controller.clone(),
                 is_cancelled: false,
                 cancelled_by: None,
@@ -1054,7 +1047,7 @@ impl RipOrchestrator {
                 completed: false,
                 start_time_ms: now_ms(),
                 queue_position: None,
-                phase: JobPhase::Resolving,
+                phase: TaskPhase::Resolving,
                 terminal_state: None,
                 skipped_count: 0,
                 is_cache_only: options.is_cache_only,
@@ -1108,10 +1101,10 @@ impl RipOrchestrator {
                 break entry;
             };
 
-            self.set_phase(&shared, JobPhase::WaitingDuplicate);
+            self.set_phase(&shared, TaskPhase::WaitingDuplicate);
             self.bus.set_job_activity(
                 &shared,
-                Some(JobActivity::WaitingDuplicate {
+                Some(TaskActivity::WaitingDuplicate {
                     inflight_job_id: inflight.job_id.clone(),
                 }),
             );
@@ -1121,7 +1114,7 @@ impl RipOrchestrator {
             tokio::select! {
                 _ = notify.notified() => {}
                 _ = job_controller.cancelled() => {
-                    self.terminalize(&shared, TerminalJobState::Cancelled, None, None);
+                    self.terminalize(&shared, TerminalTaskState::Cancelled, None, None);
                     job_table_guard.remove();
                     admission_guard.release();
                     return Err(OrchestratorError::Cancelled);
@@ -1153,7 +1146,7 @@ impl RipOrchestrator {
 
         let cancelled = shared.lock().expect("job poisoned").job.is_cancelled;
         let result = if cancelled {
-            self.terminalize(&shared, TerminalJobState::Cancelled, None, None);
+            self.terminalize(&shared, TerminalTaskState::Cancelled, None, None);
             // Preserve the existing caller contract: a cancellation that
             // reached the marker still resolves the pipeline's summary, but
             // its sole terminal event is Cancelled. Queue/admission failures
@@ -1162,11 +1155,11 @@ impl RipOrchestrator {
         } else {
             match &result {
                 Ok(summary) => {
-                    self.terminalize(&shared, TerminalJobState::Completed, Some(summary), None);
+                    self.terminalize(&shared, TerminalTaskState::Completed, Some(summary), None);
                 }
                 Err(err) => {
                     let message = err.to_string();
-                    self.terminalize(&shared, TerminalJobState::Failed, None, Some(&message));
+                    self.terminalize(&shared, TerminalTaskState::Failed, None, Some(&message));
                 }
             }
             result
@@ -1176,7 +1169,7 @@ impl RipOrchestrator {
         result
     }
 
-    fn admit(&self, job_id: &str, options: &RipJobOptions) -> Result<(), OrchestratorError> {
+    fn admit(&self, job_id: &str, options: &RipTaskOptions) -> Result<(), OrchestratorError> {
         let mut admissions = self.admissions.lock().expect("admissions poisoned");
         // Admins bypass every admission cap (user + global). Their jobs still
         // occupy a slot so `/cancel_<id>` bookkeeping and the dashboard can find
@@ -1185,7 +1178,7 @@ impl RipOrchestrator {
             let non_admin_jobs = admissions
                 .jobs
                 .values()
-                .filter(|(_, is_admin)| !*is_admin)
+                .filter(|admission| !admission.is_admin)
                 .count();
             if non_admin_jobs >= 16 {
                 return Err(OrchestratorError::AdmissionLimit);
@@ -1193,15 +1186,19 @@ impl RipOrchestrator {
             let user_jobs = admissions
                 .jobs
                 .values()
-                .filter(|(user_id, _)| *user_id == options.user_id)
+                .filter(|admission| admission.user_id == options.user_id)
                 .count();
             if user_jobs >= 4 {
                 return Err(OrchestratorError::UserAdmissionLimit);
             }
         }
-        admissions
-            .jobs
-            .insert(job_id.to_owned(), (options.user_id, options.is_admin));
+        admissions.jobs.insert(
+            job_id.to_owned(),
+            Admission {
+                user_id: options.user_id,
+                is_admin: options.is_admin,
+            },
+        );
         Ok(())
     }
 
@@ -1215,17 +1212,17 @@ impl RipOrchestrator {
 
     /// The queue phase of the job flow: resolve → cap → cache lookup →
     /// admission of the two-lane pipeline.
-    async fn run_job<D: JobDeps>(
+    async fn run_job<D: TaskDeps>(
         &self,
         deps: Arc<D>,
-        options: &RipJobOptions,
-        shared: Arc<Mutex<JobShared>>,
+        options: &RipTaskOptions,
+        shared: Arc<Mutex<TaskShared>>,
         job_controller: CancellationToken,
         settings: BotSettings,
-    ) -> Result<RipJobSummary, OrchestratorError> {
-        self.set_phase(&shared, JobPhase::Resolving);
+    ) -> Result<RipTaskSummary, OrchestratorError> {
+        self.set_phase(&shared, TaskPhase::Resolving);
         self.bus
-            .set_job_activity(&shared, Some(JobActivity::Resolving));
+            .set_job_activity(&shared, Some(TaskActivity::Resolving));
         self.bus.emit_progress(&shared);
 
         let mut resolved_tracks: Vec<ResolvedTrackItem> = Vec::new();
@@ -1249,7 +1246,7 @@ impl RipOrchestrator {
                 .storefront
                 .clone()
                 .or_else(|| options.single_storefront.clone())
-                .unwrap_or_else(|| "us".to_string());
+                .unwrap_or_else(|| resolve_default_storefront(&settings).to_owned());
 
             let resolution: Result<(), String> = match item.kind {
                 TargetKind::Track => {
@@ -1263,9 +1260,7 @@ impl RipOrchestrator {
                     Ok(())
                 }
                 TargetKind::Album => match deps
-                    .providers()
-                    .collections()
-                    .fetch_album_tracks(&item.id, &effective_sf)
+                    .fetch_album_tracks(options.provider, &item.id, effective_sf.as_str().into())
                     .await
                 {
                     Ok(AlbumTracks { album, tracks }) => {
@@ -1293,9 +1288,11 @@ impl RipOrchestrator {
                 },
                 TargetKind::Artist => {
                     match deps
-                        .providers()
-                        .collections()
-                        .fetch_artist_tracks(&item.id, &effective_sf)
+                        .fetch_artist_tracks(
+                            options.provider,
+                            &item.id,
+                            effective_sf.as_str().into(),
+                        )
                         .await
                     {
                         Ok(ArtistTracks {
@@ -1320,9 +1317,11 @@ impl RipOrchestrator {
                 }
                 TargetKind::Playlist => {
                     match deps
-                        .providers()
-                        .collections()
-                        .fetch_playlist_tracks(&item.id, &effective_sf)
+                        .fetch_playlist_tracks(
+                            options.provider,
+                            &item.id,
+                            effective_sf.as_str().into(),
+                        )
                         .await
                     {
                         Ok(data) => {
@@ -1400,7 +1399,7 @@ impl RipOrchestrator {
         let header = match (non_empty(&album_name), non_empty(&album_artist)) {
             (Some(name), Some(artist)) => {
                 if let (Some(id), Some(sf)) = (&album_id, &album_sf) {
-                    let album_url = deps.providers().presentation().album_url(id, sf);
+                    let album_url = deps.album_url(options.provider, id, sf.as_str().into());
                     if let Some(album_url) = album_url {
                         format!(
                             "Album: <a href=\"{album_url}\"><b>{}</b></a> by <b>{}</b>",
@@ -1496,11 +1495,11 @@ impl RipOrchestrator {
             }
         }
 
-        self.set_phase(&shared, JobPhase::CheckingCache);
+        self.set_phase(&shared, TaskPhase::CheckingCache);
         let check_item = { shared.lock().expect("job poisoned").job.job_header.clone() };
         self.bus.set_job_activity(
             &shared,
-            Some(JobActivity::CheckingCache { item: check_item }),
+            Some(TaskActivity::CheckingCache { item: check_item }),
         );
         self.bus.emit_progress(&shared);
         let requested_ids: Vec<TrackKey> = tracks_to_process
@@ -1741,7 +1740,7 @@ impl RipOrchestrator {
                        zip_delivery: Option<ZipDeliveryInfo>,
                        first_msg_id: Option<ChatMessageRef>| {
             let guard = shared.lock().expect("job poisoned");
-            RipJobSummary {
+            RipTaskSummary {
                 job_id: guard.job.id.clone(),
                 job_header: guard.job.job_header.clone(),
                 total_tracks: guard.job.total_tracks,
@@ -1779,7 +1778,7 @@ impl RipOrchestrator {
                 guard.job.skipped_count = skipped.len();
             }
             self.bus
-                .set_job_activity(&shared, Some(JobActivity::SkippingUncached));
+                .set_job_activity(&shared, Some(TaskActivity::SkippingUncached));
             self.bus.emit_progress(&shared);
             let elapsed = format!(
                 "{:.1}",
@@ -1820,9 +1819,9 @@ impl RipOrchestrator {
                 is_album = is_album_job,
                 "Job is 100% cached; executing priority cache delivery bypassing rip queue"
             );
-            self.set_phase(&shared, JobPhase::Delivering);
+            self.set_phase(&shared, TaskPhase::Delivering);
             self.bus
-                .set_job_activity(&shared, Some(JobActivity::CachedDelivered));
+                .set_job_activity(&shared, Some(TaskActivity::CachedDelivered));
             self.bus.emit_progress(&shared);
 
             let _permit = self
@@ -1937,7 +1936,7 @@ impl RipOrchestrator {
                                 }
                                 self.bus.set_download(&shared, None);
                                 self.bus
-                                    .set_job_activity(&shared, Some(JobActivity::CachedDelivered));
+                                    .set_job_activity(&shared, Some(TaskActivity::CachedDelivered));
                                 self.bus.emit_progress(&shared);
 
                                 if should_pace {
@@ -2006,10 +2005,11 @@ impl RipOrchestrator {
                                             .map(|i| i.id.clone())
                                             .unwrap_or_default(),
                                         album_url: match (&album_id, &album_sf) {
-                                            (Some(id), Some(storefront)) => deps
-                                                .providers()
-                                                .presentation()
-                                                .album_url(id, storefront),
+                                            (Some(id), Some(storefront)) => deps.album_url(
+                                                options.provider,
+                                                id,
+                                                storefront.as_str().into(),
+                                            ),
                                             _ => None,
                                         },
                                         artwork_url: album_artwork_url
@@ -2042,7 +2042,7 @@ impl RipOrchestrator {
                         guard.job.cached_count = cached_count;
                     }
                     self.bus
-                        .set_job_activity(&shared, Some(JobActivity::CachedDelivered));
+                        .set_job_activity(&shared, Some(TaskActivity::CachedDelivered));
                     self.bus.emit_progress(&shared);
                     let first_zip = zip_deliveries.first().cloned();
                     let elapsed = format!(
@@ -2071,7 +2071,7 @@ impl RipOrchestrator {
                     guard.job.cached_count = cached_count;
                 }
                 self.bus
-                    .set_job_activity(&shared, Some(JobActivity::CachedDelivered));
+                    .set_job_activity(&shared, Some(TaskActivity::CachedDelivered));
                 self.bus.emit_progress(&shared);
             }
 
@@ -2095,9 +2095,9 @@ impl RipOrchestrator {
             }
         }
 
-        self.set_phase(&shared, JobPhase::Queued);
+        self.set_phase(&shared, TaskPhase::Queued);
         self.bus
-            .set_job_activity(&shared, Some(JobActivity::Queued { position: 1 }));
+            .set_job_activity(&shared, Some(TaskActivity::Queued { position: 1 }));
         self.bus.emit_progress(&shared);
 
         let job_id = shared.lock().expect("job poisoned").job.id.clone();
@@ -2122,7 +2122,7 @@ impl RipOrchestrator {
 
         // The job context moves into both lanes: every lane-2 item holds a
         // clone, and the finalize marker holds the last one.
-        let job_ctx = Arc::new(JobContext {
+        let job_ctx = Arc::new(TaskContext {
             config: self.config.clone(),
             options: options.clone(),
             zip_build,
@@ -2142,7 +2142,7 @@ impl RipOrchestrator {
                 .unwrap_or_default(),
             zip_album_url: match (&album_id, &album_sf) {
                 (Some(id), Some(storefront)) => {
-                    deps.providers().presentation().album_url(id, storefront)
+                    deps.album_url(options.provider, id, storefront.as_str().into())
                 }
                 _ => None,
             },
@@ -2179,7 +2179,7 @@ impl RipOrchestrator {
             )));
         }
         // The finalize marker (last lane-2 item for this job) resolves the
-        // job summary; `start_job` awaits it after the enqueue returns.
+        // job summary; `start_task` awaits it after the enqueue returns.
         let (summary_tx, summary_rx) = tokio::sync::oneshot::channel::<FinalizeResult>();
         let summary_tx = Arc::new(Mutex::new(Some(summary_tx)));
 
@@ -2205,7 +2205,7 @@ impl RipOrchestrator {
                 .queue_position = Some(position);
             callback_bus.set_job_activity(
                 &callback_shared,
-                Some(JobActivity::Queued {
+                Some(TaskActivity::Queued {
                     position: u32::try_from(position).unwrap_or(u32::MAX),
                 }),
             );
@@ -2216,7 +2216,7 @@ impl RipOrchestrator {
         let on_start = Arc::new(move || {
             {
                 let mut guard = callback_shared.lock().expect("job poisoned");
-                guard.job.phase = JobPhase::Processing;
+                guard.job.phase = TaskPhase::Processing;
                 guard.job.queue_position = Some(0);
             }
             let guard = callback_shared.lock().expect("job poisoned");
@@ -2301,7 +2301,7 @@ impl RipOrchestrator {
 /// queue slot is held only while rips happen: each finished rip hands its
 /// upload off to lane 2 (the global upload dispatcher), and the job's
 /// finalize marker — pushed after the last rip — completes the archive,
-/// cleans both workspaces, and resolves the summary `start_job` awaits.
+/// cleans both workspaces, and resolves the summary `start_task` awaits.
 ///
 /// A cache task that cannot deliver/materialize its source hands the fallback
 /// to a detached continuation. Lane 2 never submits or waits for a rip
@@ -2311,11 +2311,11 @@ impl RipOrchestrator {
 struct LaneOneContext<'a, D> {
     deps: Arc<D>,
     bus: EventBus,
-    shared: Arc<Mutex<JobShared>>,
+    shared: Arc<Mutex<TaskShared>>,
     uncached_items: &'a [PipelineItem],
     job_controller: CancellationToken,
     queue_signal: CancellationToken,
-    ctx: Arc<JobContext>,
+    ctx: Arc<TaskContext>,
     upload_lane: Arc<Mutex<Option<tokio::sync::mpsc::Sender<LaneTask>>>>,
     queue: SequentialRipQueue,
     workspace_guard: WorkspaceGuard,
@@ -2386,7 +2386,7 @@ impl Drop for FinalizingRenditionGuard {
 }
 
 fn is_lane_cancelled(
-    shared: &Arc<Mutex<JobShared>>,
+    shared: &Arc<Mutex<TaskShared>>,
     job_controller: &CancellationToken,
     queue_signal: &CancellationToken,
 ) -> bool {
@@ -2398,8 +2398,8 @@ fn is_lane_cancelled(
 struct RipFreshInput<'a, D> {
     deps: &'a Arc<D>,
     bus: &'a EventBus,
-    shared: &'a Arc<Mutex<JobShared>>,
-    ctx: &'a Arc<JobContext>,
+    shared: &'a Arc<Mutex<TaskShared>>,
+    ctx: &'a Arc<TaskContext>,
     job_controller: &'a CancellationToken,
     queue_signal: &'a CancellationToken,
     item: PipelineItem,
@@ -2410,7 +2410,7 @@ struct RipFreshInput<'a, D> {
 /// filesystem operation here; the result is handed to lane 2 by the caller.
 async fn rip_fresh_item<D>(input: RipFreshInput<'_, D>) -> RipLaneOutcome
 where
-    D: ProviderAccess + JobBookkeeping + 'static,
+    D: ProviderDeps + TaskBookkeeping + 'static,
 {
     let RipFreshInput {
         deps,
@@ -2432,9 +2432,8 @@ where
         if item.rendition == Rendition::Atmos {
             return RipLaneOutcome::Finished;
         }
-        let presentation = deps.providers().presentation();
-        let err_msg = presentation.unavailable_track_message().to_owned();
-        let log_message = presentation.unavailable_track_log_message();
+        let err_msg = deps.unavailable_track_message().to_owned();
+        let log_message = deps.unavailable_track_log_message();
         {
             let mut failures = ctx.failed_tracks.lock().expect("failures poisoned");
             failures.push(FailedTrack {
@@ -2462,7 +2461,7 @@ where
         if let Err(error) = log_result {
             tracing::warn!(%error, track_id = %item.track_id, "request log failed for unavailable track");
         }
-        bus.set_job_activity(shared, Some(JobActivity::ProcessingNext));
+        bus.set_job_activity(shared, Some(TaskActivity::ProcessingNext));
         bus.emit_progress(shared);
         return RipLaneOutcome::Finished;
     }
@@ -2503,7 +2502,8 @@ where
         })
     };
 
-    let storefront = item.storefront.clone().unwrap_or_else(|| "us".to_owned());
+    let default_sf = resolve_default_storefront(&deps.settings_snapshot()).to_owned();
+    let storefront = item.storefront.clone().unwrap_or(default_sf);
     let codec_preference = if item.rendition == Rendition::Atmos {
         music::CodecPreference::Atmos
     } else {
@@ -2519,12 +2519,7 @@ where
         output_dir: Some(rip_job_dir),
         codec_preference,
     };
-    let rip_result = match deps
-        .providers()
-        .acquisition()
-        .rip(&item.track_id, rip_options)
-        .await
-    {
+    let rip_result = match deps.rip(&item.track_id, rip_options).await {
         Ok(rip_result) => rip_result,
         Err(error) => {
             bus.set_download(shared, None);
@@ -2584,7 +2579,7 @@ where
                 );
             }
 
-            bus.set_job_activity(shared, Some(JobActivity::ProcessingNext));
+            bus.set_job_activity(shared, Some(TaskActivity::ProcessingNext));
             bus.emit_progress(shared);
             // Source-offline failures skip this track but no longer stop the
             // batch: the wrapper fallback covers the remaining tracks.
@@ -2617,8 +2612,8 @@ where
 struct UploadLaneInput<D> {
     deps: Arc<D>,
     bus: EventBus,
-    shared: Arc<Mutex<JobShared>>,
-    ctx: Arc<JobContext>,
+    shared: Arc<Mutex<TaskShared>>,
+    ctx: Arc<TaskContext>,
     job_controller: CancellationToken,
     queue_cancellation: Option<CancellationToken>,
     upload_lane: Arc<Mutex<Option<tokio::sync::mpsc::Sender<LaneTask>>>>,
@@ -2627,7 +2622,7 @@ struct UploadLaneInput<D> {
 
 async fn enqueue_upload_task<D>(input: UploadLaneInput<D>) -> bool
 where
-    D: TrackCache + Delivery + JobBookkeeping + 'static,
+    D: TrackCache + Delivery + TaskBookkeeping + 'static,
 {
     let UploadLaneInput {
         deps,
@@ -2677,8 +2672,8 @@ where
 struct CachedResolutionInput<'a, D> {
     deps: &'a Arc<D>,
     bus: &'a EventBus,
-    shared: &'a Arc<Mutex<JobShared>>,
-    ctx: &'a Arc<JobContext>,
+    shared: &'a Arc<Mutex<TaskShared>>,
+    ctx: &'a Arc<TaskContext>,
     job_controller: &'a CancellationToken,
     queue_signal: &'a CancellationToken,
     item: &'a PipelineItem,
@@ -2687,7 +2682,7 @@ struct CachedResolutionInput<'a, D> {
 
 async fn resolve_cached_item<D>(input: CachedResolutionInput<'_, D>) -> CacheResolution
 where
-    D: TrackCache + Delivery + JobBookkeeping,
+    D: TrackCache + Delivery + TaskBookkeeping,
 {
     let CachedResolutionInput {
         deps,
@@ -2912,15 +2907,15 @@ where
     if item.rendition == Rendition::Primary {
         shared.lock().expect("job poisoned").job.cached_count += 1;
     }
-    bus.set_job_activity(shared, Some(JobActivity::CachedDelivered));
+    bus.set_job_activity(shared, Some(TaskActivity::CachedDelivered));
     CacheResolution::Hit
 }
 
 struct CachedLaneInput<D> {
     deps: Arc<D>,
     bus: EventBus,
-    shared: Arc<Mutex<JobShared>>,
-    ctx: Arc<JobContext>,
+    shared: Arc<Mutex<TaskShared>>,
+    ctx: Arc<TaskContext>,
     job_controller: CancellationToken,
     queue_signal: CancellationToken,
     upload_lane: Arc<Mutex<Option<tokio::sync::mpsc::Sender<LaneTask>>>>,
@@ -2967,8 +2962,8 @@ enum CacheEnqueueResult {
 struct OrderedDispatchInput<D> {
     deps: Arc<D>,
     bus: EventBus,
-    shared: Arc<Mutex<JobShared>>,
-    ctx: Arc<JobContext>,
+    shared: Arc<Mutex<TaskShared>>,
+    ctx: Arc<TaskContext>,
     job_controller: CancellationToken,
     upload_lane: Arc<Mutex<Option<tokio::sync::mpsc::Sender<LaneTask>>>>,
     queue: SequentialRipQueue,
@@ -2989,7 +2984,7 @@ struct OrderedDispatchInput<D> {
 /// the fallback to lane 1.
 async fn enqueue_cached_lane_task<D>(input: CachedLaneInput<D>) -> CacheEnqueueResult
 where
-    D: TrackCache + Delivery + JobBookkeeping + 'static,
+    D: TrackCache + Delivery + TaskBookkeeping + 'static,
 {
     let CachedLaneInput {
         deps,
@@ -3063,7 +3058,7 @@ where
 /// rerip.
 async fn run_lane_one<D>(input: LaneOneContext<'_, D>)
 where
-    D: TrackCache + AlbumCache + ProviderAccess + Delivery + JobBookkeeping + 'static,
+    D: TrackCache + AlbumCache + ProviderDeps + Delivery + TaskBookkeeping + 'static,
 {
     let LaneOneContext {
         deps,
@@ -3155,20 +3150,20 @@ where
 
     // Do not select cancellation here: the dispatcher must receive this
     // marker even after cancellation so it can enqueue the terminal marker,
-    // clean staged files, and settle start_job's summary receiver.
+    // clean staged files, and settle start_task's summary receiver.
     let _ = slot_tx.send(OrderedSlot::Finished).await;
 }
 
 async fn enqueue_finalize_marker<D>(
     deps: Arc<D>,
     bus: EventBus,
-    shared: Arc<Mutex<JobShared>>,
-    ctx: Arc<JobContext>,
+    shared: Arc<Mutex<TaskShared>>,
+    ctx: Arc<TaskContext>,
     job_controller: CancellationToken,
     upload_lane: Arc<Mutex<Option<tokio::sync::mpsc::Sender<LaneTask>>>>,
     finalization_guard: FinalizationGuard,
 ) where
-    D: AlbumCache + Delivery + ProviderAccess + 'static,
+    D: AlbumCache + Delivery + ProviderDeps + 'static,
 {
     let marker_panic_shared = Arc::clone(&shared);
     let marker_panic_ctx = Arc::clone(&ctx);
@@ -3212,8 +3207,8 @@ async fn enqueue_finalize_marker<D>(
 struct OrderedReripInput<D> {
     deps: Arc<D>,
     bus: EventBus,
-    shared: Arc<Mutex<JobShared>>,
-    ctx: Arc<JobContext>,
+    shared: Arc<Mutex<TaskShared>>,
+    ctx: Arc<TaskContext>,
     job_controller: CancellationToken,
     queue: SequentialRipQueue,
     item: PipelineItem,
@@ -3222,7 +3217,7 @@ struct OrderedReripInput<D> {
 
 fn submit_ordered_rerip_item<D>(input: OrderedReripInput<D>) -> crate::queue::TaskReceiver
 where
-    D: ProviderAccess + JobBookkeeping + 'static,
+    D: ProviderDeps + TaskBookkeeping + 'static,
 {
     let OrderedReripInput {
         deps,
@@ -3266,8 +3261,8 @@ where
 
 fn ordered_rerip_result(
     result: Result<crate::queue::TaskResult, tokio::sync::oneshot::error::RecvError>,
-    shared: &Arc<Mutex<JobShared>>,
-    ctx: &Arc<JobContext>,
+    shared: &Arc<Mutex<TaskShared>>,
+    ctx: &Arc<TaskContext>,
     job_controller: &CancellationToken,
 ) -> RipLaneOutcome {
     let cancelled =
@@ -3319,7 +3314,7 @@ async fn wait_for_cache_resolution(
     mut resolution: tokio::sync::oneshot::Receiver<CacheResolution>,
     drain: &mut OrderedSlotDrain<'_>,
     job_controller: &CancellationToken,
-    ctx: &Arc<JobContext>,
+    ctx: &Arc<TaskContext>,
 ) -> CacheResolution {
     loop {
         tokio::select! {
@@ -3360,8 +3355,8 @@ async fn wait_for_ordered_rerip(
     mut completion: crate::queue::TaskReceiver,
     drain: &mut OrderedSlotDrain<'_>,
     job_controller: &CancellationToken,
-    shared: &Arc<Mutex<JobShared>>,
-    ctx: &Arc<JobContext>,
+    shared: &Arc<Mutex<TaskShared>>,
+    ctx: &Arc<TaskContext>,
 ) -> RipLaneOutcome {
     let mut cancelled = false;
     loop {
@@ -3415,7 +3410,7 @@ async fn wait_for_ordered_rerip(
 /// uploads remain dispatchable while this job's missing slot is settling.
 async fn run_ordered_dispatch<D>(input: OrderedDispatchInput<D>)
 where
-    D: TrackCache + AlbumCache + ProviderAccess + Delivery + JobBookkeeping + 'static,
+    D: TrackCache + AlbumCache + ProviderDeps + Delivery + TaskBookkeeping + 'static,
 {
     let OrderedDispatchInput {
         deps,
@@ -3618,13 +3613,13 @@ where
     .await;
 }
 
-/// Snapshot the shared job state into a `RipJobSummary` for the given
+/// Snapshot the shared job state into a `RipTaskSummary` for the given
 /// lane results. Elapsed time is measured from queue admission.
 fn build_job_summary(
-    shared: &Arc<Mutex<JobShared>>,
-    ctx: &JobContext,
+    shared: &Arc<Mutex<TaskShared>>,
+    ctx: &TaskContext,
     zip_delivery: Option<ZipDeliveryInfo>,
-) -> RipJobSummary {
+) -> RipTaskSummary {
     let total_elapsed_sec = format!(
         "{:.1}",
         (now_ms().saturating_sub(ctx.queue_start_time_ms)) as f64 / 1000.0
@@ -3633,7 +3628,7 @@ fn build_job_summary(
     let first_msg_id = *ctx.first_delivered_msg_id.lock().unwrap();
     let zip_deliveries = ctx.zip_delivery_infos.lock().unwrap().clone();
     let guard = shared.lock().expect("job poisoned");
-    RipJobSummary {
+    RipTaskSummary {
         job_id: guard.job.id.clone(),
         job_header: guard.job.job_header.clone(),
         total_tracks: guard.job.total_tracks,
@@ -3668,12 +3663,12 @@ fn build_job_summary(
 async fn run_upload_item<D>(
     deps: Arc<D>,
     bus: EventBus,
-    shared: Arc<Mutex<JobShared>>,
-    ctx: Arc<JobContext>,
+    shared: Arc<Mutex<TaskShared>>,
+    ctx: Arc<TaskContext>,
     job_controller: CancellationToken,
     upload_item: PipelineRipResult,
 ) where
-    D: TrackCache + Delivery + JobBookkeeping,
+    D: TrackCache + Delivery + TaskBookkeeping,
 {
     let uploaded_ok = upload_one(&deps, &bus, &shared, &ctx, &job_controller, &upload_item).await;
 
@@ -3768,7 +3763,7 @@ async fn run_upload_item<D>(
 /// The lane-2 finalize marker: the last item for a job. Packages the
 /// staged sources into a (possibly split) archive, publishes it, cleans
 /// both workspaces, and resolves the job summary on the oneshot
-/// `start_job` awaits.
+/// `start_task` awaits.
 ///
 /// Publication gating (the always-zip rule):
 /// - Complete archive → always uploaded to the dump and `save_album`'d
@@ -3780,12 +3775,12 @@ async fn run_upload_item<D>(
 async fn finalize_job<D>(
     deps: Arc<D>,
     bus: EventBus,
-    shared: Arc<Mutex<JobShared>>,
-    ctx: Arc<JobContext>,
+    shared: Arc<Mutex<TaskShared>>,
+    ctx: Arc<TaskContext>,
     job_controller: CancellationToken,
 ) -> FinalizeResult
 where
-    D: AlbumCache + Delivery + ProviderAccess,
+    D: AlbumCache + Delivery + ProviderDeps,
 {
     if let Some(error) = fatal_error(&ctx) {
         return Err(error);
@@ -3803,12 +3798,12 @@ where
 async fn finalize_zip<D>(
     deps: &Arc<D>,
     bus: &EventBus,
-    shared: &Arc<Mutex<JobShared>>,
-    ctx: &Arc<JobContext>,
+    shared: &Arc<Mutex<TaskShared>>,
+    ctx: &Arc<TaskContext>,
     job_controller: &CancellationToken,
 ) -> Result<Option<ZipDeliveryInfo>, String>
 where
-    D: AlbumCache + Delivery + ProviderAccess,
+    D: AlbumCache + Delivery + ProviderDeps,
 {
     let result = finalize_zip_inner(deps, bus, shared, ctx, job_controller).await;
     let cancelled =
@@ -3826,8 +3821,8 @@ where
 
 async fn deliver_cached_zip_rows_direct<D>(
     deps: &Arc<D>,
-    shared: &Arc<Mutex<JobShared>>,
-    options: &RipJobOptions,
+    shared: &Arc<Mutex<TaskShared>>,
+    options: &RipTaskOptions,
     rendition: Rendition,
     rows: &[CachedAlbum],
     job_controller: &CancellationToken,
@@ -3892,8 +3887,8 @@ where
 
 async fn deliver_cached_zip_rows<D>(
     deps: &Arc<D>,
-    shared: &Arc<Mutex<JobShared>>,
-    ctx: &Arc<JobContext>,
+    shared: &Arc<Mutex<TaskShared>>,
+    ctx: &Arc<TaskContext>,
     rendition: Rendition,
     rows: &[CachedAlbum],
     job_controller: &CancellationToken,
@@ -3958,12 +3953,12 @@ where
 async fn finalize_zip_inner<D>(
     deps: &Arc<D>,
     bus: &EventBus,
-    shared: &Arc<Mutex<JobShared>>,
-    ctx: &Arc<JobContext>,
+    shared: &Arc<Mutex<TaskShared>>,
+    ctx: &Arc<TaskContext>,
     job_controller: &CancellationToken,
 ) -> Result<Option<ZipDeliveryInfo>, String>
 where
-    D: AlbumCache + Delivery + ProviderAccess,
+    D: AlbumCache + Delivery + ProviderDeps,
 {
     let options = &ctx.options;
     if !ctx.zip_build {
@@ -4054,7 +4049,7 @@ where
         }
 
         let cover_bytes = match &ctx.zip_artwork_url {
-            Some(url) => deps.providers().artwork().fetch_artwork(url).await,
+            Some(url) => deps.fetch_artwork(url).await,
             None => None,
         };
         if is_cancelled() {
@@ -4069,8 +4064,8 @@ where
         };
         let thumb_path = match &ctx.zip_artwork_url {
             Some(url) if !url.is_empty() => {
-                let thumb_url = deps.providers().artwork().artwork_url_at_size(url, 320);
-                match deps.providers().artwork().fetch_artwork(&thumb_url).await {
+                let thumb_url = deps.artwork_url_at_size(options.provider, url, 320);
+                match deps.fetch_artwork(&thumb_url).await {
                     Some(bytes) if !bytes.is_empty() => {
                         let path = state.dir.join("cover_thumb.jpg");
                         tokio::fs::write(&path, bytes).await.ok().map(|_| path)
@@ -4622,13 +4617,13 @@ async fn rollback_cancelled<D>(
 async fn upload_one<D>(
     deps: &Arc<D>,
     bus: &EventBus,
-    shared: &Arc<Mutex<JobShared>>,
-    ctx: &Arc<JobContext>,
+    shared: &Arc<Mutex<TaskShared>>,
+    ctx: &Arc<TaskContext>,
     job_controller: &CancellationToken,
     upload_item: &PipelineRipResult,
 ) -> bool
 where
-    D: TrackCache + Delivery + JobBookkeeping,
+    D: TrackCache + Delivery + TaskBookkeeping,
 {
     let options = &ctx.options;
     let track_id = upload_item.track_id.clone();
@@ -4950,12 +4945,12 @@ struct TrackFailureDetails<'a> {
 /// Record a track failure: push the row, update the counter, and log the
 /// request.
 async fn record_failure<D>(
-    shared: &Arc<Mutex<JobShared>>,
-    ctx: &JobContext,
+    shared: &Arc<Mutex<TaskShared>>,
+    ctx: &TaskContext,
     deps: &Arc<D>,
     details: TrackFailureDetails<'_>,
 ) where
-    D: JobBookkeeping,
+    D: TaskBookkeeping,
 {
     {
         let mut failures = ctx.failed_tracks.lock().expect("failures poisoned");
@@ -5014,8 +5009,8 @@ async fn delete_file_if_exists(path: &str) {
 mod hardening_tests {
     use super::*;
 
-    fn options(user_id: i64, is_admin: bool) -> RipJobOptions {
-        RipJobOptions {
+    fn options(user_id: i64, is_admin: bool) -> RipTaskOptions {
+        RipTaskOptions {
             provider: Provider::Apple,
             chat_id: user_id,
             user_id,
@@ -5027,7 +5022,6 @@ mod hardening_tests {
             single_storefront: None,
             parsed_items: Vec::new(),
             reply_to_message_id: None,
-            status_msg_id: 0,
             is_admin,
             codec_preference: None,
             rendition_policy: music::RenditionPolicy::PrimaryOnly,

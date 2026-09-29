@@ -1,4 +1,5 @@
 mod auth;
+mod authlist;
 mod backup;
 mod clean;
 mod delete;
@@ -7,8 +8,7 @@ pub(crate) mod get;
 mod help;
 mod index;
 mod info;
-mod list;
-mod ops;
+mod ping;
 mod random;
 mod report;
 mod revoke;
@@ -16,6 +16,7 @@ mod search;
 pub mod settings;
 mod spec;
 mod start;
+mod stats;
 mod status;
 pub(crate) mod stream;
 
@@ -122,11 +123,12 @@ pub fn register(dp: &mut Dispatcher, state: Arc<BotState>) {
     help::register(dp, Arc::clone(&state));
     auth::register(dp, Arc::clone(&state));
     revoke::register(dp, Arc::clone(&state));
-    list::register(dp, Arc::clone(&state));
+    authlist::register(dp, Arc::clone(&state));
     get::register(dp, Arc::clone(&state));
     status::register(dp, Arc::clone(&state));
     settings::register(dp, Arc::clone(&state));
-    ops::register(dp, Arc::clone(&state));
+    ping::register(dp, Arc::clone(&state));
+    stats::register(dp, Arc::clone(&state));
     info::register(dp, Arc::clone(&state));
     clean::register(dp, Arc::clone(&state));
     delete::register(dp, Arc::clone(&state));
@@ -143,9 +145,11 @@ pub fn register(dp: &mut Dispatcher, state: Arc<BotState>) {
     dp.on_callback_query(filters::all::<CallbackQuery>(), move |query| {
         let state = Arc::clone(&callback_state);
         async move {
-            let action = query
-                .data()
-                .and_then(|data| TelegramAction::decode(data).ok());
+            let settings = state.rip_deps.settings().get_settings();
+            let default_storefront = engine::settings::resolve_default_storefront(&settings);
+            let action = query.data().and_then(|data| {
+                TelegramAction::decode_with_default(data, default_storefront).ok()
+            });
             match action {
                 Some(TelegramAction::Cancel { job_id }) => {
                     callbacks::dispatch_cancel(state, query, job_id).await
@@ -178,7 +182,7 @@ pub fn register(dp: &mut Dispatcher, state: Arc<BotState>) {
                 }
                 Some(action @ TelegramAction::AuthPage { .. })
                 | Some(action @ TelegramAction::AuthClose) => {
-                    list::callback(state, query, action).await
+                    authlist::callback(state, query, action).await
                 }
                 Some(TelegramAction::Noop) => {
                     let _ = query.answer().send(&state.client).await;

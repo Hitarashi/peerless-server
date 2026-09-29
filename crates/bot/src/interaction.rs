@@ -149,7 +149,18 @@ pub struct CallbackOutcome {
 const MAX_PAYLOAD: usize = 256;
 
 impl TelegramAction {
+    /// Decodes a callback payload using the compiled-in fallback storefront.
+    ///
+    /// Call sites that have access to settings should prefer
+    /// [`TelegramAction::decode_with_default`] so discovery actions follow the
+    /// configured default instead of a hardcoded country.
     pub fn decode(data: &str) -> Result<Self, DecodeError> {
+        Self::decode_with_default(data, engine::settings::FALLBACK_STOREFRONT)
+    }
+
+    /// Decodes a callback payload, applying `default_storefront` to discovery
+    /// payloads that omit an explicit storefront.
+    pub fn decode_with_default(data: &str, default_storefront: &str) -> Result<Self, DecodeError> {
         if data.is_empty() {
             return Err(DecodeError::Empty);
         }
@@ -189,7 +200,7 @@ impl TelegramAction {
             }
             "settings" => decode_settings(rest).map(Self::Settings),
             "report" => decode_report(rest).map(Self::Report),
-            "random" => decode_discovery(rest).map(Self::Discovery),
+            "random" => decode_discovery(rest, default_storefront).map(Self::Discovery),
             "delete_confirm" => one(rest)
                 .and_then(|token| {
                     valid_token(&token)
@@ -309,13 +320,16 @@ fn decode_report(parts: Vec<&str>) -> Result<ReportAction, DecodeError> {
     }
 }
 
-fn decode_discovery(parts: Vec<&str>) -> Result<DiscoveryAction, DecodeError> {
+fn decode_discovery(
+    parts: Vec<&str>,
+    default_storefront: &str,
+) -> Result<DiscoveryAction, DecodeError> {
     match parts.as_slice() {
         ["close"] => Ok(DiscoveryAction::Close),
         ["menu"] => Ok(DiscoveryAction::Menu),
         ["src", source] if valid_source(source) => Ok(DiscoveryAction::Discover {
             source: (*source).to_owned(),
-            storefront: "us".to_owned(),
+            storefront: default_storefront.to_owned(),
         }),
         ["src", source, storefront] if valid_source(source) && valid_storefront(storefront) => {
             Ok(DiscoveryAction::Discover {
@@ -331,7 +345,7 @@ fn decode_discovery(parts: Vec<&str>) -> Result<DiscoveryAction, DecodeError> {
         }
         ["reroll", source] if valid_source(source) => Ok(DiscoveryAction::Reroll {
             source: (*source).to_owned(),
-            storefront: "us".to_owned(),
+            storefront: default_storefront.to_owned(),
         }),
         ["dump", album_id, storefront] if valid_id(album_id) && valid_storefront(storefront) => {
             Ok(DiscoveryAction::Dump {
@@ -527,6 +541,32 @@ mod tests {
         for action in actions {
             assert_eq!(TelegramAction::decode(&action.encode()), Ok(action));
         }
+    }
+
+    #[test]
+    fn discovery_payload_without_storefront_uses_default() {
+        assert_eq!(
+            TelegramAction::decode_with_default("random:src:charts", "in"),
+            Ok(TelegramAction::Discovery(DiscoveryAction::Discover {
+                source: "charts".into(),
+                storefront: "in".into(),
+            }))
+        );
+        assert_eq!(
+            TelegramAction::decode_with_default("random:reroll:charts", "gb"),
+            Ok(TelegramAction::Discovery(DiscoveryAction::Reroll {
+                source: "charts".into(),
+                storefront: "gb".into(),
+            }))
+        );
+        // An explicit storefront always wins over the configured default.
+        assert_eq!(
+            TelegramAction::decode_with_default("random:src:charts:jp", "in"),
+            Ok(TelegramAction::Discovery(DiscoveryAction::Discover {
+                source: "charts".into(),
+                storefront: "jp".into(),
+            }))
+        );
     }
 
     #[test]

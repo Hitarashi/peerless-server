@@ -19,7 +19,7 @@ pub fn cancel_inline(
     caller_id: i64,
     is_admin: bool,
 ) -> CancelResult {
-    let Some(job) = state.rip_orchestrator.get_job(job_id) else {
+    let Some(job) = state.rip_orchestrator.get_task(job_id) else {
         return CancelResult::Expired;
     };
     if job.completed || job.terminal_state.is_some() {
@@ -29,7 +29,10 @@ pub fn cancel_inline(
         return CancelResult::Unauthorized;
     }
     let caller_name = if is_admin { "Admin" } else { "User" };
-    if state.rip_orchestrator.cancel_job(job_id, Some(caller_name)) {
+    if state
+        .rip_orchestrator
+        .cancel_task(job_id, Some(caller_name))
+    {
         CancelResult::Cancelled
     } else {
         CancelResult::Expired

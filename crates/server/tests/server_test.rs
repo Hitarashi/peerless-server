@@ -47,7 +47,7 @@ fn create_rip_rpc_request(
 ) -> RipTaskRpcRequest {
     RipTaskRpcRequest::Create {
         request_id: request_id.to_owned(),
-        request: server::tasks::RipTaskRequest {
+        request: server::rip_tasks::RipTaskRequest {
             provider: "apple".to_owned(),
             track_id: track_id.to_owned(),
             codec: codec.map(str::to_owned),
@@ -85,7 +85,7 @@ async fn test_playback_ticket_cryptography() {
     let pt = StreamTicket::new(track_id, user_id, ttl);
     let encoded = pt.encode(key);
     let decoded = StreamTicket::decode(key, &encoded).expect("valid ticket must decode");
-    assert_eq!(decoded.track_id, track_id);
+    assert_eq!(decoded.db_track_id, track_id);
     assert_eq!(decoded.user_id, user_id);
 
     // Tampered key fails
@@ -193,16 +193,8 @@ async fn test_docs_and_unauthorized_endpoints() {
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 
-    // 5. Test Unauthorized access to /api/v1/tracks/1/playback (GET and POST)
+    // 5. Test Unauthorized access to /api/v1/tracks/1/playback
     let req = Request::builder()
-        .uri("/api/v1/tracks/1/playback")
-        .body(Body::empty())
-        .unwrap();
-    let res = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
-
-    let req = Request::builder()
-        .method("POST")
         .uri("/api/v1/tracks/1/playback")
         .body(Body::empty())
         .unwrap();
@@ -262,6 +254,133 @@ async fn test_docs_and_unauthorized_endpoints() {
     assert!(health_res["cache_entries"].as_u64().is_some());
     assert!(health_res["cache_bytes"].as_u64().is_some());
     assert!(health_res["uptime_seconds"].as_u64().is_some());
+
+    // 11. The ripped catalog and its assets are private. Every one of these
+    //     endpoints must refuse an anonymous caller instead of serving data.
+    let secured_endpoints = [
+        "/api/v1/search?q=taylor",
+        "/api/v1/tracks/2147483000",
+        "/api/v1/albums",
+        "/api/v1/albums/test_album",
+        "/api/v1/artists/taylor/tracks",
+        "/api/v1/assets/tracks/2147483000/artwork",
+        "/api/v1/assets/providers/apple/tracks/1440857781/artwork",
+        "/api/v1/assets/tracks/2147483000/lyrics",
+    ];
+    for uri in secured_endpoints {
+        let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "{uri} must reject anonymous access"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_catalog_and_assets_require_authenticated_session() {
+    let _ = dotenvy::from_filename(".env");
+    let Ok(db_url) = std::env::var("DATABASE_URL").or_else(|_| std::env::var("TEST_DATABASE_URL"))
+    else {
+        eprintln!("Skipping catalog authentication test: DATABASE_URL not set");
+        return;
+    };
+
+    let pool = match db::connect(&db_url).await {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Skipping catalog authentication test: cannot connect to {db_url}: {e}");
+            return;
+        }
+    };
+    db::migrate(&pool).await.expect("database migrations");
+
+    let user_id = 666_000_321;
+    let worker_pool = stream::StreamWorkerPool::empty();
+    let stream_engine = Arc::new(stream::StreamEngine::new(
+        worker_pool,
+        Arc::new(stream::ChunkCache::default()),
+        db::TracksRepository::new(pool.clone()),
+        None,
+        PeerRef::from(0),
+    ));
+
+    let session_mgr = Arc::new(db::SessionManager::new(pool.clone(), user_id));
+    let tracks_repo = Arc::new(db::TracksRepository::new(pool.clone()));
+    let settings_store = Arc::new(db::SettingsStore::new(pool.clone()));
+    let orchestrator = Arc::new(engine::orchestrator::RipOrchestrator::default());
+
+    let app_key = "test_app_key_for_catalog_auth_32_by";
+    let state = Arc::new(ServerState::new(
+        stream_engine,
+        session_mgr.clone(),
+        tracks_repo,
+        settings_store,
+        orchestrator,
+        app_key.to_string(),
+    ));
+
+    let app = server::create_router(state);
+
+    // Exchange a Telegram OTP for a sliding session token, the same flow the
+    // lifecycle tests above use to obtain credentials.
+    let code = session_mgr.create_login_code(user_id).await.unwrap();
+    let exchange_payload = serde_json::json!({
+        "code": code,
+        "device_name": "Catalog Auth Test",
+        "platform": "linux"
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/exchange")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_vec(&exchange_payload).unwrap()))
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let exchange_res: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let token = exchange_res["token"].as_str().unwrap().to_string();
+    assert!(!token.is_empty());
+
+    // Each secured endpoint must reject an anonymous caller and serve a real
+    // session holder. The high track ids do not exist and the provider name is
+    // unparseable, so the authenticated leg stays off the network and only has
+    // to prove the auth check itself was satisfied.
+    let secured_endpoints = [
+        "/api/v1/search?q=taylor",
+        "/api/v1/tracks/2147483000",
+        "/api/v1/albums",
+        "/api/v1/albums/test_album",
+        "/api/v1/artists/taylor/tracks",
+        "/api/v1/assets/tracks/2147483000/artwork",
+        "/api/v1/assets/providers/unknown_provider/tracks/1440857781/artwork",
+        "/api/v1/assets/tracks/2147483000/lyrics",
+    ];
+    for uri in secured_endpoints {
+        let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "{uri} must reject anonymous access"
+        );
+
+        let req = Request::builder()
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_ne!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "{uri} must serve an authenticated session"
+        );
+    }
 }
 
 #[tokio::test]
@@ -363,9 +482,8 @@ async fn test_auth_lifecycle() {
     assert_eq!(refresh_res["expires_in"], 259200);
     assert!(refresh_res["expires_at_unix"].as_i64().is_some());
 
-    // 2c. Test authorized POST /api/v1/tracks/1/playback - forbidden without Last.fm connection
+    // 2c. Test authorized GET /api/v1/tracks/1/playback - forbidden without Last.fm connection
     let req = Request::builder()
-        .method("POST")
         .uri("/api/v1/tracks/1/playback")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
@@ -382,7 +500,6 @@ async fn test_auth_lifecycle() {
 
     // With Last.fm connected, playback succeeds
     let req = Request::builder()
-        .method("POST")
         .uri("/api/v1/tracks/1/playback")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
@@ -445,7 +562,6 @@ async fn test_auth_lifecycle() {
 
     // Playback is forbidden again after disconnect
     let req = Request::builder()
-        .method("POST")
         .uri("/api/v1/tracks/1/playback")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
@@ -460,7 +576,6 @@ async fn test_auth_lifecycle() {
 
     // Nonexistent track returns 404
     let req = Request::builder()
-        .method("POST")
         .uri("/api/v1/tracks/99999999/playback")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
@@ -694,7 +809,7 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
         meta.controller.clone()
     };
     match task_sync_events.recv().await.unwrap() {
-        server::tasks::TaskSyncEvent::Updated {
+        server::rip_tasks::TaskSyncEvent::Updated {
             task_id: updated_id,
         } => {
             assert_eq!(updated_id, task_id);
@@ -756,7 +871,7 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
     );
     assert!(matches!(
         task_sync_events.recv().await.unwrap(),
-        server::tasks::TaskSyncEvent::Dismissed { task_id: dismissed_id }
+        server::rip_tasks::TaskSyncEvent::Dismissed { task_id: dismissed_id }
             if dismissed_id == task_id
     ));
     assert!(controller.is_cancelled());
@@ -787,7 +902,7 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
     };
     assert!(matches!(
         task_sync_events.recv().await.unwrap(),
-        server::tasks::TaskSyncEvent::Updated { task_id: updated_id }
+        server::rip_tasks::TaskSyncEvent::Updated { task_id: updated_id }
             if updated_id == admin_task_id
     ));
     assert_eq!(
@@ -807,7 +922,7 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
     );
     assert!(matches!(
         task_sync_events.recv().await.unwrap(),
-        server::tasks::TaskSyncEvent::Dismissed { task_id: dismissed_id }
+        server::rip_tasks::TaskSyncEvent::Dismissed { task_id: dismissed_id }
             if dismissed_id == admin_task_id
     ));
     assert!(!state.active_tasks.read().contains_key(&admin_task_id));
@@ -839,7 +954,7 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
     };
     assert!(matches!(
         task_sync_events.recv().await.unwrap(),
-        server::tasks::TaskSyncEvent::Updated { task_id: updated_id }
+        server::rip_tasks::TaskSyncEvent::Updated { task_id: updated_id }
             if updated_id == dedup_task_id
     ));
 
@@ -894,7 +1009,7 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
     );
     assert!(matches!(
         task_sync_events.recv().await.unwrap(),
-        server::tasks::TaskSyncEvent::Updated { task_id: updated_id }
+        server::rip_tasks::TaskSyncEvent::Updated { task_id: updated_id }
             if updated_id == different_codec_task_id
     ));
 
@@ -903,7 +1018,7 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
     assert!(!state.active_tasks.read().contains_key(&dedup_task_id));
     assert!(matches!(
         task_sync_events.recv().await.unwrap(),
-        server::tasks::TaskSyncEvent::Dismissed { task_id: dismissed_id }
+        server::rip_tasks::TaskSyncEvent::Dismissed { task_id: dismissed_id }
             if dismissed_id == dedup_task_id
     ));
     state.complete_task(&different_codec_task_id);
@@ -915,7 +1030,7 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
     );
     assert!(matches!(
         task_sync_events.recv().await.unwrap(),
-        server::tasks::TaskSyncEvent::Dismissed { task_id: dismissed_id }
+        server::rip_tasks::TaskSyncEvent::Dismissed { task_id: dismissed_id }
             if dismissed_id == different_codec_task_id
     ));
 

@@ -14,7 +14,7 @@ use engine::{
         caption::{
             DumpCaptionMetadata, format_dump_caption, parse_dump_caption, parse_zip_dump_caption,
         },
-        deps::{ProviderAccess, SaveTrackInput},
+        deps::SaveTrackInput,
     },
 };
 use ferogram::{
@@ -232,12 +232,15 @@ async fn index_dump_channel(
 
                 // Backfill ISRC for older tracks if missing
                 if meta.isrc.is_none() {
+                    let settings = state.rip_deps.settings().get_settings();
+                    let default_storefront =
+                        engine::settings::resolve_default_storefront(&settings);
                     let resolved_isrc = match meta.track_key.provider {
                         music::Provider::Apple => {
                             match state
                                 .rip_deps
                                 .playlist()
-                                .fetch_song_isrc(&meta.track_key.track_id, "us")
+                                .fetch_song_isrc(&meta.track_key.track_id, default_storefront)
                                 .await
                             {
                                 Ok(Some(isrc)) => Some(isrc),
@@ -254,10 +257,10 @@ async fn index_dump_channel(
                             }
                         }
                         music::Provider::Qobuz => {
-                            if let Some(qobuz) = state.rip_deps.providers().qobuz() {
+                            if let Some(qobuz) = state.rip_deps.qobuz() {
                                 match qobuz
                                     .catalog()
-                                    .fetch_track_meta(&meta.track_key.track_id, "qobuz")
+                                    .fetch_track_meta(&meta.track_key.track_id)
                                     .await
                                 {
                                     Ok(track_meta) => track_meta.isrc,

@@ -10,21 +10,6 @@ use crate::{
 const RESTRICTED: &str =
     "🔒 <b>Access Restricted:</b> This command is restricted to the bot owner.";
 
-fn format_bytes(bytes: u64) -> String {
-    if bytes == 0 {
-        return "0 B".to_owned();
-    }
-    let units = ["B", "KB", "MB", "GB", "TB"];
-    let index = ((bytes as f64).ln() / 1024_f64.ln()).floor() as usize;
-    let index = index.min(units.len() - 1);
-    let value = bytes as f64 / 1024_f64.powi(index as i32);
-    if index == 0 {
-        format!("{value:.0} {}", units[index])
-    } else {
-        format!("{value:.2} {}", units[index])
-    }
-}
-
 /// Remove the contents of the bot's downloads directory without following
 /// symlinks or deleting its repository marker files.  The caller supplies the
 /// already-authorized downloads root; this helper never derives a parent or a
@@ -120,7 +105,11 @@ async fn clean(msg: ferogram::update::IncomingMessage, state: Arc<BotState>) {
         Ok((files_removed, bytes_freed)) => {
             let text = format!(
                 "✓ <b>Temporary storage cleaned</b><br/><br/><blockquote>• Files removed: <code>{files_removed}</code><br/>• Space reclaimed: <code>{}</code><br/>• Target: <code>bot-data/downloads/</code></blockquote>",
-                format_bytes(bytes_freed)
+                // Prose, not a progress bar: the spaced byte style.
+                engine::progress::format_bytes_with(
+                    bytes_freed,
+                    engine::progress::ByteStyle::Spaced,
+                )
             );
             let _ = msg
                 .reply(InputMessage::html(parse_dynamic_html(&text)))

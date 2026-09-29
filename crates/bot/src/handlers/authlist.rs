@@ -1,3 +1,8 @@
+//! `/authlist` — renders the paginated list of authorized users and groups.
+//!
+//! Admin-only. Paging is driven by the inline keyboard returned here; the
+//! callback path for `TelegramAction::AuthPage` / `AuthClose` lives below.
+
 use std::sync::Arc;
 
 use ferogram::{

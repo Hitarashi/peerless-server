@@ -92,20 +92,23 @@ impl StreamEngine {
     }
 
     /// Resolve track document metadata from Dump Channel, with caching and on-demand refresh.
+    ///
+    /// `db_track_id` is the local database row id (`db::Track::id`), not a
+    /// provider-native track id.
     pub async fn resolve_track_media(
         &self,
-        track_id: i32,
+        db_track_id: i32,
         force_refresh: bool,
     ) -> Result<Arc<TrackMediaMetadata>, StreamError> {
-        if !force_refresh && let Some(cached) = self.metadata_cache.get(&track_id).await {
+        if !force_refresh && let Some(cached) = self.metadata_cache.get(&db_track_id).await {
             return Ok(cached);
         }
 
         let track = self
             .tracks_repo
-            .find_track_by_id(track_id)
+            .find_track_by_id(db_track_id)
             .await?
-            .ok_or(StreamError::TrackNotFound(track_id))?;
+            .ok_or(StreamError::TrackNotFound(db_track_id))?;
 
         let client = self
             .primary_client
@@ -120,11 +123,11 @@ impl StreamEngine {
         let message = messages
             .into_iter()
             .next()
-            .ok_or(StreamError::NoMediaDocument(track_id))?;
+            .ok_or(StreamError::NoMediaDocument(db_track_id))?;
 
         let document = message
             .document()
-            .ok_or(StreamError::NoMediaDocument(track_id))?;
+            .ok_or(StreamError::NoMediaDocument(db_track_id))?;
 
         let mime_type = if document.mime_type().is_empty() {
             track.codec.mime_type().to_string()
@@ -143,18 +146,20 @@ impl StreamEngine {
         });
 
         self.metadata_cache
-            .insert(track_id, Arc::clone(&metadata))
+            .insert(db_track_id, Arc::clone(&metadata))
             .await;
         Ok(metadata)
     }
 
     /// Open an audio byte stream for the given track and HTTP Range header.
+    ///
+    /// `db_track_id` is the local database row id (`db::Track::id`).
     pub async fn open_stream(
         &self,
-        track_id: i32,
+        db_track_id: i32,
         range_header: Option<&str>,
     ) -> Result<AudioStreamResponse, StreamError> {
-        let meta = self.resolve_track_media(track_id, false).await?;
+        let meta = self.resolve_track_media(db_track_id, false).await?;
 
         let (range, status, content_range) = if let Some(header) = range_header {
             let parsed_range = ByteRange::parse(header, meta.file_size)?;
@@ -175,7 +180,7 @@ impl StreamEngine {
         let refresher: crate::pipe::LocationRefresher = Arc::new(move || {
             let engine = engine.clone();
             Box::pin(async move {
-                let fresh_meta = engine.resolve_track_media(track_id, true).await?;
+                let fresh_meta = engine.resolve_track_media(db_track_id, true).await?;
                 Ok(fresh_meta.input_location())
             })
         });

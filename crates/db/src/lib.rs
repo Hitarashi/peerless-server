@@ -71,6 +71,27 @@ impl DbPool {
             .map_err(|error| DbError::Pool(error.to_string()))
     }
 
+    /// Cheap liveness check: run `SELECT 1` on a pooled connection.
+    /// Returns `Ok(())` when the database answers, `Err(DbError)` otherwise.
+    ///
+    /// Exists so health probes outside this crate can assert that PostgreSQL is
+    /// still serving without ever taking a direct Diesel dependency: the `db`
+    /// crate owns all Diesel usage, and every other crate reaches the database
+    /// only through this API.
+    ///
+    /// Deliberately has no timeout of its own. The caller (the server's
+    /// liveness probe) already bounds the future with `tokio::time::timeout`;
+    /// a nested timeout here would silently discard a slow-but-healthy
+    /// database and make the two bounds impossible to reason about.
+    pub async fn ping(&self) -> Result<(), DbError> {
+        let mut connection = self.connection().await?;
+        diesel::sql_query("SELECT 1")
+            .execute(&mut *connection)
+            .await
+            .map(|_| ())
+            .map_err(DbError::from)
+    }
+
     pub(crate) fn database_url(&self) -> &str {
         &self.database_url
     }

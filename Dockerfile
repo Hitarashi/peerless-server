@@ -49,8 +49,8 @@ COPY crates/media/Cargo.toml crates/media/Cargo.toml
 COPY crates/stream/Cargo.toml crates/stream/Cargo.toml
 COPY crates/server/Cargo.toml crates/server/Cargo.toml
 COPY crates/bot/Cargo.toml crates/bot/Cargo.toml
-RUN --mount=type=cache,id=alac-cargo-registry,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=alac-cargo-git,target=/usr/local/cargo/git \
+RUN --mount=type=cache,id=peerless-cargo-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=peerless-cargo-git,target=/usr/local/cargo/git \
     mkdir -p crates/music/src crates/lyrics/src crates/engine/src crates/apple/src \
              crates/qobuz/src crates/db/src crates/media/src crates/stream/src \
              crates/server/src crates/bot/src \
@@ -73,8 +73,8 @@ RUN --mount=type=cache,id=alac-cargo-registry,target=/usr/local/cargo/registry \
 # touch every stubbed target to make the real sources look newer and force a
 # rebuild of the workspace crates against the cached dependency artifacts.
 COPY crates ./crates
-RUN --mount=type=cache,id=alac-cargo-registry,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=alac-cargo-git,target=/usr/local/cargo/git \
+RUN --mount=type=cache,id=peerless-cargo-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=peerless-cargo-git,target=/usr/local/cargo/git \
     touch crates/music/src/lib.rs crates/lyrics/src/lib.rs crates/engine/src/lib.rs \
           crates/apple/src/lib.rs crates/qobuz/src/lib.rs crates/db/src/lib.rs \
           crates/media/src/lib.rs crates/stream/src/lib.rs crates/server/src/lib.rs \
@@ -99,12 +99,12 @@ COPY --from=builder /app/target/release/bot ./bot
 COPY healthcheck.sh /app/healthcheck.sh
 
 # Non-root user; bot-data holds the Telegram session and download scratch.
-RUN useradd --system --uid 10001 --home-dir /app --shell /usr/sbin/nologin alac \
+RUN useradd --system --uid 10001 --home-dir /app --shell /usr/sbin/nologin peerless \
  && mkdir -p /app/bot-data/downloads \
- && chown -R alac:alac /app \
+ && chown -R peerless:peerless /app \
  && chmod 0755 /app/bot /app/healthcheck.sh
 
-USER alac
+USER peerless
 
 # Persistent storage volume for Telegram session and downloads
 VOLUME ["/app/bot-data"]

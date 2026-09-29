@@ -53,6 +53,7 @@ cuid2 = "0.1"
 sha2 = "0.11"
 sha1 = "0.10" # pinned to rsa 0.9's digest generation; bump with rsa 0.10
 rsa = { version = "0.9", features = ["sha1", "getrandom"] }
+md-5 = "0.11"
 aes = "0.9"
 cbc = { version = "0.2", features = ["alloc"] }
 ctr = "0.10"
@@ -72,7 +73,7 @@ parking_lot = "0.12"
 aes-gcm = "0.11"
 axum = { version = "0.8", features = ["ws"] }
 tower = "0.5"
-tower-http = { version = "0.7", features = ["cors", "trace"] }
+tower-http = { version = "0.7", features = ["trace"] }
 utoipa = { version = "5", features = ["axum_extras", "chrono", "yaml"] }
 hmac = "0.13"
 ytmusic = { git = "https://github.com/sonorahq/ytmusic-rs", rev = "e0a5174" }

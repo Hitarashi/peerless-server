@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use engine::{
-    orchestrator::deps::CollectionResolver,
-    types::{AlbumTracks, ArtistTracks},
+    orchestrator::deps::{CollectionResolver, Storefront},
+    types::{AlbumTracks, ArtistTracks, Provider},
 };
 use music::{PlaylistData, TrackMeta};
 
@@ -21,7 +21,7 @@ impl QobuzCatalog {
         Self { primary, fallback }
     }
 
-    pub async fn fetch_track_meta(&self, id: &str, _storefront: &str) -> Result<TrackMeta, String> {
+    pub async fn fetch_track_meta(&self, id: &str) -> Result<TrackMeta, String> {
         match self.primary.fetch_track_meta(id).await {
             Ok(track) => Ok(track),
             Err(err) => {
@@ -40,7 +40,12 @@ impl QobuzCatalog {
 }
 
 impl CollectionResolver for QobuzCatalog {
-    async fn fetch_album_tracks(&self, id: &str, _storefront: &str) -> Result<AlbumTracks, String> {
+    async fn fetch_album_tracks(
+        &self,
+        _provider: Provider,
+        id: &str,
+        _storefront: Storefront<'_>,
+    ) -> Result<AlbumTracks, String> {
         match self.primary.fetch_album_tracks(id).await {
             Ok(album) => Ok(album),
             Err(err) => {
@@ -59,8 +64,9 @@ impl CollectionResolver for QobuzCatalog {
 
     async fn fetch_artist_tracks(
         &self,
+        _provider: Provider,
         id: &str,
-        _storefront: &str,
+        _storefront: Storefront<'_>,
     ) -> Result<ArtistTracks, String> {
         match self.primary.fetch_artist_tracks(id).await {
             Ok(artist) => Ok(artist),
@@ -80,8 +86,9 @@ impl CollectionResolver for QobuzCatalog {
 
     async fn fetch_artist_album_ids(
         &self,
+        _provider: Provider,
         id: &str,
-        _storefront: &str,
+        _storefront: Storefront<'_>,
     ) -> Result<Vec<String>, String> {
         match self.primary.fetch_artist_album_ids(id).await {
             Ok(album_ids) => Ok(album_ids),
@@ -101,8 +108,9 @@ impl CollectionResolver for QobuzCatalog {
 
     async fn fetch_playlist_tracks(
         &self,
+        _provider: Provider,
         id: &str,
-        _storefront: &str,
+        _storefront: Storefront<'_>,
     ) -> Result<PlaylistData, String> {
         match self.primary.fetch_playlist_tracks(id).await {
             Ok(playlist) => Ok(playlist),

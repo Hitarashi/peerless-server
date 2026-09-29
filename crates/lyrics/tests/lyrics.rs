@@ -230,31 +230,32 @@ fn default_registry_contains_only_lrclib() {
 #[test]
 fn all_sources_preserves_explicit_source_order() {
     let registry = LyricsRegistry::all_sources();
-    let mut expected = Vec::new();
-    #[cfg(feature = "paxsenix")]
-    expected.push("paxsenix");
-    #[cfg(feature = "betterlyrics")]
-    expected.push("betterlyrics");
-    #[cfg(feature = "unison")]
-    expected.push("unison");
-    #[cfg(feature = "binimum")]
-    expected.push("binimum");
-    #[cfg(feature = "amll-ttml-db")]
-    expected.push("amll-ttml-db");
-    #[cfg(feature = "kugou")]
-    expected.push("kugou");
-    #[cfg(feature = "netease")]
-    expected.push("netease");
-    #[cfg(feature = "musixmatch")]
-    expected.push("musixmatch");
-    #[cfg(feature = "qq")]
-    expected.push("qq-music");
-    #[cfg(feature = "youtube")]
-    expected.push("youtube-music");
-    #[cfg(feature = "spotify")]
-    expected.push("spotify");
-    #[cfg(feature = "lrclib")]
-    expected.push("lrclib");
+    let expected = vec![
+        #[cfg(feature = "paxsenix")]
+        "paxsenix",
+        #[cfg(feature = "betterlyrics")]
+        "betterlyrics",
+        #[cfg(feature = "unison")]
+        "unison",
+        #[cfg(feature = "binimum")]
+        "binimum",
+        #[cfg(feature = "amll-ttml-db")]
+        "amll-ttml-db",
+        #[cfg(feature = "kugou")]
+        "kugou",
+        #[cfg(feature = "netease")]
+        "netease",
+        #[cfg(feature = "musixmatch")]
+        "musixmatch",
+        #[cfg(feature = "qq")]
+        "qq-music",
+        #[cfg(feature = "youtube")]
+        "youtube-music",
+        #[cfg(feature = "spotify")]
+        "spotify",
+        #[cfg(feature = "lrclib")]
+        "lrclib",
+    ];
     assert_eq!(registry.source_ids().collect::<Vec<_>>(), expected);
 }
 

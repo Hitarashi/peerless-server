@@ -7,16 +7,18 @@ use engine::{
     Codec, Provider,
     orchestrator::deps::{
         AlbumCache, AlbumCacheError, AlbumCacheOperation, AlbumReplacementExpectation,
-        AlbumReplacementResult, AlbumUpload, BoxFuture, CachedAlbum, CachedTrack, ChatDelivery,
-        Delivery, DeliveryError, DumpMessageRef, DumpPublish, JobBookkeeping, JobBookkeepingError,
-        JobBookkeepingOperation, OrchestratorConfig, ProviderAccess, RequestLog, SaveTrackInput,
-        TrackCache, TrackCacheError, TrackCacheOperation,
+        AlbumReplacementResult, AlbumUpload, ArtworkProvider, BoxFuture, CachedAlbum, CachedTrack,
+        ChatDelivery, CollectionResolver, Delivery, DeliveryError, DumpMessageRef, DumpPublish,
+        OrchestratorConfig, ProviderDeps, ProviderPresentation, RequestLog, SaveTrackInput,
+        Storefront, TaskBookkeeping, TaskBookkeepingError, TaskBookkeepingOperation,
+        TrackAcquisition, TrackCache, TrackCacheError, TrackCacheOperation,
     },
-    ripper::RipperConfig,
+    ripper::{RipError, RipperConfig},
     settings::BotSettings,
-    types::TrackKey,
+    types::{AlbumTracks, ArtistTracks, TrackKey, TrackRipResult},
 };
 use lyrics::LyricsRegistry;
+use music::PlaylistData;
 
 use crate::{providers::ProviderRegistry, telegram_sink::FerogramTelegramSink};
 
@@ -87,14 +89,14 @@ fn album_cache_error(operation: AlbumCacheOperation, error: db::DbError) -> Albu
 }
 
 fn bookkeeping_error(
-    operation: JobBookkeepingOperation,
+    operation: TaskBookkeepingOperation,
     error: db::DbError,
-) -> JobBookkeepingError {
+) -> TaskBookkeepingError {
     let detail = error.to_string();
     if db_is_unavailable(&error) {
-        JobBookkeepingError::unavailable(operation, detail)
+        TaskBookkeepingError::unavailable(operation, detail)
     } else {
-        JobBookkeepingError::failed(operation, detail)
+        TaskBookkeepingError::failed(operation, detail)
     }
 }
 
@@ -148,13 +150,16 @@ impl RipDeps {
             );
         }
 
+        let default_storefront =
+            engine::settings::resolve_default_storefront(&settings.get_settings()).to_owned();
+
         Ok(Self {
             sink,
             albums,
             tracks,
             requests,
             settings,
-            providers: ProviderRegistry::new(apple, qobuz, ripper_config),
+            providers: ProviderRegistry::new(apple, qobuz, ripper_config, default_storefront),
             mirror_policy: probe_policy,
         })
     }
@@ -199,13 +204,108 @@ impl RipDeps {
     pub fn playlist(&self) -> &apple::PlaylistClient<apple::ReqwestPlaylistHttp> {
         self.providers.playlist()
     }
+
+    /// The Qobuz adapter, when the operator configured one. Used by the few
+    /// handlers that need a Qobuz capability the orchestrator does not expose.
+    pub fn qobuz(&self) -> Option<&qobuz::QobuzProduction> {
+        self.providers.qobuz()
+    }
 }
 
-impl ProviderAccess for RipDeps {
-    type Providers = ProviderRegistry;
+// The orchestrator reaches providers straight through these four traits, so
+// `RipDeps` simply lends out the registry it already holds.
+impl CollectionResolver for RipDeps {
+    async fn fetch_album_tracks(
+        &self,
+        provider: Provider,
+        id: &str,
+        storefront: Storefront<'_>,
+    ) -> Result<AlbumTracks, String> {
+        self.providers
+            .fetch_album_tracks(provider, id, storefront)
+            .await
+    }
 
-    fn providers(&self) -> &Self::Providers {
-        &self.providers
+    async fn fetch_artist_tracks(
+        &self,
+        provider: Provider,
+        id: &str,
+        storefront: Storefront<'_>,
+    ) -> Result<ArtistTracks, String> {
+        self.providers
+            .fetch_artist_tracks(provider, id, storefront)
+            .await
+    }
+
+    async fn fetch_artist_album_ids(
+        &self,
+        provider: Provider,
+        id: &str,
+        storefront: Storefront<'_>,
+    ) -> Result<Vec<String>, String> {
+        self.providers
+            .fetch_artist_album_ids(provider, id, storefront)
+            .await
+    }
+
+    async fn fetch_playlist_tracks(
+        &self,
+        provider: Provider,
+        id: &str,
+        storefront: Storefront<'_>,
+    ) -> Result<PlaylistData, String> {
+        self.providers
+            .fetch_playlist_tracks(provider, id, storefront)
+            .await
+    }
+}
+
+impl TrackAcquisition for RipDeps {
+    async fn rip(
+        &self,
+        track_id: &str,
+        options: engine::ripper::RipOptions<'_>,
+    ) -> Result<TrackRipResult, RipError> {
+        self.providers.rip(track_id, options).await
+    }
+}
+
+impl ArtworkProvider for RipDeps {
+    async fn fetch_artwork(&self, url: &str) -> Option<Vec<u8>> {
+        self.providers.fetch_artwork(url).await
+    }
+
+    fn artwork_url_at_size(&self, provider: Provider, url: &str, size: u16) -> String {
+        self.providers.artwork_url_at_size(provider, url, size)
+    }
+}
+
+impl ProviderPresentation for RipDeps {
+    fn default_job_header(&self) -> &str {
+        self.providers.default_job_header()
+    }
+
+    fn album_url(
+        &self,
+        provider: Provider,
+        album_id: &str,
+        storefront: Storefront<'_>,
+    ) -> Option<String> {
+        self.providers.album_url(provider, album_id, storefront)
+    }
+
+    fn unavailable_track_message(&self) -> &str {
+        self.providers.unavailable_track_message()
+    }
+
+    fn unavailable_track_log_message(&self) -> &str {
+        self.providers.unavailable_track_log_message()
+    }
+}
+
+impl ProviderDeps for RipDeps {
+    fn supports_provider(&self, provider: Provider) -> bool {
+        self.providers.supports_provider(provider)
     }
 }
 
@@ -339,7 +439,7 @@ impl AlbumCache for RipDeps {
     }
 }
 
-impl JobBookkeeping for RipDeps {
+impl TaskBookkeeping for RipDeps {
     fn settings_snapshot(&self) -> BotSettings {
         self.settings.get_settings()
     }
@@ -347,12 +447,12 @@ impl JobBookkeeping for RipDeps {
     fn log_request<'a>(
         &'a self,
         log: RequestLog,
-    ) -> BoxFuture<'a, Result<(), JobBookkeepingError>> {
+    ) -> BoxFuture<'a, Result<(), TaskBookkeepingError>> {
         Box::pin(async move {
             self.requests
                 .log_request(&log)
                 .await
-                .map_err(|error| bookkeeping_error(JobBookkeepingOperation::LogRequest, error))
+                .map_err(|error| bookkeeping_error(TaskBookkeepingOperation::LogRequest, error))
         })
     }
 }

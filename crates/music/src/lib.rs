@@ -1,11 +1,16 @@
 //! Provider-neutral music domain types shared by catalog, persistence, and engine.
 //!
 //! These values form the stable contract between provider adapters and the
-//! application layers.
+//! application layers. It is also the lowest-level crate in the workspace, so
+//! it hosts cross-cutting helpers (see [`url`] and [`time`]) that every other
+//! crate can depend on without pulling in a provider adapter or the engine.
 
 #[cfg(feature = "diesel")]
 use diesel::{deserialize::FromSql, pg::Pg, serialize::ToSql};
 use serde::{Deserialize, Serialize};
+
+pub mod time;
+pub mod url;
 
 /// A catalog/cache provider supported by the bot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -4,7 +4,6 @@ use std::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use engine::{
@@ -17,6 +16,7 @@ use ferogram::{
     keyboard::{Button, InlineKeyboard},
     update::{CallbackQuery, IncomingMessage},
 };
+use music::time::now_ms;
 use regex::Regex;
 
 use crate::{
@@ -26,7 +26,7 @@ use crate::{
 };
 
 const USER_RATE_LIMIT_MAX: usize = 5;
-const USER_RATE_LIMIT_WINDOW_MS: u128 = 3_600_000;
+const USER_RATE_LIMIT_WINDOW_MS: u64 = 3_600_000;
 
 #[derive(Debug, Clone)]
 pub struct TrackReport {
@@ -57,16 +57,13 @@ fn report_state() -> &'static Mutex<ReportState> {
 }
 
 /// Checks and records a report in the sliding one-hour window.
-pub fn check_user_rate_limit(state: &mut ReportState, user_id: i64, now_ms: u128) -> bool {
+pub fn check_user_rate_limit(state: &mut ReportState, user_id: i64, now_ms: u64) -> bool {
     let timestamps = state.user_timestamps.entry(user_id).or_default();
-    let now = now_ms.min(u128::from(u64::MAX)) as u64;
-    timestamps.retain(|timestamp| {
-        now_ms.saturating_sub(u128::from(*timestamp)) < USER_RATE_LIMIT_WINDOW_MS
-    });
+    timestamps.retain(|timestamp| now_ms.saturating_sub(*timestamp) < USER_RATE_LIMIT_WINDOW_MS);
     if timestamps.len() >= USER_RATE_LIMIT_MAX {
         return false;
     }
-    timestamps.push(now);
+    timestamps.push(now_ms);
     true
 }
 
@@ -93,18 +90,11 @@ pub fn clean_dump_id(id: i64) -> String {
     value.strip_prefix("100").unwrap_or(&value).to_owned()
 }
 
-fn now_ms() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-}
-
 fn random_report_id() -> String {
     // Report ids are eight opaque lowercase base-36 characters.
     // A timestamp and process-local counter give the same shape without
     // adding a random dependency.
-    let value = now_ms() as u64 ^ REPORT_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let value = now_ms() ^ REPORT_COUNTER.fetch_add(1, Ordering::Relaxed);
     let mut value = value;
     let mut result = String::with_capacity(8);
     for _ in 0..8 {
@@ -721,7 +711,7 @@ async fn admin_callback(state: Arc<BotState>, query: CallbackQuery, action: Repo
                 PeerRef::from(marked_chat),
             )
             .await;
-            let options = engine::orchestrator::types::RipJobOptions {
+            let options = engine::orchestrator::types::RipTaskOptions {
                 provider: engine::Provider::Apple,
                 chat_id: marked_chat,
                 user_id: query.user_id,
@@ -737,14 +727,13 @@ async fn admin_callback(state: Arc<BotState>, query: CallbackQuery, action: Repo
                     storefront: None,
                 }],
                 reply_to_message_id: None,
-                status_msg_id: 0,
                 is_admin: true,
                 codec_preference: None,
                 rendition_policy: engine::orchestrator::types::RenditionPolicy::PrimaryOnly,
             };
             match state
                 .rip_orchestrator
-                .start_job(Arc::clone(&state.rip_deps), &options)
+                .start_task(Arc::clone(&state.rip_deps), &options)
                 .await
             {
                 Ok(_) => {

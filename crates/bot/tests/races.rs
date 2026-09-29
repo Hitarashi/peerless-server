@@ -17,12 +17,12 @@ use engine::{
             AlbumCache, AlbumCacheError, AlbumReplacementExpectation, AlbumReplacementResult,
             AlbumUpload, ArtworkProvider, BoxFuture, CachedAlbum, CachedTrack, ChatDelivery,
             CollectionResolver, Delivery, DeliveryError, DeliveryReceipt, DumpMessageRef,
-            DumpPublication, DumpPublish, JobBookkeeping, JobBookkeepingError, OrchestratorConfig,
-            ProviderAccess, ProviderComposition, ProviderPresentation, RequestLog, SaveTrackInput,
-            StorageRetryPolicy, TrackAcquisition, TrackCache, TrackCacheError,
+            DumpPublication, DumpPublish, OrchestratorConfig, ProviderDeps, ProviderPresentation,
+            RequestLog, SaveTrackInput, StorageRetryPolicy, Storefront, TaskBookkeeping,
+            TaskBookkeepingError, TrackAcquisition, TrackCache, TrackCacheError,
             UploadProgressCallback,
         },
-        types::{JobPhase, OrchestratorEvent, RipJobOptions},
+        types::{OrchestratorEvent, RipTaskOptions, TaskPhase},
     },
     settings::BotSettings,
     types::{AlbumTracks, ArtistTracks, ParsedTargetItem, Provider, TargetKind, TrackKey},
@@ -36,7 +36,13 @@ impl ProviderPresentation for RacePresentation {
         "Lossless Rip"
     }
 
-    fn album_url(&self, album_id: &str, storefront: &str) -> Option<String> {
+    fn album_url(
+        &self,
+        _provider: Provider,
+        album_id: &str,
+        storefront: Storefront<'_>,
+    ) -> Option<String> {
+        let storefront = storefront.get().unwrap_or_default();
         (!album_id.is_empty()).then(|| format!("{storefront}/album/{album_id}"))
     }
 
@@ -55,14 +61,6 @@ struct RaceDeps {
     settings: BotSettings,
     rip_hold: Arc<tokio::sync::Mutex<bool>>,
     rip_calls: Arc<AtomicUsize>,
-}
-
-impl ProviderAccess for RaceDeps {
-    type Providers = Self;
-
-    fn providers(&self) -> &Self::Providers {
-        self
-    }
 }
 
 impl TrackCache for RaceDeps {
@@ -91,7 +89,7 @@ impl TrackCache for RaceDeps {
     }
 }
 
-impl JobBookkeeping for RaceDeps {
+impl TaskBookkeeping for RaceDeps {
     fn settings_snapshot(&self) -> BotSettings {
         self.settings.clone()
     }
@@ -99,7 +97,7 @@ impl JobBookkeeping for RaceDeps {
     fn log_request<'a>(
         &'a self,
         log: RequestLog,
-    ) -> BoxFuture<'a, Result<(), JobBookkeepingError>> {
+    ) -> BoxFuture<'a, Result<(), TaskBookkeepingError>> {
         let _ = log;
         Box::pin(async { Ok(()) })
     }
@@ -181,24 +179,31 @@ impl Delivery for RaceDeps {
 }
 
 impl CollectionResolver for RaceDeps {
-    async fn fetch_album_tracks(&self, id: &str, storefront: &str) -> Result<AlbumTracks, String> {
-        let _ = (id, storefront);
+    async fn fetch_album_tracks(
+        &self,
+        _provider: Provider,
+        id: &str,
+        _storefront: Storefront<'_>,
+    ) -> Result<AlbumTracks, String> {
+        let _ = id;
         Err("no albums".to_owned())
     }
     async fn fetch_artist_tracks(
         &self,
+        _provider: Provider,
         id: &str,
-        storefront: &str,
+        _storefront: Storefront<'_>,
     ) -> Result<ArtistTracks, String> {
-        let _ = (id, storefront);
+        let _ = id;
         Err("no artists".to_owned())
     }
     async fn fetch_playlist_tracks(
         &self,
+        _provider: Provider,
         id: &str,
-        storefront: &str,
+        _storefront: Storefront<'_>,
     ) -> Result<PlaylistData, String> {
-        let _ = (id, storefront);
+        let _ = id;
         Err("Playlist lookup timed out after 1ms: no playlists".to_owned())
     }
 }
@@ -231,42 +236,43 @@ impl ArtworkProvider for RaceDeps {
         None
     }
 
-    fn artwork_url_at_size(&self, url: &str, size: u16) -> String {
+    fn artwork_url_at_size(&self, _provider: Provider, url: &str, size: u16) -> String {
         let _ = size;
         url.to_owned()
     }
 }
 
-impl ProviderComposition for RaceDeps {
-    type Collections = Self;
-    type Acquisition = Self;
-    type Artwork = Self;
-    type Presentation = RacePresentation;
-
-    fn provider(&self) -> Provider {
-        Provider::Apple
+impl ProviderPresentation for RaceDeps {
+    fn default_job_header(&self) -> &str {
+        RacePresentation.default_job_header()
     }
 
-    fn collections(&self) -> &Self::Collections {
-        self
+    fn album_url(
+        &self,
+        provider: Provider,
+        album_id: &str,
+        storefront: Storefront<'_>,
+    ) -> Option<String> {
+        RacePresentation.album_url(provider, album_id, storefront)
     }
 
-    fn acquisition(&self) -> &Self::Acquisition {
-        self
+    fn unavailable_track_message(&self) -> &str {
+        RacePresentation.unavailable_track_message()
     }
 
-    fn artwork(&self) -> &Self::Artwork {
-        self
-    }
-
-    fn presentation(&self) -> &Self::Presentation {
-        static PRESENTATION: RacePresentation = RacePresentation;
-        &PRESENTATION
+    fn unavailable_track_log_message(&self) -> &str {
+        RacePresentation.unavailable_track_log_message()
     }
 }
 
-fn race_options() -> RipJobOptions {
-    RipJobOptions {
+impl ProviderDeps for RaceDeps {
+    fn supports_provider(&self, provider: Provider) -> bool {
+        provider == Provider::Apple
+    }
+}
+
+fn race_options() -> RipTaskOptions {
+    RipTaskOptions {
         provider: engine::Provider::Apple,
         chat_id: 100,
         user_id: 42,
@@ -282,7 +288,6 @@ fn race_options() -> RipJobOptions {
             storefront: None,
         }],
         reply_to_message_id: Some(555),
-        status_msg_id: 999,
         is_admin: true,
         codec_preference: None,
         rendition_policy: engine::orchestrator::types::RenditionPolicy::PrimaryWithOptionalAtmos,
@@ -308,12 +313,12 @@ fn terminal_recorder(orch: &RipOrchestrator) -> Arc<Mutex<Vec<(&'static str, Str
 /// Wait until the job reaches the given phase.
 async fn wait_for_phase(
     orch: &RipOrchestrator,
-    phase: JobPhase,
-) -> engine::orchestrator::types::ActiveRipJob {
+    phase: TaskPhase,
+) -> engine::orchestrator::types::ActiveRipTask {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     loop {
         if let Some(job) = orch
-            .get_active_jobs()
+            .get_active_tasks()
             .into_iter()
             .find(|job| job.phase == phase)
         {
@@ -344,10 +349,10 @@ async fn cancel_during_active_rip_emits_exactly_one_cancelled_terminal() {
     let run_orch = Arc::clone(&orch);
     let run_deps = Arc::clone(&deps);
     let options = race_options();
-    let task = tokio::spawn(async move { run_orch.start_job(run_deps, &options).await });
+    let task = tokio::spawn(async move { run_orch.start_task(run_deps, &options).await });
 
-    let job = wait_for_phase(&orch, JobPhase::Processing).await;
-    assert!(orch.cancel_job(&job.id, Some("tester")));
+    let job = wait_for_phase(&orch, TaskPhase::Processing).await;
+    assert!(orch.cancel_task(&job.id, Some("tester")));
     // Let the held rip settle AFTER the cancellation — the race condition.
     // The queued task's result is intentionally not asserted: the terminal
     // event stream is the contract under test.
@@ -359,7 +364,7 @@ async fn cancel_during_active_rip_emits_exactly_one_cancelled_terminal() {
     let terminals = terminals.lock().unwrap();
     assert_eq!(terminals.len(), 1, "exactly one terminal event");
     assert_eq!(terminals[0].0, "cancelled");
-    assert!(orch.get_active_jobs().is_empty(), "job removed");
+    assert!(orch.get_active_tasks().is_empty(), "job removed");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -379,7 +384,7 @@ async fn settled_failed_job_is_no_longer_cancellable() {
     let run_orch = Arc::clone(&orch);
     let run_deps = Arc::clone(&deps);
     let options = race_options();
-    let task = tokio::spawn(async move { run_orch.start_job(run_deps, &options).await });
+    let task = tokio::spawn(async move { run_orch.start_task(run_deps, &options).await });
     let result = task.await.unwrap();
 
     // The fake rip fails with a mirror-offline error, which this port records
@@ -393,7 +398,7 @@ async fn settled_failed_job_is_no_longer_cancellable() {
     // Only the single failed track is recorded.
     assert_eq!(result.as_ref().unwrap().failed_count, 1);
     // Late cancel is a no-op on a settled job.
-    assert!(!orch.cancel_job(&terminals[0].1, Some("late")));
+    assert!(!orch.cancel_task(&terminals[0].1, Some("late")));
 }
 
 /// The event bridge skips progress edits while total_tracks == 0 (the
@@ -401,7 +406,7 @@ async fn settled_failed_job_is_no_longer_cancellable() {
 /// known). This pins the guard's field shape.
 #[test]
 fn unresolved_progress_has_zero_total_tracks() {
-    let progress = engine::orchestrator::types::RipJobProgress {
+    let progress = engine::orchestrator::types::RipTaskProgress {
         job_id: "j".to_owned(),
         total_tracks: 0,
         completed_tracks: 0,
