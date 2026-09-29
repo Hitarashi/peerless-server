@@ -403,6 +403,7 @@ async fn test_auth_lifecycle() {
 
     let admin_id = 888_000_123;
     let _ = db::integrations::delete_integration(&pool, admin_id, "lastfm").await;
+    let _ = db::integrations::delete_integration(&pool, admin_id, "listenbrainz").await;
     let worker_pool = stream::StreamWorkerPool::empty();
     let stream_engine = Arc::new(stream::StreamEngine::new(
         worker_pool,
@@ -482,7 +483,8 @@ async fn test_auth_lifecycle() {
     assert_eq!(refresh_res["expires_in"], 259200);
     assert!(refresh_res["expires_at_unix"].as_i64().is_some());
 
-    // 2c. Test authorized GET /api/v1/tracks/1/playback - forbidden without Last.fm connection
+    // 2c. Test authorized GET /api/v1/tracks/1/playback - streaming needs BOTH a Last.fm and a
+    // ListenBrainz account, so a user with neither connection is forbidden and told about both.
     let req = Request::builder()
         .uri("/api/v1/tracks/1/playback")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -490,6 +492,15 @@ async fn test_auth_lifecycle() {
         .unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let forbidden_res: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let forbidden_msg = forbidden_res["message"].as_str().unwrap();
+    assert!(
+        forbidden_msg.contains("Last.fm") && forbidden_msg.contains("ListenBrainz"),
+        "with neither account connected the message must name both providers, got {forbidden_msg:?}"
+    );
 
     // Save Last.fm integration for admin
     let cipher = db::crypto::CryptoCipher::new(app_key).unwrap();
@@ -498,13 +509,77 @@ async fn test_auth_lifecycle() {
         .await
         .unwrap();
 
-    // With Last.fm connected, playback succeeds
+    // Only Last.fm connected: still forbidden, and the message names ListenBrainz alone
     let req = Request::builder()
         .uri("/api/v1/tracks/1/playback")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let forbidden_res: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let forbidden_msg = forbidden_res["message"].as_str().unwrap();
+    assert!(
+        forbidden_msg.contains("ListenBrainz"),
+        "with only Last.fm connected the message must name ListenBrainz, got {forbidden_msg:?}"
+    );
+    assert!(
+        !forbidden_msg.contains("Last.fm"),
+        "with only Last.fm connected the message must not name the connected provider, got {forbidden_msg:?}"
+    );
+
+    // Connect ListenBrainz, then remove Last.fm again to reach the mirror case
+    let lb_enc_key = cipher.encrypt("test_lb_token_abc_123").unwrap();
+    db::integrations::save_integration(
+        &pool,
+        admin_id,
+        "listenbrainz",
+        "test_lb_user",
+        &lb_enc_key,
+    )
+    .await
+    .unwrap();
+    db::integrations::delete_integration(&pool, admin_id, "lastfm")
+        .await
+        .unwrap();
+
+    // Only ListenBrainz connected: still forbidden, and the message names Last.fm alone
+    let req = Request::builder()
+        .uri("/api/v1/tracks/1/playback")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let forbidden_res: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let forbidden_msg = forbidden_res["message"].as_str().unwrap();
+    assert!(
+        forbidden_msg.contains("Last.fm"),
+        "with only ListenBrainz connected the message must name Last.fm, got {forbidden_msg:?}"
+    );
+    assert!(
+        !forbidden_msg.contains("ListenBrainz"),
+        "with only ListenBrainz connected the message must not name the connected provider, got {forbidden_msg:?}"
+    );
+
+    // Reconnect Last.fm: with both accounts connected playback is no longer forbidden
+    db::integrations::save_integration(&pool, admin_id, "lastfm", "testuser", &enc_key)
+        .await
+        .unwrap();
+
+    let req = Request::builder()
+        .uri("/api/v1/tracks/1/playback")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_ne!(res.status(), StatusCode::FORBIDDEN);
     assert_eq!(res.status(), StatusCode::OK);
     let body = axum::body::to_bytes(res.into_body(), usize::MAX)
         .await
@@ -560,7 +635,7 @@ async fn test_auth_lifecycle() {
     assert_eq!(status_res["connected"], false);
     assert!(status_res["session_key"].is_null());
 
-    // Playback is forbidden again after disconnect
+    // Playback is forbidden again after disconnect, naming the now-missing Last.fm account
     let req = Request::builder()
         .uri("/api/v1/tracks/1/playback")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -568,8 +643,17 @@ async fn test_auth_lifecycle() {
         .unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let forbidden_res: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let forbidden_msg = forbidden_res["message"].as_str().unwrap();
+    assert!(
+        forbidden_msg.contains("Last.fm") && !forbidden_msg.contains("ListenBrainz"),
+        "after disconnecting Last.fm only ListenBrainz remains, so only Last.fm should be named, got {forbidden_msg:?}"
+    );
 
-    // Restore integration for any downstream test steps
+    // Restore both integrations for any downstream test steps
     db::integrations::save_integration(&pool, admin_id, "lastfm", "testuser", &enc_key)
         .await
         .unwrap();
@@ -606,6 +690,12 @@ async fn test_auth_lifecycle() {
     let me_res: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(me_res["user"]["telegram_id"], admin_id);
     assert!(!me_res["sessions"].as_array().unwrap().is_empty());
+
+    // Drop the ListenBrainz row created for the streaming-gate coverage above so the
+    // connect/disconnect lifecycle below starts from a disconnected state again.
+    db::integrations::delete_integration(&pool, admin_id, "listenbrainz")
+        .await
+        .unwrap();
 
     let req = Request::builder()
         .uri("/api/v1/integrations/listenbrainz/status")
@@ -682,6 +772,7 @@ async fn test_auth_lifecycle() {
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     let _ = db::integrations::delete_integration(&pool, admin_id, "lastfm").await;
+    let _ = db::integrations::delete_integration(&pool, admin_id, "listenbrainz").await;
 }
 
 #[tokio::test]

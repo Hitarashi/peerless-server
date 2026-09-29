@@ -124,9 +124,13 @@ pub async fn establish(database_url: &str) -> Result<AsyncPgConnection, diesel::
         let _ = rustls::crypto::ring::default_provider().install_default();
 
         // `with_platform_verifier` is what diesel_async's own rustls examples
-        // use, and reads the OS trust store.
+        // use, and reads the OS trust store. It is fallible as of
+        // rustls-platform-verifier 0.7 (the per-platform constructors became
+        // `Result`), so map its error into the same connection error the
+        // `connect` call below already uses.
         let tls = tokio_postgres_rustls::MakeRustlsConnect::new(
-            rustls::ClientConfig::with_platform_verifier(),
+            rustls::ClientConfig::with_platform_verifier()
+                .map_err(|e| diesel::ConnectionError::BadConnection(e.to_string()))?,
         );
         let (client, connection) = config
             .connect(tls)

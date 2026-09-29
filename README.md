@@ -223,7 +223,7 @@ again.
 
 ## Prerequisites
 
-- [Rust](https://rustup.rs) (stable 1.85+ toolchain; Rust 2024 edition)
+- [Rust](https://rustup.rs) (stable 1.88+ toolchain; Rust 2024 edition)
 - [just](https://github.com/casey/just) (command task runner)
 - [PostgreSQL](https://www.postgresql.org/) (with `pg_trgm` extension)
 - **Telegram API Credentials**: `API_ID` & `API_HASH` from [my.telegram.org](https://my.telegram.org)

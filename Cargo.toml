@@ -31,7 +31,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 # platform verifier names the crypto provider explicitly (this dependency tree
 # enables more than one, so ClientConfig::builder() panics) and reads the OS
 # trust store.
-rustls-platform-verifier = "0.5"
+rustls-platform-verifier = "0.7"
 tokio = { version = "1", features = ["full"] }
 bytes = "1"
 tokio-util = "0.7"
@@ -65,7 +65,7 @@ realfft = "3"
 png = "0.18"
 mp4ameta = "0.13"
 metaflac = "0.2"
-id3 = "1.17"
+id3 = "1"
 font8x8 = "0.3"
 temari = { git = "https://github.com/WorldObservationLog/Temari" }
 moka = { version = "0.12", features = ["future", "sync"] }
@@ -74,10 +74,10 @@ aes-gcm = "0.11"
 axum = { version = "0.8", features = ["ws"] }
 tower = "0.5"
 tower-http = { version = "0.7", features = ["trace"] }
-utoipa = { version = "5", features = ["axum_extras", "chrono", "yaml"] }
+utoipa = { version = "6", features = ["axum_extras", "chrono", "yaml"] }
 hmac = "0.13"
 ytmusic = { git = "https://github.com/sonorahq/ytmusic-rs", rev = "e0a5174" }
-lyrics-helper = { version = "0.4.0", default-features = false }
+lyrics-helper = { version = "0.5", default-features = false }
 
 
 
