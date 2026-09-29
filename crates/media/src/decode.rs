@@ -87,12 +87,18 @@ pub(super) fn decode_sync(
                 .and_then(|base| base.calc_duration(duration))
         })
         .map(|time| time.as_secs_f64())
-        .unwrap_or_else(|| {
+        .filter(|secs| *secs > 0.0)
+        .or_else(|| {
             track
                 .num_frames
                 .map(|frames| frames as f64 / sample_rate as f64)
-                .unwrap_or(0.0)
-        });
+                .filter(|secs| *secs > 0.0)
+        })
+        // A fragmented MP4 (what Apple's HLS delivers) has no `mvhd` duration,
+        // so symphonia reports neither `duration` nor `num_frames` and both
+        // fallbacks above yield 0. Recover it from the fragments themselves.
+        .or_else(|| crate::fragmented::fragmented_duration_secs(source))
+        .unwrap_or(0.0);
     let codec = codec_name(params.codec);
     let track_id = track.id;
     let decoder = symphonia::default::get_codecs()

@@ -12,8 +12,11 @@ use tokio::{sync::Semaphore, task::spawn_blocking};
 use tokio_util::sync::CancellationToken;
 
 mod decode;
+mod fragmented;
 mod spectrogram;
 mod tags;
+
+pub use fragmented::stamp_fragmented_duration;
 
 static MEDIA_SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
 

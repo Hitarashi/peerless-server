@@ -17,7 +17,7 @@ use engine::{
 };
 use music::CodecPreference;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use super::{
     client::{WrapperError, WrapperLiteClient, WrapperUnavailableReason},
@@ -534,8 +534,8 @@ impl WrapperEngine {
             output.extend_from_slice(&frag);
         }
 
-        let progressive = defragment_m4a_container(&output, track_id)?;
-        let total_size = progressive.len() as u64;
+        let stamped = stamp_fragment_duration(&mut output, track_id);
+        let total_size = output.len() as u64;
         // Diagnostics: the size of the assembled stream, how it compares to the
         // source and to the sum of the playlist's declared segment ranges. A
         // mismatch here is the earliest signal that assembly dropped or
@@ -552,10 +552,11 @@ impl WrapperEngine {
                 .sum::<u64>(),
             init_bytes = transformed_init.len(),
             final_bytes = total_size,
+            duration_secs = stamped,
             "apple stream assembly sizes"
         );
         let stream = Box::pin(futures_util::stream::once(async move {
-            Ok(Bytes::from(progressive))
+            Ok(Bytes::from(output))
         }));
 
         Ok(AudioStreamSource {
@@ -657,9 +658,8 @@ impl WrapperEngine {
             output.extend_from_slice(&decrypted_frag);
         }
 
-        // Re-mux / defragment to standard progressive M4A container
-        let progressive = defragment_m4a_container(&output, track_id)?;
-        Ok(progressive)
+        let _ = stamp_fragment_duration(&mut output, track_id);
+        Ok(output)
     }
 
     async fn decrypt_multi_segment_stream(
@@ -727,8 +727,8 @@ impl WrapperEngine {
             output.extend_from_slice(&dec);
         }
 
-        let progressive = defragment_m4a_container(&output, track_id)?;
-        Ok(progressive)
+        let _ = stamp_fragment_duration(&mut output, track_id);
+        Ok(output)
     }
 }
 
@@ -746,67 +746,37 @@ fn looks_like_master_playlist(text: &str) -> bool {
     head.starts_with("#EXTM3U") && text.contains("#EXT-X-STREAM-INF")
 }
 
-/// Helper to ensure the decrypted fMP4 is finalized into a standard progressive M4A container.
-/// Uses MP4Box or ffmpeg if present for zero-loss, rapid container defragmentation;
-/// falls back to the decrypted fMP4 directly if external remuxer is absent.
-fn defragment_m4a_container(fmp4_data: &[u8], track_id: &str) -> Result<Vec<u8>, StreamError> {
-    use std::process::Command;
-
-    let temp_dir = std::env::temp_dir();
-    let unique_id = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-
-    let in_path = temp_dir.join(format!("raw_fmp4_{}_{}.m4a", track_id, unique_id));
-    let out_path = temp_dir.join(format!("clean_m4a_{}_{}.m4a", track_id, unique_id));
-
-    if let Err(e) = std::fs::write(&in_path, fmp4_data) {
-        warn!(error = %e, "Failed to write temp fmp4, returning raw decrypted bytes");
-        return Ok(fmp4_data.to_vec());
+/// Give the assembled stream a real duration, in place.
+///
+/// Apple's HLS output is a *fragmented* MP4: an initial `moov` followed by
+/// many `moof`/`mdat` pairs. A fragmented container carries no duration — the
+/// `mvhd` and `mdhd` fields are present but zero — so every reader reports a
+/// track of length zero, and the rip pipeline rejects it as having no duration
+/// even though the audio is perfect.
+///
+/// This used to shell out to MP4Box or ffmpeg to remux, and fell back to
+/// returning the fragmented bytes untouched when neither was installed. That
+/// fallback was silent at `debug` level and is what made this failure so hard
+/// to see: the pipeline produced a file it could not itself read. Recovering
+/// the duration from the fragments is exact, needs no external binary, and
+/// fixes the container header rather than papering over it.
+fn stamp_fragment_duration(assembled: &mut [u8], track_id: &str) -> Option<f64> {
+    match media::stamp_fragmented_duration(assembled) {
+        Some(duration) => {
+            debug!(
+                track_id,
+                duration_secs = duration,
+                "recovered fragmented MP4 duration"
+            );
+            Some(duration)
+        }
+        None => {
+            debug!(
+                track_id,
+                bytes = assembled.len(),
+                "stream carries no fragment metadata; leaving duration as-is"
+            );
+            None
+        }
     }
-
-    // Try MP4Box first (exact tool used by apple-music-downloader)
-    let mp4box_status = Command::new("MP4Box")
-        .args([
-            "-inter",
-            "500",
-            in_path.to_str().unwrap_or(""),
-            "-out",
-            out_path.to_str().unwrap_or(""),
-        ])
-        .output();
-
-    let success = match mp4box_status {
-        Ok(output) if output.status.success() && out_path.exists() => true,
-        _ => {
-            // Fallback to ffmpeg stream copy
-            let ffmpeg_status = Command::new("ffmpeg")
-                .args([
-                    "-y",
-                    "-i",
-                    in_path.to_str().unwrap_or(""),
-                    "-c",
-                    "copy",
-                    out_path.to_str().unwrap_or(""),
-                ])
-                .output();
-            matches!(ffmpeg_status, Ok(output) if output.status.success() && out_path.exists())
-        }
-    };
-
-    let result = if success {
-        match std::fs::read(&out_path) {
-            Ok(bytes) => bytes,
-            Err(_) => fmp4_data.to_vec(),
-        }
-    } else {
-        debug!("Remux command not available or failed, returning direct decrypted fmp4");
-        fmp4_data.to_vec()
-    };
-
-    let _ = std::fs::remove_file(&in_path);
-    let _ = std::fs::remove_file(&out_path);
-
-    Ok(result)
 }

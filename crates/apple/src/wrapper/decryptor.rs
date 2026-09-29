@@ -701,8 +701,8 @@ pub fn decrypt_fragment(
 
 /// Rebuild `trun` boxes that omit per-sample fields (sizes from tfhd
 /// defaults) into standard truns with explicit per-sample duration and
-/// size (flags 0x301). MP4Box/ffmpeg cannot resolve size-less truns,
-/// so the decrypted fragment would demux as ~9 packets without this.
+/// size (flags 0x301). A size-less trun leaves the reader with nothing to
+/// walk, so the decrypted fragment would demux as ~9 packets without this.
 pub fn normalize_fragment(fragment: &mut Vec<u8>) {
     let total_len = fragment.len();
     let Some((moof_off, moof_len)) = find_child_box(fragment, 0, total_len, b"moof") else {
@@ -768,9 +768,9 @@ pub fn normalize_fragment(fragment: &mut Vec<u8>) {
             };
             let flags = read_u24_be(&fragment[cur + 9..cur + 12]);
             let needs_size = flags & 0x000200 == 0;
-            // Only rebuild size-less truns: remuxers fail on missing sizes,
-            // but duration-less truns with explicit sizes (ALAC VBR) are
-            // already resolvable via tfhd defaults by MP4Box/ffmpeg.
+            // Only rebuild size-less truns: a reader needs sizes to walk the
+            // samples, but a duration-less trun that does carry sizes
+            // (ALAC VBR) already resolves through the tfhd defaults.
             if needs_size && !trun.sample_sizes.iter().all(|&s| s == 0) {
                 // Rebuild with explicit duration + size per sample.
                 let count = trun.sample_count;
