@@ -133,6 +133,111 @@ pub fn find_all_child_boxes(
     res
 }
 
+/// Read the fixed-point sample rate from an audio sample entry in an MP4 init
+/// segment. This is useful for HLS audio renditions whose master playlist omits
+/// `SAMPLE-RATE` even though the init segment carries the exact value.
+pub fn audio_sample_rate(init_data: &[u8]) -> Option<u32> {
+    let (moov_off, moov_len) = find_child_box(init_data, 0, init_data.len(), b"moov")?;
+    for (trak_off, trak_len) in
+        find_all_child_boxes(init_data, moov_off + 8, moov_off + moov_len, b"trak")
+    {
+        let Some((mdia_off, mdia_len)) =
+            find_child_box(init_data, trak_off + 8, trak_off + trak_len, b"mdia")
+        else {
+            continue;
+        };
+        let Some((hdlr_off, hdlr_len)) =
+            find_child_box(init_data, mdia_off + 8, mdia_off + mdia_len, b"hdlr")
+        else {
+            continue;
+        };
+        if hdlr_len < 20 || &init_data[hdlr_off + 16..hdlr_off + 20] != b"soun" {
+            continue;
+        }
+        let (minf_off, minf_len) =
+            find_child_box(init_data, mdia_off + 8, mdia_off + mdia_len, b"minf")?;
+        let (stbl_off, stbl_len) =
+            find_child_box(init_data, minf_off + 8, minf_off + minf_len, b"stbl")?;
+        let (stsd_off, stsd_len) =
+            find_child_box(init_data, stbl_off + 8, stbl_off + stbl_len, b"stsd")?;
+        if stsd_len < 16 {
+            return None;
+        }
+        let entry_start = stsd_off + 16;
+        let (entry_len, _, _) = read_box_header(init_data, entry_start)?;
+        if entry_len < 36 || entry_start + 36 > init_data.len() {
+            return None;
+        }
+        let fixed_rate = read_u32_be(&init_data[entry_start + 32..entry_start + 36]);
+        let sample_rate = fixed_rate >> 16;
+        return (sample_rate > 0).then_some(sample_rate);
+    }
+    None
+}
+
+/// Move every fragmented track decode timestamp so the first audio fragment
+/// starts at zero. Apple video audio renditions can retain the parent video's
+/// timeline offset; that offset should not become leading silence in an audio
+/// file assembled from the rendition.
+pub fn normalize_fragment_start_time(data: &mut [u8]) -> bool {
+    let mut fields = Vec::new();
+    let mut offset = 0usize;
+    while offset + 8 <= data.len() {
+        let Some((box_len, box_type, _)) = read_box_header(data, offset) else {
+            return false;
+        };
+        if box_len < 8 || offset + box_len > data.len() {
+            return false;
+        }
+        if &box_type == b"moof" {
+            for (traf_off, traf_len) in
+                find_all_child_boxes(data, offset + 8, offset + box_len, b"traf")
+            {
+                let Some((tfdt_off, tfdt_len)) =
+                    find_child_box(data, traf_off + 8, traf_off + traf_len, b"tfdt")
+                else {
+                    continue;
+                };
+                let Some(&version) = data.get(tfdt_off + 8) else {
+                    return false;
+                };
+                match version {
+                    0 if tfdt_len >= 16 => {
+                        let value = u64::from(read_u32_be(&data[tfdt_off + 12..tfdt_off + 16]));
+                        fields.push((tfdt_off + 12, version, value));
+                    }
+                    1 if tfdt_len >= 20 => {
+                        let value = u64::from_be_bytes(
+                            data[tfdt_off + 12..tfdt_off + 20].try_into().ok().unwrap(),
+                        );
+                        fields.push((tfdt_off + 12, version, value));
+                    }
+                    _ => return false,
+                }
+            }
+        }
+        offset += box_len;
+    }
+    let Some(first_time) = fields.iter().map(|(_, _, value)| *value).min() else {
+        return false;
+    };
+    if first_time == 0 {
+        return false;
+    }
+    for (field_offset, version, value) in fields {
+        let normalized = value - first_time;
+        if version == 0 {
+            let Ok(normalized) = u32::try_from(normalized) else {
+                return false;
+            };
+            data[field_offset..field_offset + 4].copy_from_slice(&normalized.to_be_bytes());
+        } else {
+            data[field_offset..field_offset + 8].copy_from_slice(&normalized.to_be_bytes());
+        }
+    }
+    true
+}
+
 /// Transforms the init segment (`ftyp` and `moov` boxes).
 /// Changes sample entry `enca` to `alac`, strips `sinf`, strips `sbgp`/`sgpd` if seam/seig,
 /// and updates box lengths.

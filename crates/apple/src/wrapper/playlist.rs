@@ -1,4 +1,4 @@
-//! HLS M3U8 playlist parsing for Apple Music ALAC streams.
+//! HLS M3U8 playlist parsing for Apple Music audio streams.
 
 use music::CodecPreference;
 
@@ -150,13 +150,65 @@ pub fn parse_master_playlist(
     }
 
     validate_media_numeric_attributes(content)?;
-    let variants = collect_variants(content, master_url)?;
+    let mut variants = collect_variants(content, master_url)?;
+    variants.extend(collect_audio_renditions(content, master_url)?);
     if variants.is_empty() {
         return Err(WrapperError::Message(
             "Master playlist contains no stream variants".into(),
         ));
     }
     select_variant(&variants, preference, content)
+}
+
+/// Collect standalone AAC/Atmos audio groups. Video masters advertise their
+/// audio as `#EXT-X-MEDIA` entries while the `#EXT-X-STREAM-INF` URI points to
+/// a video playlist, so selecting the stream variant would download video.
+fn collect_audio_renditions(
+    content: &str,
+    master_url: &str,
+) -> Result<Vec<StreamVariant>, WrapperError> {
+    let mut renditions = Vec::new();
+    for line in content.lines() {
+        let Some(attrs) = line.trim().strip_prefix("#EXT-X-MEDIA:") else {
+            continue;
+        };
+        let mut media_type = None;
+        let mut group_id = None;
+        let mut uri = None;
+        for part in split_attributes(attrs)? {
+            let (key, value) = part.split_once('=').expect("validated attribute component");
+            let value = value.trim().trim_matches('"');
+            match key.trim() {
+                "TYPE" => media_type = Some(value),
+                "GROUP-ID" => group_id = Some(value),
+                "URI" => uri = Some(value),
+                _ => {}
+            }
+        }
+        if media_type != Some("AUDIO") {
+            continue;
+        }
+        let (Some(group_id), Some(uri)) = (group_id, uri) else {
+            continue;
+        };
+        let (codec, bitrate_prefix) = if group_id.starts_with("audio-stereo-") {
+            ("mp4a.40.2", "audio-stereo-")
+        } else if group_id.starts_with("audio-HE-stereo-") {
+            ("mp4a.40.5", "audio-HE-stereo-")
+        } else if group_id.starts_with("audio-atmos-") {
+            ("ec-3", "audio-atmos-")
+        } else {
+            continue;
+        };
+        let bitrate = group_bitrate(group_id, bitrate_prefix)? as u64;
+        renditions.push(StreamVariant {
+            uri: resolve_url(master_url, uri),
+            codec: codec.to_owned(),
+            group_id: group_id.to_owned(),
+            bandwidth: bitrate,
+        });
+    }
+    Ok(renditions)
 }
 
 /// Extract every `#EXT-X-STREAM-INF` variant with its audio group.
@@ -479,6 +531,7 @@ pub fn parse_media_playlist(
         if let Some(attrs) = line.strip_prefix("#EXT-X-KEY:") {
             let mut key_uri = None;
             let mut method = None;
+            let mut key_format = None;
             for part in split_attributes(attrs)? {
                 let (k, v) = part.split_once('=').expect("validated attribute component");
                 let k = k.trim();
@@ -487,11 +540,22 @@ pub fn parse_media_playlist(
                     method = Some(v.to_owned());
                 } else if k == "URI" {
                     key_uri = Some(v.to_owned());
+                } else if k == "KEYFORMAT" {
+                    key_format = Some(v.to_owned());
                 }
             }
             match method.as_deref() {
-                // FairPlay: URI is a skd:// template ref.
-                Some("SAMPLE-AES") => current_key_uri = key_uri,
+                // FairPlay: URI is a skd:// template ref. Apple also lists
+                // PlayReady and Widevine key tags for the same segments;
+                // keep the FairPlay key instead of overwriting it with a
+                // data: URI that the FairPlay template endpoint cannot use.
+                Some("SAMPLE-AES")
+                    if key_format
+                        .as_deref()
+                        .is_none_or(|format| format == "com.apple.streamingkeydelivery") =>
+                {
+                    current_key_uri = key_uri;
+                }
                 // CENC: URI is "data:;base64,<kid>"; keep the KID.
                 Some("ISO-23001-7") => {
                     current_key_uri = key_uri.clone();

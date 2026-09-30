@@ -119,33 +119,47 @@ impl WrapperEngine {
             .send()
             .await
             .map_err(|e| self.map_reqwest_error("Fetch master playlist", e))?;
-        let master_text = master_resp
-            .text()
-            .await
-            .map_err(|e| self.map_reqwest_error("Read master playlist", e))?;
+        let content_type = master_resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        // Some music-video catalog entries resolve to a FairPlay-protected
+        // M4V rather than a playlist. Resolve their web playback master to
+        // its AAC audio rendition; the normal HLS decryption path handles it.
+        let stream_info = if is_direct_media_response(&content_type, &master_url) {
+            self.webplayback_fallback(track_id, track, signal.as_ref(), on_progress.as_ref())
+                .await?
+        } else {
+            let master_text = master_resp
+                .text()
+                .await
+                .map_err(|e| self.map_reqwest_error("Read master playlist", e))?;
 
-        // 3. Parse and select the stream variant per preference. A store
-        // with no lossless HLS hands out a direct file URL instead of a
-        // master playlist; fall back to the web playback playlist.
-        let stream_info = match parse_master_playlist(&master_text, &master_url, preference) {
-            Ok(info) => info,
-            Err(WrapperError::Unavailable(reason)) => {
-                return Ok(WrapperTrackOutcome::Unavailable(reason));
-            }
-            Err(error) => {
-                if !looks_like_master_playlist(&master_text) {
-                    self.webplayback_fallback(
-                        track_id,
-                        track,
-                        signal.as_ref(),
-                        on_progress.as_ref(),
-                    )
-                    .await?
-                } else {
-                    return Err(StreamError::PlaylistParse {
-                        which: "master",
-                        detail: error.to_string(),
-                    });
+            // Stores with no lossless HLS may return a direct file or a
+            // non-master response from /m3u8. Resolve the web playback master
+            // and select its best AAC rendition in those cases.
+            match parse_master_playlist(&master_text, &master_url, preference) {
+                Ok(info) => info,
+                Err(WrapperError::Unavailable(reason)) => {
+                    return Ok(WrapperTrackOutcome::Unavailable(reason));
+                }
+                Err(error) => {
+                    if !looks_like_master_playlist(&master_text) {
+                        self.webplayback_fallback(
+                            track_id,
+                            track,
+                            signal.as_ref(),
+                            on_progress.as_ref(),
+                        )
+                        .await?
+                    } else {
+                        return Err(StreamError::PlaylistParse {
+                            which: "master",
+                            detail: error.to_string(),
+                        });
+                    }
                 }
             }
         };
@@ -242,7 +256,7 @@ impl WrapperEngine {
         );
 
         // In Apple Music, media_info.single_file_url is almost always present
-        let decrypted_bytes = if let Some(single_url) = &media_info.single_file_url {
+        let (decrypted_bytes, sample_rate) = if let Some(single_url) = &media_info.single_file_url {
             let resp = self
                 .http_client
                 .get(single_url)
@@ -284,7 +298,7 @@ impl WrapperEngine {
             source: self.source.clone(),
             codec: alac_info.codec,
             bit_depth: alac_info.bit_depth,
-            sample_rate: alac_info.sample_rate,
+            sample_rate: sample_rate.unwrap_or(alac_info.sample_rate),
             content_length: Some(total_size),
         }))
     }
@@ -338,9 +352,9 @@ impl WrapperEngine {
         StreamError::Message(format!("{what}: {error}"))
     }
 
-    /// Handles stores with no lossless HLS: `/m3u8` hands out a direct
-    /// encrypted file while `/webplayback` still returns an AAC HLS
-    /// playlist.
+    /// Resolve the best AAC audio rendition from the web playback master.
+    /// It is used when `/m3u8` returns a protected direct file or no usable
+    /// audio master.
     async fn webplayback_fallback(
         &self,
         track_id: &str,
@@ -357,18 +371,30 @@ impl WrapperEngine {
                 track: track.clone(),
             },
         );
-        let media_url = self
+        let master_url = self
             .client
             .fetch_webplayback(track_id)
             .await
             .map_err(|e| self.map_client_error("fetch web playback", e))?;
-        debug!(track_id = %track_id, media_url = %media_url, "Using web playback fallback");
-        Ok(AlacStreamInfo {
-            stream_url: media_url,
-            codec: "mp4a.40.2".to_owned(),
-            sample_rate: 44_100,
-            bit_depth: 16,
-        })
+        debug!(track_id = %track_id, master_url = %master_url, "Using web playback fallback");
+        let response = self
+            .http_client
+            .get(&master_url)
+            .send()
+            .await
+            .map_err(|error| self.map_reqwest_error("Fetch web playback master", error))?
+            .error_for_status()
+            .map_err(|error| self.map_reqwest_error("Fetch web playback master", error))?;
+        let master_text = response
+            .text()
+            .await
+            .map_err(|error| self.map_reqwest_error("Read web playback master", error))?;
+        parse_master_playlist(&master_text, &master_url, CodecPreference::HighestQuality).map_err(
+            |error| StreamError::PlaylistParse {
+                which: "web playback master",
+                detail: error.to_string(),
+            },
+        )
     }
 
     /// The CENC (Widevine) route: fetch a license from wrapper-lite,
@@ -600,7 +626,7 @@ impl WrapperEngine {
         media_info: &super::playlist::MediaPlaylistInfo,
         key_templates: &HashMap<String, Arc<temari::rounds::Template>>,
         track_id: &str,
-    ) -> Result<Vec<u8>, StreamError> {
+    ) -> Result<(Vec<u8>, Option<u32>), StreamError> {
         // Extract and transform init segment
         let (init_offset, init_len) = media_info.init_byte_range.unwrap_or((0, 1037));
         if raw_data.len() < (init_offset + init_len) as usize {
@@ -609,6 +635,7 @@ impl WrapperEngine {
             });
         }
         let init_raw = &raw_data[init_offset as usize..(init_offset + init_len) as usize];
+        let sample_rate = super::decryptor::audio_sample_rate(init_raw);
         let transformed_init =
             transform_init_segment(init_raw).map_err(|e| StreamError::Decrypt {
                 detail: format!("transform init segment: {e}"),
@@ -658,8 +685,9 @@ impl WrapperEngine {
             output.extend_from_slice(&decrypted_frag);
         }
 
+        let _ = super::decryptor::normalize_fragment_start_time(&mut output);
         let _ = stamp_fragment_duration(&mut output, track_id);
-        Ok(output)
+        Ok((output, sample_rate))
     }
 
     async fn decrypt_multi_segment_stream(
@@ -669,7 +697,7 @@ impl WrapperEngine {
         track_id: &str,
         track: &TrackLabel,
         on_progress: Option<&ProgressCallback>,
-    ) -> Result<Vec<u8>, StreamError> {
+    ) -> Result<(Vec<u8>, Option<u32>), StreamError> {
         report(
             on_progress,
             RipActivity::Decrypting {
@@ -686,6 +714,7 @@ impl WrapperEngine {
             .bytes()
             .await
             .map_err(|e| self.map_reqwest_error("Read init bytes", e))?;
+        let sample_rate = super::decryptor::audio_sample_rate(&init_bytes);
         let transformed_init =
             transform_init_segment(&init_bytes).map_err(|e| StreamError::Decrypt {
                 detail: format!("transform init segment: {e}"),
@@ -727,8 +756,9 @@ impl WrapperEngine {
             output.extend_from_slice(&dec);
         }
 
+        let _ = super::decryptor::normalize_fragment_start_time(&mut output);
         let _ = stamp_fragment_duration(&mut output, track_id);
-        Ok(output)
+        Ok((output, sample_rate))
     }
 }
 
@@ -736,6 +766,30 @@ fn report(callback: Option<&ProgressCallback>, activity: RipActivity) {
     if let Some(callback) = callback {
         callback(activity);
     }
+}
+
+fn is_direct_media_response(content_type: &str, media_url: &str) -> bool {
+    let media_type = content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if media_type.starts_with("video/")
+        || media_type.starts_with("audio/")
+        || matches!(media_type.as_str(), "application/mp4" | "application/x-m4v")
+    {
+        return true;
+    }
+
+    let path = media_url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(media_url)
+        .to_ascii_lowercase();
+    [".m4v", ".mp4", ".mov", ".m4a", ".mp3"]
+        .iter()
+        .any(|extension| path.ends_with(extension))
 }
 
 /// True when the response is a master playlist rather than a direct
