@@ -26,6 +26,7 @@ diesel::table! {
         track_number -> Integer,
         track_count -> Integer,
         isrc -> Nullable<Text>,
+        recording_mbid -> Nullable<Varchar>,
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
     }

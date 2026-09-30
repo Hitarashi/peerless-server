@@ -8,6 +8,7 @@ pub mod handlers;
 pub mod html;
 pub mod interaction;
 pub mod mirror_health;
+pub mod musicbrainz;
 pub mod presentation;
 pub mod providers;
 pub mod rip_deps;

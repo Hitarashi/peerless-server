@@ -50,6 +50,10 @@ pub struct TrackSummaryDto {
     /// International Standard Recording Code, when known.
     #[schema(example = "USUM71703861")]
     pub isrc: Option<String>,
+    /// MusicBrainz recording identifier, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "2c2f8a0d-7f34-4d9e-a944-877112fc2285")]
+    pub recording_mbid: Option<String>,
 }
 
 impl From<db::Track> for TrackSummaryDto {
@@ -67,6 +71,7 @@ impl From<db::Track> for TrackSummaryDto {
             sample_rate: Some(t.sample_rate),
             is_cached: true,
             isrc: t.isrc,
+            recording_mbid: t.recording_mbid,
         }
     }
 }
@@ -123,6 +128,10 @@ pub struct TrackDetailDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(example = "USCJY1431245")]
     pub isrc: Option<String>,
+    /// MusicBrainz recording identifier, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "2c2f8a0d-7f34-4d9e-a944-877112fc2285")]
+    pub recording_mbid: Option<String>,
     /// Track composer; currently unavailable in database-backed track responses.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(example = "Taylor Swift, Max Martin, Shellback")]
@@ -152,6 +161,7 @@ impl From<db::Track> for TrackDetailDto {
             track_count: t.track_count,
             is_cached: true,
             isrc: t.isrc,
+            recording_mbid: t.recording_mbid,
             composer: None,
             disc_number: None,
         }
@@ -187,6 +197,7 @@ pub struct CanonicalTrackDto {
     pub duration: i32,
     pub artwork_url: Option<String>,
     pub isrc: Option<String>,
+    pub recording_mbid: Option<String>,
     pub sources: Vec<TrackSourceDto>,
 }
 
@@ -221,6 +232,9 @@ pub struct UncachedTrackDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(example = "https://is1-ssl.mzstatic.com/image/thumb/.../600x600bb.jpg")]
     pub artwork_url: Option<String>,
+    /// MusicBrainz recording identifier, when known from a matching cached source.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recording_mbid: Option<String>,
 }
 
 /// Search query parameters.
@@ -238,6 +252,9 @@ pub struct SearchQuery {
     /// Results per page (default: 20, clamped to 1-100).
     #[param(example = 20)]
     pub limit: Option<i64>,
+    /// Return cached sources for this MusicBrainz recording identifier.
+    #[param(example = "2c2f8a0d-7f34-4d9e-a944-877112fc2285")]
+    pub recording_mbid: Option<String>,
 }
 
 /// Unified search response containing both cached, live, and canonical catalog results.
@@ -276,11 +293,21 @@ pub async fn search_catalog(
     let page = query.page.unwrap_or(1).max(1);
     let offset = ((page - 1) * (limit as i64)) as usize;
 
-    let cached_tracks = state
-        .tracks_repo
-        .search_cached_tracks(&query.q, offset + limit)
-        .await
-        .map_err(|e| ServerError::Internal(e.to_string()))?;
+    let cached_tracks = if let Some(recording_mbid) = query.recording_mbid.as_deref() {
+        let recording_mbid = music::normalize_recording_mbid(recording_mbid)
+            .ok_or_else(|| ServerError::BadRequest("Invalid recording_mbid".to_owned()))?;
+        state
+            .tracks_repo
+            .find_tracks_by_recording_mbid(&recording_mbid, (offset + limit) as i64)
+            .await
+            .map_err(|error| ServerError::Internal(error.to_string()))?
+    } else {
+        state
+            .tracks_repo
+            .search_cached_tracks(&query.q, offset + limit)
+            .await
+            .map_err(|error| ServerError::Internal(error.to_string()))?
+    };
 
     let cached_slice: Vec<db::Track> = cached_tracks.into_iter().skip(offset).take(limit).collect();
 
@@ -293,7 +320,8 @@ pub async fn search_catalog(
     let default_storefront = engine::settings::resolve_default_storefront(&settings);
     if let Some(ref catalog) = state.catalog_service {
         let provider = query.provider.as_deref().unwrap_or("apple");
-        if provider.eq_ignore_ascii_case("apple")
+        if query.recording_mbid.is_none()
+            && provider.eq_ignore_ascii_case("apple")
             && !query.q.trim().is_empty()
             && let Ok(results) = catalog
                 .search_catalog(&query.q, 10, default_storefront)
@@ -317,6 +345,7 @@ pub async fn search_catalog(
                         } else {
                             Some(item.artwork_url.clone())
                         },
+                        recording_mbid: None,
                     });
                 }
             }
@@ -325,6 +354,17 @@ pub async fn search_catalog(
     }
 
     let canonical = build_canonical_tracks(&cached_slice, &live_results);
+    for item in &mut live {
+        item.recording_mbid = canonical
+            .iter()
+            .find(|track| {
+                track.sources.iter().any(|source| {
+                    source.provider.eq_ignore_ascii_case(&item.provider)
+                        && source.track_id == item.track_id
+                })
+            })
+            .and_then(|track| track.recording_mbid.clone());
+    }
 
     Ok(Json(SearchResponse {
         cached,
@@ -343,12 +383,24 @@ fn normalize_for_canonical(s: &str) -> String {
 fn matches_canonical(
     canonical: &CanonicalTrackDto,
     candidate_isrc: Option<&str>,
+    candidate_recording_mbid: Option<&str>,
     candidate_provider: &str,
     candidate_track_id: &str,
     candidate_title: &str,
     candidate_artist: &str,
     candidate_duration: i32,
 ) -> bool {
+    let canonical_mbid = canonical
+        .recording_mbid
+        .as_deref()
+        .and_then(music::normalize_recording_mbid);
+    let candidate_mbid = candidate_recording_mbid.and_then(music::normalize_recording_mbid);
+    if let (Some(canonical_mbid), Some(candidate_mbid)) =
+        (canonical_mbid.as_deref(), candidate_mbid.as_deref())
+    {
+        return canonical_mbid == candidate_mbid;
+    }
+
     let same_provider_track = canonical.sources.iter().any(|s| {
         s.provider.eq_ignore_ascii_case(candidate_provider) && s.track_id == candidate_track_id
     });
@@ -362,6 +414,10 @@ fn matches_canonical(
         if !c_trim.is_empty() && !cand_trim.is_empty() {
             return c_trim.eq_ignore_ascii_case(cand_trim);
         }
+    }
+
+    if canonical_mbid.is_some() || candidate_mbid.is_some() {
+        return false;
     }
 
     let norm_can_title = normalize_for_canonical(&canonical.title);
@@ -392,12 +448,29 @@ pub fn build_canonical_tracks(
         let provider = t.provider.as_str();
         let track_id = &t.track_id;
         let isrc = t.isrc.as_deref().filter(|s| !s.trim().is_empty());
+        let recording_mbid = t.recording_mbid.as_deref();
 
         if let Some(existing) = canonical.iter_mut().find(|c| {
-            matches_canonical(c, isrc, provider, track_id, &t.title, &t.artist, t.duration)
+            matches_canonical(
+                c,
+                isrc,
+                recording_mbid,
+                provider,
+                track_id,
+                &t.title,
+                &t.artist,
+                t.duration,
+            )
         }) {
             if existing.isrc.is_none() && isrc.is_some() {
                 existing.isrc = isrc.map(ToOwned::to_owned);
+            }
+            if existing.recording_mbid.is_none()
+                && let Some(recording_mbid) = recording_mbid
+                && let Some(recording_mbid) = music::normalize_recording_mbid(recording_mbid)
+            {
+                existing.id = recording_mbid.clone();
+                existing.recording_mbid = Some(recording_mbid);
             }
             if !existing.sources.iter().any(|s| {
                 s.provider.eq_ignore_ascii_case(provider)
@@ -417,7 +490,12 @@ pub fn build_canonical_tracks(
                 });
             }
         } else {
-            let canon_id = isrc.unwrap_or(track_id).to_owned();
+            let recording_mbid = recording_mbid.and_then(music::normalize_recording_mbid);
+            let canon_id = recording_mbid
+                .as_deref()
+                .or(isrc)
+                .unwrap_or(track_id)
+                .to_owned();
             canonical.push(CanonicalTrackDto {
                 id: canon_id,
                 title: t.title.clone(),
@@ -426,6 +504,7 @@ pub fn build_canonical_tracks(
                 duration: t.duration,
                 artwork_url: None,
                 isrc: isrc.map(ToOwned::to_owned),
+                recording_mbid,
                 sources: vec![TrackSourceDto {
                     id: Some(t.id),
                     provider: provider.to_string(),
@@ -450,6 +529,7 @@ pub fn build_canonical_tracks(
             matches_canonical(
                 c,
                 isrc,
+                None,
                 provider,
                 track_id,
                 &item.title,
@@ -493,6 +573,7 @@ pub fn build_canonical_tracks(
                     Some(item.artwork_url.clone())
                 },
                 isrc: isrc.map(ToOwned::to_owned),
+                recording_mbid: None,
                 sources: vec![TrackSourceDto {
                     id: None,
                     provider: provider.to_string(),
@@ -690,6 +771,7 @@ pub async fn get_album_tracks(
                     sample_rate: None,
                     is_cached: false,
                     isrc: None,
+                    recording_mbid: None,
                 })
                 .collect();
             return Ok(Json(AlbumDetailsDto {

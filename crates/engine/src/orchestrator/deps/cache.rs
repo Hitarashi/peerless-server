@@ -33,6 +33,7 @@ pub struct SaveTrackInput {
     pub track_number: i64,
     pub track_count: i64,
     pub isrc: Option<String>,
+    pub recording_mbid: Option<String>,
 }
 
 impl SaveTrackInput {
@@ -62,6 +63,7 @@ impl SaveTrackInput {
             track_number: rip.track_number,
             track_count: rip.track_count,
             isrc: rip.isrc.clone(),
+            recording_mbid: rip.recording_mbid.clone(),
         }
     }
 }

@@ -108,6 +108,7 @@ pub struct RipDeps {
     requests: db::RequestLogRepository,
     settings: db::SettingsStore,
     providers: ProviderRegistry,
+    recording_mbid_resolver: crate::musicbrainz::RecordingMbidResolver,
     /// Shared with `ripper_deps` so health probes observe the same circuit
     /// and cache state the ripper uses.
     mirror_policy: apple::MirrorPolicyManager<apple::ReqwestMirrorHttp>,
@@ -160,6 +161,7 @@ impl RipDeps {
             requests,
             settings,
             providers: ProviderRegistry::new(apple, qobuz, ripper_config, default_storefront),
+            recording_mbid_resolver: crate::musicbrainz::RecordingMbidResolver::default(),
             mirror_policy: probe_policy,
         })
     }
@@ -187,6 +189,18 @@ impl RipDeps {
     /// the orchestrator seam.
     pub fn tracks(&self) -> &db::TracksRepository {
         &self.tracks
+    }
+
+    pub async fn resolve_recording_mbid(
+        &self,
+        isrc: &str,
+        title: &str,
+        artist: &str,
+        duration_seconds: i64,
+    ) -> Option<String> {
+        self.recording_mbid_resolver
+            .resolve(isrc, title, artist, duration_seconds)
+            .await
     }
 
     pub fn albums(&self) -> &db::AlbumsRepository {
@@ -266,7 +280,15 @@ impl TrackAcquisition for RipDeps {
         track_id: &str,
         options: engine::ripper::RipOptions<'_>,
     ) -> Result<TrackRipResult, RipError> {
-        self.providers.rip(track_id, options).await
+        let mut result = self.providers.rip(track_id, options).await?;
+        if result.recording_mbid.is_none()
+            && let Some(isrc) = result.isrc.as_deref()
+        {
+            result.recording_mbid = self
+                .resolve_recording_mbid(isrc, &result.title, &result.artist, result.duration)
+                .await;
+        }
+        Ok(result)
     }
 }
 

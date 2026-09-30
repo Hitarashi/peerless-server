@@ -19,7 +19,7 @@ use crate::{
     schema::{albums, requests, settings, tracks, users},
 };
 
-const ARCHIVE_VERSION: u32 = 2;
+const ARCHIVE_VERSION: u32 = 3;
 const MAX_ARCHIVE_ROWS: usize = 1_000_000;
 const MAX_ARCHIVE_STRING_BYTES: usize = 1 << 20;
 
@@ -82,6 +82,8 @@ struct TrackArchive {
     release_date: String,
     track_number: i32,
     track_count: i32,
+    #[serde(default)]
+    recording_mbid: Option<String>,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -167,6 +169,7 @@ impl From<Track> for TrackArchive {
             release_date: row.release_date,
             track_number: row.track_number,
             track_count: row.track_count,
+            recording_mbid: row.recording_mbid,
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
@@ -332,7 +335,7 @@ impl DbDumpService {
         }
         let archive: Archive = serde_json::from_slice(&gunzip(gzip_bytes)?)
             .map_err(|error| DbError::Row(format!("invalid archive: {error}")))?;
-        if archive.format_version != ARCHIVE_VERSION {
+        if !matches!(archive.format_version, 2 | ARCHIVE_VERSION) {
             return Err(DbError::Row(format!(
                 "unsupported archive version {}",
                 archive.format_version

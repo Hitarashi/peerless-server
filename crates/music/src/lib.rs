@@ -12,6 +12,24 @@ use serde::{Deserialize, Serialize};
 pub mod time;
 pub mod url;
 
+/// Returns a lowercase canonical form when `value` is a MusicBrainz UUID.
+pub fn normalize_recording_mbid(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.len() != 36 {
+        return None;
+    }
+    for (index, byte) in value.bytes().enumerate() {
+        if matches!(index, 8 | 13 | 18 | 23) {
+            if byte != b'-' {
+                return None;
+            }
+        } else if !byte.is_ascii_hexdigit() {
+            return None;
+        }
+    }
+    Some(value.to_ascii_lowercase())
+}
+
 /// A catalog/cache provider supported by the bot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "diesel", derive(diesel::AsExpression, diesel::FromSqlRow))]
@@ -457,6 +475,7 @@ pub struct TrackRipResult {
     pub track_number: i64,
     pub track_count: i64,
     pub isrc: Option<String>,
+    pub recording_mbid: Option<String>,
 }
 
 #[cfg(test)]

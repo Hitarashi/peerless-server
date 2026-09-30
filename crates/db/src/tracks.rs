@@ -159,6 +159,24 @@ impl TracksRepository {
             .await?)
     }
 
+    pub async fn find_tracks_by_recording_mbid(
+        &self,
+        recording_mbid: &str,
+        limit: i64,
+    ) -> Result<Vec<Track>, DbError> {
+        let Some(recording_mbid) = music::normalize_recording_mbid(recording_mbid) else {
+            return Err(DbError::Validation("invalid recording MBID".to_owned()));
+        };
+        let mut connection = self.pool.connection().await?;
+        Ok(tracks::table
+            .filter(tracks::recording_mbid.eq(recording_mbid))
+            .order(tracks::id.desc())
+            .limit(limit)
+            .select(Track::as_select())
+            .load::<Track>(&mut *connection)
+            .await?)
+    }
+
     pub async fn find_latest_track(&self) -> Result<Option<Track>, DbError> {
         let mut connection = self.pool.connection().await?;
         Ok(tracks::table
@@ -205,6 +223,7 @@ impl TracksRepository {
             track_number,
             track_count,
             isrc: input.isrc.as_deref(),
+            recording_mbid: input.recording_mbid.as_deref(),
         };
         diesel::insert_into(tracks::table)
             .values(new_track)
@@ -227,6 +246,11 @@ impl TracksRepository {
                 tracks::isrc.eq(diesel::dsl::sql::<
                     diesel::sql_types::Nullable<diesel::sql_types::Text>,
                 >("COALESCE(EXCLUDED.isrc, tracks.isrc)")),
+                tracks::recording_mbid.eq(diesel::dsl::sql::<
+                    diesel::sql_types::Nullable<diesel::sql_types::VarChar>,
+                >(
+                    "COALESCE(EXCLUDED.recording_mbid, tracks.recording_mbid)",
+                )),
                 tracks::updated_at.eq(now),
             ))
             .execute(&mut *connection)
@@ -394,6 +418,65 @@ impl TracksRepository {
             .select((tracks::id, tracks::provider, tracks::track_id))
             .load::<(i32, Provider, String)>(&mut *connection)
             .await?)
+    }
+
+    pub async fn count_tracks_without_recording_mbid(&self) -> Result<i64, DbError> {
+        let mut connection = self.pool.connection().await?;
+        Ok(tracks::table
+            .filter(tracks::recording_mbid.is_null())
+            .count()
+            .get_result(&mut *connection)
+            .await?)
+    }
+
+    pub async fn count_tracks_without_recording_mbid_with_isrc(&self) -> Result<i64, DbError> {
+        let mut connection = self.pool.connection().await?;
+        Ok(tracks::table
+            .filter(tracks::recording_mbid.is_null())
+            .filter(tracks::isrc.is_not_null())
+            .count()
+            .get_result(&mut *connection)
+            .await?)
+    }
+
+    pub async fn find_tracks_without_recording_mbid_after(
+        &self,
+        after_id: i32,
+        limit: i64,
+    ) -> Result<Vec<Track>, DbError> {
+        let mut connection = self.pool.connection().await?;
+        Ok(tracks::table
+            .filter(tracks::recording_mbid.is_null())
+            .filter(tracks::isrc.is_not_null())
+            .filter(tracks::id.gt(after_id))
+            .order(tracks::id.asc())
+            .limit(limit)
+            .select(Track::as_select())
+            .load::<Track>(&mut *connection)
+            .await?)
+    }
+
+    pub async fn update_recording_mbid_if_missing(
+        &self,
+        id: i32,
+        recording_mbid: &str,
+    ) -> Result<bool, DbError> {
+        let Some(recording_mbid) = music::normalize_recording_mbid(recording_mbid) else {
+            return Err(DbError::Validation("invalid recording MBID".to_owned()));
+        };
+        let mut connection = self.pool.connection().await?;
+        let updated = diesel::update(
+            tracks::table
+                .filter(tracks::id.eq(id))
+                .filter(tracks::recording_mbid.is_null()),
+        )
+        .set((
+            tracks::recording_mbid.eq(recording_mbid),
+            tracks::updated_at.eq(now),
+        ))
+        .execute(&mut *connection)
+        .await?;
+        Ok(updated > 0)
     }
 
     pub async fn update_isrc(&self, id: i32, isrc: &str) -> Result<usize, DbError> {

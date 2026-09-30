@@ -9,6 +9,10 @@ license.workspace = true
 name = "bot"
 path = "src/main.rs"
 
+[[bin]]
+name = "backfill_recording_mbids"
+path = "src/bin/backfill_recording_mbids.rs"
+
 [dependencies]
 diesel.workspace = true
 db = { path = "../db" }

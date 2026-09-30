@@ -229,6 +229,22 @@ async fn index_dump_channel(
                     skipped += 1;
                     continue;
                 };
+                let caption_isrc = meta.isrc.clone();
+                let caption_recording_mbid = meta.recording_mbid.clone();
+                let existing_track = state
+                    .rip_deps
+                    .tracks()
+                    .get_track_by_provider(meta.track_key.provider, &meta.track_key.track_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if meta.isrc.is_none() {
+                    meta.isrc = existing_track.as_ref().and_then(|track| track.isrc.clone());
+                }
+                if meta.recording_mbid.is_none() {
+                    meta.recording_mbid = existing_track
+                        .as_ref()
+                        .and_then(|track| track.recording_mbid.clone());
+                }
 
                 // Backfill ISRC for older tracks if missing
                 if meta.isrc.is_none() {
@@ -275,33 +291,43 @@ async fn index_dump_channel(
                         }
                     };
 
-                    if let Some(isrc) = resolved_isrc {
-                        let isrc_clone = isrc.clone();
-                        meta.isrc = Some(isrc);
-                        let updated_caption = format_dump_caption(&DumpCaptionMetadata {
-                            track_key: meta.track_key.clone(),
-                            title: &meta.title,
-                            artist: &meta.artist,
-                            album: &meta.album,
-                            duration: meta.duration,
-                            bit_depth: meta.bit_depth,
-                            sample_rate: meta.sample_rate,
-                            codec: Some(meta.codec.as_str()),
-                            genre: Some(&meta.genre),
-                            release_date: Some(&meta.release_date),
-                            track_number: Some(meta.track_number),
-                            track_count: Some(meta.track_count),
-                            isrc: Some(&isrc_clone),
-                        });
-                        let _ = state
-                            .client
-                            .edit_message(
-                                state.dump_peer.clone(),
-                                message.id(),
-                                InputMessage::html(parse_dynamic_html(&updated_caption)),
-                            )
-                            .await;
-                    }
+                    meta.isrc = resolved_isrc;
+                }
+
+                if meta.recording_mbid.is_none()
+                    && let Some(isrc) = meta.isrc.as_deref()
+                {
+                    meta.recording_mbid = state
+                        .rip_deps
+                        .resolve_recording_mbid(isrc, &meta.title, &meta.artist, meta.duration)
+                        .await;
+                }
+
+                if meta.isrc != caption_isrc || meta.recording_mbid != caption_recording_mbid {
+                    let updated_caption = format_dump_caption(&DumpCaptionMetadata {
+                        track_key: meta.track_key.clone(),
+                        title: &meta.title,
+                        artist: &meta.artist,
+                        album: &meta.album,
+                        duration: meta.duration,
+                        bit_depth: meta.bit_depth,
+                        sample_rate: meta.sample_rate,
+                        codec: Some(meta.codec.as_str()),
+                        genre: Some(&meta.genre),
+                        release_date: Some(&meta.release_date),
+                        track_number: Some(meta.track_number),
+                        track_count: Some(meta.track_count),
+                        isrc: meta.isrc.as_deref(),
+                        recording_mbid: meta.recording_mbid.as_deref(),
+                    });
+                    let _ = state
+                        .client
+                        .edit_message(
+                            state.dump_peer.clone(),
+                            message.id(),
+                            InputMessage::html(parse_dynamic_html(&updated_caption)),
+                        )
+                        .await;
                 }
 
                 let (file_id, file_unique_id) = file_ids(&document);
@@ -357,6 +383,7 @@ async fn index_dump_channel(
                             1
                         },
                         isrc: meta.isrc,
+                        recording_mbid: meta.recording_mbid,
                     })
                     .await
                     .map_err(|error| error.to_string())?;

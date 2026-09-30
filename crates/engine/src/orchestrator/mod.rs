@@ -4646,6 +4646,7 @@ where
         track_number: Some(rip_result.track_number),
         track_count: Some(rip_result.track_count),
         isrc: rip_result.isrc.as_deref(),
+        recording_mbid: rip_result.recording_mbid.as_deref(),
     });
     let plain_caption = format!(
         "{} - {}\n{}",

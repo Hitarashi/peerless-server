@@ -263,6 +263,7 @@ impl FakeDeps {
             track_number: 2,
             track_count: 10,
             isrc: None,
+            recording_mbid: None,
         }
     }
 

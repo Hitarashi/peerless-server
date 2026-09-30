@@ -1148,6 +1148,7 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
         track_number: 1,
         track_count: 1,
         isrc: None,
+        recording_mbid: None,
     };
     tracks_repo.save_track(&save_input).await.unwrap();
     let cached_track = tracks_repo

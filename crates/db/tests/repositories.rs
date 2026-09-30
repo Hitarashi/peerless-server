@@ -44,6 +44,7 @@ fn track(id: &str, title: &str) -> SaveTrackInput {
         track_number: 1,
         track_count: 1,
         isrc: None,
+        recording_mbid: None,
     }
 }
 

@@ -84,6 +84,7 @@ pub struct DumpCaptionMetadata<'a> {
     pub track_number: Option<i64>,
     pub track_count: Option<i64>,
     pub isrc: Option<&'a str>,
+    pub recording_mbid: Option<&'a str>,
 }
 
 impl<'a> From<(&'a TrackRipResult, Provider, &'a str)> for DumpCaptionMetadata<'a> {
@@ -102,6 +103,7 @@ impl<'a> From<(&'a TrackRipResult, Provider, &'a str)> for DumpCaptionMetadata<'
             track_number: Some(rip.track_number),
             track_count: Some(rip.track_count),
             isrc: rip.isrc.as_deref(),
+            recording_mbid: rip.recording_mbid.as_deref(),
         }
     }
 }
@@ -289,6 +291,12 @@ pub fn format_dump_caption(meta: &DumpCaptionMetadata<'_>) -> String {
     if let Some(isrc) = meta.isrc.filter(|s| !s.is_empty()) {
         payload["isrc"] = serde_json::Value::String(isrc.to_owned());
     }
+    if let Some(recording_mbid) = meta
+        .recording_mbid
+        .and_then(music::normalize_recording_mbid)
+    {
+        payload["recording_mbid"] = serde_json::Value::String(recording_mbid);
+    }
 
     serialize_caption_payload(&mut payload)
 }
@@ -380,6 +388,7 @@ pub struct ParsedDumpMetadata {
     pub track_number: i64,
     pub track_count: i64,
     pub isrc: Option<String>,
+    pub recording_mbid: Option<String>,
 }
 
 /// Extracts structured track metadata from a message caption. Returns
@@ -423,6 +432,10 @@ pub fn parse_dump_caption(text: Option<&str>) -> Option<ParsedDumpMetadata> {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(ToOwned::to_owned),
+        recording_mbid: parsed
+            .get("recording_mbid")
+            .and_then(|v| v.as_str())
+            .and_then(music::normalize_recording_mbid),
     })
 }
 
@@ -564,6 +577,7 @@ mod tests {
             track_number: Some(2),
             track_count: Some(10),
             isrc: Some("USUM71703861"),
+            recording_mbid: None,
         }
     }
 
@@ -767,6 +781,7 @@ mod tests {
             track_number: Some(16),
             track_count: Some(20),
             isrc: None,
+            recording_mbid: None,
         };
         let caption = format_dump_caption(&meta);
         let json = assert_json_only_caption(&caption);
@@ -870,6 +885,7 @@ mod tests {
             track_number: Some(1),
             track_count: Some(1),
             isrc: None,
+            recording_mbid: None,
         };
         let caption = format_dump_caption(&meta);
         assert_json_only_caption(&caption);
@@ -893,6 +909,7 @@ mod tests {
             track_number: Some(1),
             track_count: Some(1),
             isrc: None,
+            recording_mbid: None,
         };
         let caption = format_dump_caption(&meta);
         assert_json_only_caption(&caption);

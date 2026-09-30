@@ -829,6 +829,7 @@ impl AlacTrackRipper {
                     track_number: meta.track_number.unwrap_or(1),
                     track_count: meta.track_count.unwrap_or(1),
                     isrc: meta.isrc.clone().filter(|s| !s.is_empty()),
+                    recording_mbid: None,
                 })
             }
             .await;

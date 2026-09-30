@@ -53,7 +53,7 @@ RUN --mount=type=cache,id=peerless-cargo-registry,target=/usr/local/cargo/regist
     --mount=type=cache,id=peerless-cargo-git,target=/usr/local/cargo/git \
     mkdir -p crates/music/src crates/lyrics/src crates/engine/src crates/apple/src \
              crates/qobuz/src crates/db/src crates/media/src crates/stream/src \
-             crates/server/src crates/bot/src \
+             crates/server/src crates/bot/src crates/bot/src/bin \
  && echo 'pub fn _stub() {}' > crates/music/src/lib.rs \
  && echo 'pub fn _stub() {}' > crates/lyrics/src/lib.rs \
  && echo 'pub fn _stub() {}' > crates/engine/src/lib.rs \
@@ -65,7 +65,8 @@ RUN --mount=type=cache,id=peerless-cargo-registry,target=/usr/local/cargo/regist
  && echo 'pub fn _stub() {}' > crates/server/src/lib.rs \
  && echo 'pub fn _stub() {}' > crates/bot/src/lib.rs \
  && echo 'fn main() {}' > crates/bot/src/main.rs \
- && cargo build --release --locked -p bot \
+ && echo 'fn main() {}' > crates/bot/src/bin/backfill_recording_mbids.rs \
+ && cargo build --release --locked -p bot --bin bot --bin backfill_recording_mbids \
  && rm -rf crates
 
 # Real sources: build the binary (dependency layers above are reused).
@@ -79,8 +80,9 @@ RUN --mount=type=cache,id=peerless-cargo-registry,target=/usr/local/cargo/regist
           crates/apple/src/lib.rs crates/qobuz/src/lib.rs crates/db/src/lib.rs \
           crates/media/src/lib.rs crates/stream/src/lib.rs crates/server/src/lib.rs \
           crates/bot/src/lib.rs crates/bot/src/main.rs \
- && cargo build --release --locked -p bot \
- && strip --strip-unneeded target/release/bot
+          crates/bot/src/bin/backfill_recording_mbids.rs \
+ && cargo build --release --locked -p bot --bin bot --bin backfill_recording_mbids \
+ && strip --strip-unneeded target/release/bot target/release/backfill_recording_mbids
 
 # ==============================================================================
 # Stage 3: Production runner
@@ -93,6 +95,7 @@ ENV LOG_LEVEL=info
 
 # Copy only the stripped runtime binary; configuration is supplied at runtime.
 COPY --from=builder /app/target/release/bot ./bot
+COPY --from=builder /app/target/release/backfill_recording_mbids ./backfill_recording_mbids
 
 # Liveness probe. debian:bookworm-slim has no curl or wget, so this uses bash's
 # /dev/tcp and bash builtins only.
@@ -102,7 +105,7 @@ COPY healthcheck.sh /app/healthcheck.sh
 RUN useradd --system --uid 10001 --home-dir /app --shell /usr/sbin/nologin peerless \
  && mkdir -p /app/bot-data/downloads \
  && chown -R peerless:peerless /app \
- && chmod 0755 /app/bot /app/healthcheck.sh
+ && chmod 0755 /app/bot /app/backfill_recording_mbids /app/healthcheck.sh
 
 USER peerless
 
