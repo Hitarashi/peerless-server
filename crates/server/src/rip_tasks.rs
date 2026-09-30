@@ -62,6 +62,7 @@ impl ServerTaskMeta {
             is_cached: None,
             completed: false,
             error: None,
+            owner_id: Some(self.owner_id),
             is_owner,
             is_album: self.is_album,
             current_track_title: progress.current_track_title.clone(),
@@ -98,6 +99,8 @@ pub struct RipTaskSnapshot {
     pub is_cached: Option<bool>,
     pub completed: bool,
     pub error: Option<String>,
+    #[schema(example = 123456789)]
+    pub owner_id: Option<i64>,
     pub is_owner: bool,
     #[serde(default)]
     pub is_album: bool,
@@ -279,6 +282,7 @@ mod tests {
         };
 
         let snapshot = task.snapshot(true);
+        assert_eq!(snapshot.owner_id, Some(task.owner_id));
         assert_eq!(snapshot.download, Some(download));
         assert_eq!(snapshot.upload, Some(upload));
     }

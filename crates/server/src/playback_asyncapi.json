@@ -959,9 +959,16 @@
               "null"
             ]
           },
+          "owner_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Telegram user ID of the task creator."
+          },
           "is_owner": {
             "type": "boolean",
-            "description": "Whether this task belongs to the authenticated user."
+            "description": "Whether this task belongs to the authenticated user or caller is admin."
           },
           "is_album": {
             "type": "boolean",

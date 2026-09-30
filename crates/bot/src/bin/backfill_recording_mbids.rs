@@ -88,7 +88,7 @@ async fn main() -> Result<()> {
                 unmatched += 1;
             }
 
-            if scanned % 25 == 0 {
+            if scanned.is_multiple_of(25) {
                 println!(
                     "Scanned {scanned}; matched {matched}; updated {updated}; unmatched {unmatched}; last id {after_id}."
                 );

@@ -323,7 +323,7 @@ async fn handle_socket(
                     Ok(crate::rip_tasks::TaskSyncEvent::Updated { task_id }) if my_device_id.is_some() => {
                         let tasks = state.active_tasks.read();
                         tasks.get(&task_id).map(|task| {
-                            let is_owner = task.owner_id == telegram_id;
+                            let is_owner = task.owner_id == telegram_id || telegram_id == state.admin_id;
                             ServerMessage::RipTaskUpdated {
                                 task: Box::new(task.snapshot(is_owner)),
                             }
@@ -552,11 +552,11 @@ async fn dispatch_rip_task_rpc(
             let task = if task_id.is_empty() {
                 None
             } else {
-                state
-                    .active_tasks
-                    .read()
-                    .get(&task_id)
-                    .map(|task| Box::new(task.snapshot(task.owner_id == identity.telegram_id)))
+                state.active_tasks.read().get(&task_id).map(|task| {
+                    let is_owner = task.owner_id == identity.telegram_id
+                        || identity.telegram_id == state.admin_id;
+                    Box::new(task.snapshot(is_owner))
+                })
             };
             ServerMessage::RipTaskCreated {
                 request_id,
@@ -615,7 +615,7 @@ fn task_snapshots_for_user(
     let mut snapshots = tasks
         .values()
         .map(|task| {
-            let is_owner = task.owner_id == telegram_id;
+            let is_owner = task.owner_id == telegram_id || telegram_id == state.admin_id;
             (task.created_at, task.snapshot(is_owner))
         })
         .collect::<Vec<_>>();

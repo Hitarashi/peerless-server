@@ -395,21 +395,25 @@ fn normalize_for_canonical(s: &str) -> String {
         .collect()
 }
 
-fn matches_canonical(
-    canonical: &CanonicalTrackDto,
-    candidate_isrc: Option<&str>,
-    candidate_recording_mbid: Option<&str>,
-    candidate_provider: &str,
-    candidate_track_id: &str,
-    candidate_title: &str,
-    candidate_artist: &str,
-    candidate_duration: i32,
-) -> bool {
+#[derive(Clone, Copy)]
+struct CandidateTrack<'a> {
+    isrc: Option<&'a str>,
+    recording_mbid: Option<&'a str>,
+    provider: &'a str,
+    track_id: &'a str,
+    title: &'a str,
+    artist: &'a str,
+    duration: i32,
+}
+
+fn matches_canonical(canonical: &CanonicalTrackDto, candidate: CandidateTrack<'_>) -> bool {
     let canonical_mbid = canonical
         .recording_mbid
         .as_deref()
         .and_then(music::normalize_recording_mbid);
-    let candidate_mbid = candidate_recording_mbid.and_then(music::normalize_recording_mbid);
+    let candidate_mbid = candidate
+        .recording_mbid
+        .and_then(music::normalize_recording_mbid);
     if let (Some(canonical_mbid), Some(candidate_mbid)) =
         (canonical_mbid.as_deref(), candidate_mbid.as_deref())
     {
@@ -417,13 +421,13 @@ fn matches_canonical(
     }
 
     let same_provider_track = canonical.sources.iter().any(|s| {
-        s.provider.eq_ignore_ascii_case(candidate_provider) && s.track_id == candidate_track_id
+        s.provider.eq_ignore_ascii_case(candidate.provider) && s.track_id == candidate.track_id
     });
     if same_provider_track {
         return true;
     }
 
-    if let (Some(c_isrc), Some(cand_isrc)) = (canonical.isrc.as_deref(), candidate_isrc) {
+    if let (Some(c_isrc), Some(cand_isrc)) = (canonical.isrc.as_deref(), candidate.isrc) {
         let c_trim = c_isrc.trim();
         let cand_trim = cand_isrc.trim();
         if !c_trim.is_empty() && !cand_trim.is_empty() {
@@ -436,15 +440,15 @@ fn matches_canonical(
     }
 
     let norm_can_title = normalize_for_canonical(&canonical.title);
-    let norm_cand_title = normalize_for_canonical(candidate_title);
+    let norm_cand_title = normalize_for_canonical(candidate.title);
     let norm_can_artist = normalize_for_canonical(&canonical.artist);
-    let norm_cand_artist = normalize_for_canonical(candidate_artist);
+    let norm_cand_artist = normalize_for_canonical(candidate.artist);
 
     if !norm_can_title.is_empty()
         && norm_can_title == norm_cand_title
         && !norm_can_artist.is_empty()
         && norm_can_artist == norm_cand_artist
-        && (canonical.duration - candidate_duration).abs() <= 3
+        && (canonical.duration - candidate.duration).abs() <= 3
     {
         return true;
     }
@@ -468,13 +472,15 @@ pub fn build_canonical_tracks(
         if let Some(existing) = canonical.iter_mut().find(|c| {
             matches_canonical(
                 c,
-                isrc,
-                recording_mbid,
-                provider,
-                track_id,
-                &t.title,
-                &t.artist,
-                t.duration,
+                CandidateTrack {
+                    isrc,
+                    recording_mbid,
+                    provider,
+                    track_id,
+                    title: &t.title,
+                    artist: &t.artist,
+                    duration: t.duration,
+                },
             )
         }) {
             if existing.isrc.is_none() && isrc.is_some() {
@@ -543,13 +549,15 @@ pub fn build_canonical_tracks(
         if let Some(existing) = canonical.iter_mut().find(|c| {
             matches_canonical(
                 c,
-                isrc,
-                None,
-                provider,
-                track_id,
-                &item.title,
-                &item.artist,
-                duration,
+                CandidateTrack {
+                    isrc,
+                    recording_mbid: None,
+                    provider,
+                    track_id,
+                    title: &item.title,
+                    artist: &item.artist,
+                    duration,
+                },
             )
         }) {
             if existing.artwork_url.is_none() && !item.artwork_url.is_empty() {
