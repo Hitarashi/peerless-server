@@ -394,7 +394,7 @@
                         "string",
                         "null"
                       ],
-                      "description": "Desired codec. Unsupported values fall back to ALAC."
+                      "description": "Desired codec (`alac`, `ec-3`, `flac`, or `aac`). When omitted, accepts any cached codec or resolves to the actual streaming codec (ALAC, Dolby Atmos/EC-3, or AAC for Apple; FLAC for Qobuz). Unsupported values fall back to ALAC."
                     },
                     "title": {
                       "type": [
@@ -901,7 +901,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "Resolved audio codec of the task (`alac`, `ec-3`, `aac`, `flac`). Reflects the actual stream rendition or archive codec."
           },
           "title": {
             "type": [

@@ -382,6 +382,7 @@ struct PipelineState {
     job_activity: Mutex<Option<TaskActivity>>,
     download: Mutex<Option<DownloadLane>>,
     upload: Mutex<Option<UploadLane>>,
+    codec: Mutex<Option<String>>,
 }
 
 /// Event registry shared by the orchestrator and its pipelines.
@@ -451,6 +452,14 @@ impl EventBus {
             .expect("upload progress poisoned") = lane;
     }
 
+    fn set_codec(&self, shared: &Arc<Mutex<TaskShared>>, codec: Option<String>) {
+        if codec.is_none() {
+            return;
+        }
+        let guard = shared.lock().expect("job poisoned");
+        *guard.progress.codec.lock().expect("codec poisoned") = codec;
+    }
+
     fn emit_progress(&self, shared: &Arc<Mutex<TaskShared>>) {
         let (job, progress) = {
             let guard = shared.lock().expect("job poisoned");
@@ -490,6 +499,7 @@ impl EventBus {
                     .lock()
                     .expect("upload progress poisoned")
                     .clone(),
+                codec: guard.progress.codec.lock().expect("codec poisoned").clone(),
             };
             (guard.job.clone(), progress)
         };
@@ -1758,6 +1768,7 @@ impl RipOrchestrator {
                 zip_delivery: zip_delivery.clone(),
                 zip_deliveries: zip_delivery.clone().into_iter().collect(),
                 first_delivered_msg_id: first_msg_id,
+                codec: zip_delivery.as_ref().and_then(|z| z.codec.clone()),
             }
         };
 
@@ -2520,7 +2531,10 @@ where
         codec_preference,
     };
     let rip_result = match deps.rip(&item.track_id, rip_options).await {
-        Ok(rip_result) => rip_result,
+        Ok(rip_result) => {
+            bus.set_codec(shared, Some(rip_result.codec.clone()));
+            rip_result
+        }
         Err(error) => {
             bus.set_download(shared, None);
             if is_lane_cancelled(shared, job_controller, queue_signal) {
@@ -3115,6 +3129,7 @@ where
             break;
         }
         let slot = if let Some(cached) = item.cached.clone() {
+            bus.set_codec(&shared, Some(cached.codec.as_str().to_string()));
             OrderedSlot::Cached {
                 item: item.clone(),
                 cached,
@@ -3628,6 +3643,13 @@ fn build_job_summary(
     let first_msg_id = *ctx.first_delivered_msg_id.lock().unwrap();
     let zip_deliveries = ctx.zip_delivery_infos.lock().unwrap().clone();
     let guard = shared.lock().expect("job poisoned");
+    let codec = guard
+        .progress
+        .codec
+        .lock()
+        .expect("codec poisoned")
+        .clone()
+        .or_else(|| zip_deliveries.first().and_then(|z| z.codec.clone()));
     RipTaskSummary {
         job_id: guard.job.id.clone(),
         job_header: guard.job.job_header.clone(),
@@ -3653,6 +3675,7 @@ fn build_job_summary(
         zip_delivery: zip_deliveries.first().cloned().or(zip_delivery),
         zip_deliveries,
         first_delivered_msg_id: first_msg_id,
+        codec,
     }
 }
 
@@ -4628,6 +4651,7 @@ where
     let options = &ctx.options;
     let track_id = upload_item.track_id.clone();
     let rip_result = &upload_item.rip_result;
+    bus.set_codec(shared, Some(rip_result.codec.clone()));
     let track_label = TrackLabel::new(rip_result.title.clone(), rip_result.artist.clone());
     let is_cancelled =
         || shared.lock().expect("job poisoned").job.is_cancelled || job_controller.is_cancelled();

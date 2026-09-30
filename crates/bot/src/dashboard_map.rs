@@ -423,6 +423,7 @@ mod tests {
             job_activity: Some(TaskActivity::ProcessingNext),
             download: Some(download.clone()),
             upload: Some(upload.clone()),
+            codec: None,
         });
 
         let snapshot = snapshot_from(&[job], &contexts, 7, false, "live", None);
@@ -460,6 +461,7 @@ mod tests {
             job_activity: None,
             download: None,
             upload: Some(upload.clone()),
+            codec: None,
         });
 
         let snapshot = snapshot_from(&[job], &contexts, 7, false, "live", None);
@@ -493,6 +495,7 @@ mod tests {
             job_activity: None,
             download: None,
             upload: Some(upload.clone()),
+            codec: None,
         });
 
         let snapshot = snapshot_from(&[job], &contexts, 7, false, "live", None);
@@ -540,6 +543,7 @@ mod tests {
             job_activity: None,
             download: None,
             upload: None,
+            codec: None,
         };
         assert_eq!(percent_from(&progress), 0);
     }

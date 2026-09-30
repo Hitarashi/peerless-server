@@ -177,7 +177,8 @@ async fn create_task(
         .map(|value| match value.to_lowercase().as_str() {
             "alac" => music::Codec::Alac,
             "flac" => music::Codec::Flac,
-            "aac" => music::Codec::Aac,
+            "aac" | "mp4a.40.2" | "mp4a.40.5" => music::Codec::Aac,
+            "ec-3" | "ec3" | "atmos" | "dolby" => music::Codec::Ec3,
             _ => music::Codec::Alac,
         });
 
@@ -216,7 +217,12 @@ async fn create_task(
         owner_id: identity.telegram_id,
         provider,
         track_id: request.track_id.clone(),
-        codec: codec.map(|codec| codec.as_str().to_owned()),
+        codec: codec
+            .map(|codec| codec.as_str().to_owned())
+            .or_else(|| match provider {
+                music::Provider::Apple => None,
+                music::Provider::Qobuz => Some("flac".to_string()),
+            }),
         title: request.title,
         artist: request.artist,
         album: request.album,
@@ -233,6 +239,7 @@ async fn create_task(
             current_track_index: None,
             total_tracks: None,
             completed_tracks: None,
+            codec: None,
         },
         is_album: false,
     };
@@ -407,6 +414,7 @@ mod tests {
                 current_track_index: None,
                 total_tracks: None,
                 completed_tracks: None,
+                codec: None,
             },
             is_album: false,
         }

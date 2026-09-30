@@ -592,6 +592,7 @@ mod tests {
             job_activity: None,
             download: None,
             upload: None,
+            codec: None,
         }
     }
 
@@ -767,6 +768,7 @@ mod tests {
             zip_delivery: Some(primary.clone()),
             zip_deliveries: vec![primary, atmos],
             first_delivered_msg_id: Some(engine::orchestrator::deps::ChatMessageRef::new(1)),
+            codec: Some("alac".into()),
         };
 
         let entries = zip_delivery_entries(&summary);

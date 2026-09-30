@@ -10,7 +10,7 @@ pub struct RipTaskRequest {
     /// Provider-native track identifier.
     #[schema(example = "1440857781")]
     pub track_id: String,
-    /// Desired codec (`alac`, `flac`, or `aac`); unsupported values fall back to `alac`.
+    /// Desired codec (`alac`, `ec-3`, `flac`, or `aac`); unsupported values fall back to `alac`.
     #[schema(example = "alac")]
     pub codec: Option<String>,
     /// Display metadata retained by the server for task recovery.
@@ -79,6 +79,8 @@ pub struct RipTaskSnapshot {
     pub task_id: String,
     pub provider: String,
     pub source_track_id: String,
+    /// Resolved audio codec of the task (`alac`, `ec-3`, `flac`, `aac`).
+    #[schema(example = "alac")]
     pub codec: Option<String>,
     pub title: Option<String>,
     pub artist: Option<String>,
@@ -208,6 +210,7 @@ pub struct RipTaskProgress {
     pub current_track_index: Option<u32>,
     pub total_tracks: Option<u32>,
     pub completed_tracks: Option<u32>,
+    pub codec: Option<String>,
 }
 
 /// Derive a phase-local percentage without inventing a value for an unknown or zero total.
@@ -270,6 +273,7 @@ mod tests {
                 current_track_index: Some(4),
                 total_tracks: Some(8),
                 completed_tracks: Some(3),
+                codec: None,
             },
             is_album: true,
         };

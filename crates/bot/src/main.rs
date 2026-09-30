@@ -513,7 +513,10 @@ async fn main() -> Result<()> {
                     .first()
                     .cloned()
                     .unwrap_or_else(|| job.id.clone()),
-                codec: None,
+                codec: match job.provider {
+                    music::Provider::Apple => None,
+                    music::Provider::Qobuz => Some("flac".to_string()),
+                },
                 title: Some(parsed_title),
                 artist: parsed_artist
                     .or_else(|| is_album.then(|| format!("{} tracks", job.total_tracks))),
@@ -531,6 +534,7 @@ async fn main() -> Result<()> {
                     current_track_index: None,
                     total_tracks: is_album.then_some(job.total_tracks as u32),
                     completed_tracks: is_album.then_some(0),
+                    codec: None,
                 },
                 is_album,
             };
@@ -762,6 +766,7 @@ async fn main() -> Result<()> {
                         current_track_index,
                         total_tracks,
                         completed_tracks,
+                        codec: progress.codec.clone(),
                     };
                     let should_emit = progress_throttles
                         .lock()
@@ -776,6 +781,12 @@ async fn main() -> Result<()> {
             }
             OrchestratorEvent::Completed(job, summary) => {
                 if let Some(task) = find_task(job, false) {
+                    if let Some(summary_codec) = &summary.codec {
+                        let mut tasks = state.active_tasks.write();
+                        if let Some(t) = tasks.get_mut(&task.task_id) {
+                            t.codec = Some(summary_codec.clone());
+                        }
+                    }
                     progress_throttles
                         .lock()
                         .expect("progress throttle map poisoned")
@@ -918,6 +929,7 @@ mod tests {
             current_track_index: Some(1),
             total_tracks: Some(1),
             completed_tracks: Some(0),
+            codec: None,
         }
     }
 

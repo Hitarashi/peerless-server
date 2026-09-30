@@ -221,6 +221,7 @@ pub struct RipTaskProgress {
     pub job_activity: Option<TaskActivity>,
     pub download: Option<DownloadLane>,
     pub upload: Option<UploadLane>,
+    pub codec: Option<String>,
 }
 
 /// One failed track, as reported in the job summary.
@@ -324,6 +325,8 @@ pub struct RipTaskSummary {
     pub zip_deliveries: Vec<ZipDeliveryInfo>,
     /// Telegram message ID of the first delivered track or ZIP in the delivery chat.
     pub first_delivered_msg_id: Option<ChatMessageRef>,
+    /// Highest-quality or primary codec delivered/ripped.
+    pub codec: Option<String>,
 }
 
 /// Album details for a delivered ZIP, powering the post-ZIP info message.

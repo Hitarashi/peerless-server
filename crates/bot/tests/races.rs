@@ -418,6 +418,7 @@ fn unresolved_progress_has_zero_total_tracks() {
         job_activity: None,
         download: None,
         upload: None,
+        codec: None,
     };
     assert_eq!(progress.total_tracks, 0);
 }

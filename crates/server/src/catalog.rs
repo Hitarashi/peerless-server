@@ -304,7 +304,12 @@ pub async fn search_catalog(
             .find_tracks_by_recording_mbid(&recording_mbid, (offset + limit) as i64)
             .await
             .map_err(|error| ServerError::Internal(error.to_string()))?
-    } else if let Some(isrc) = query.isrc.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    } else if let Some(isrc) = query
+        .isrc
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         state
             .tracks_repo
             .find_tracks_by_isrc(isrc)
