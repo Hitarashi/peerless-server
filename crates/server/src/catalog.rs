@@ -889,6 +889,7 @@ mod tests {
             track_number: 1,
             track_count: 1,
             isrc: isrc.map(ToOwned::to_owned),
+            recording_mbid: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

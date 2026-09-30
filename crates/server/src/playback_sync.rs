@@ -217,10 +217,10 @@ impl PlaybackSyncHub {
 
 #[utoipa::path(
     get,
-    path = "/api/v1/ws/playback",
+    path = "/api/v1/ws/sync",
     tag = "ws",
-    summary = "Upgrade to the playback synchronization WebSocket",
-    description = "This operation documents only the HTTP WebSocket upgrade handshake. The bidirectional WebSocket message contract is documented separately in the [Playback WebSocket AsyncAPI document](/api/v1/docs-ws.json), which is also available from the Scalar API reference.",
+    summary = "Upgrade to the synchronization WebSocket",
+    description = "This operation documents only the HTTP WebSocket upgrade handshake for playback coordination, device sync, and rip task events. The bidirectional WebSocket message contract is documented separately in the [Playback WebSocket AsyncAPI document](/api/v1/docs-ws.json), which is also available from the Scalar API reference.",
     responses(
         (status = 101, description = "WebSocket protocol switch; the connection is upgraded."),
         (status = 401, description = "Unauthorized: the Authorization: Bearer header is missing, empty, or carries an invalid token.")
