@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow};
-use bot::{BotState, handlers};
+use bot::{BotState, handlers, html};
 use ferogram::{Client, InputMessage, PeerRef, filters::Dispatcher};
 use tokio::{signal, sync::Semaphore};
 use tracing::info;
@@ -97,6 +97,25 @@ fn lane_byte_values(
     let bytes_total = progress.total;
     let percent = server::rip_tasks::lane_percent(bytes_done, bytes_total);
     (bytes_done, bytes_total, percent)
+}
+
+fn extract_archive_codec(archive_name: &str) -> Option<String> {
+    let name = archive_name.strip_suffix(".zip").unwrap_or(archive_name);
+    let mut parts = Vec::new();
+    let mut current = name;
+    while let Some(start) = current.find('[') {
+        let remainder = &current[start + 1..];
+        if let Some(end) = remainder.find(']') {
+            let tag = remainder[..end].trim();
+            if tag != "Partial" && !tag.is_empty() {
+                parts.push(tag);
+            }
+            current = &remainder[end + 1..];
+        } else {
+            break;
+        }
+    }
+    parts.pop().map(|s| s.to_string())
 }
 
 fn map_job_stage(
@@ -430,13 +449,14 @@ async fn main() -> Result<()> {
                     _ => {}
                 }
             }
-            plain.split_whitespace().collect::<Vec<_>>().join(" ")
+            let normalized = plain.split_whitespace().collect::<Vec<_>>().join(" ");
+            html::unescape(&normalized)
         }
 
         fn parse_job_title_and_artist(value: &str, is_album: bool) -> (String, Option<String>) {
             let plain = plain_job_title(value);
-            if is_album {
-                let trimmed = plain.strip_prefix("Album: ").unwrap_or(&plain);
+            let trimmed = plain.strip_prefix("Album: ").unwrap_or(&plain);
+            if is_album || plain.starts_with("Album: ") {
                 if let Some((album, artist)) = trimmed.split_once(" by ") {
                     return (album.trim().to_string(), Some(artist.trim().to_string()));
                 }
@@ -534,7 +554,7 @@ async fn main() -> Result<()> {
                     current_track_index: None,
                     total_tracks: is_album.then_some(job.total_tracks as u32),
                     completed_tracks: is_album.then_some(0),
-                    codec: None,
+                    failed_tracks: is_album.then_some(0),
                 },
                 is_album,
             };
@@ -569,6 +589,7 @@ async fn main() -> Result<()> {
             }
             OrchestratorEvent::Progress(job, progress) => {
                 if let Some(task) = find_task(job, true) {
+                    let download_codec = progress.codec.clone().or_else(|| task.codec.clone());
                     let download = progress.download.as_ref().map(|download_lane| {
                         use server::rip_tasks::RipTaskDownloadStage as Stage;
 
@@ -582,6 +603,9 @@ async fn main() -> Result<()> {
                                         bytes_done: None,
                                         bytes_total: None,
                                         percent: None,
+                                        codec: download_codec.clone(),
+                                        track_index: None,
+                                        total_tracks: None,
                                     }
                                 }
                                 RipActivity::Connecting { track } => {
@@ -592,6 +616,9 @@ async fn main() -> Result<()> {
                                         bytes_done: None,
                                         bytes_total: None,
                                         percent: None,
+                                        codec: download_codec.clone(),
+                                        track_index: track.track_index,
+                                        total_tracks: track.total_tracks,
                                     }
                                 }
                                 RipActivity::Downloading { track, progress } => {
@@ -604,6 +631,9 @@ async fn main() -> Result<()> {
                                         bytes_done,
                                         bytes_total,
                                         percent,
+                                        codec: download_codec.clone(),
+                                        track_index: track.track_index,
+                                        total_tracks: track.total_tracks,
                                     }
                                 }
                                 RipActivity::MaterializingCachedMedia { track, progress } => {
@@ -616,6 +646,9 @@ async fn main() -> Result<()> {
                                         bytes_done,
                                         bytes_total,
                                         percent,
+                                        codec: download_codec.clone(),
+                                        track_index: track.track_index,
+                                        total_tracks: track.total_tracks,
                                     }
                                 }
                                 RipActivity::Decrypting { track } => {
@@ -626,6 +659,9 @@ async fn main() -> Result<()> {
                                         bytes_done: None,
                                         bytes_total: None,
                                         percent: None,
+                                        codec: download_codec.clone(),
+                                        track_index: track.track_index,
+                                        total_tracks: track.total_tracks,
                                     }
                                 }
                                 RipActivity::Tagging { track } => {
@@ -636,6 +672,9 @@ async fn main() -> Result<()> {
                                         bytes_done: None,
                                         bytes_total: None,
                                         percent: None,
+                                        codec: download_codec.clone(),
+                                        track_index: track.track_index,
+                                        total_tracks: track.total_tracks,
                                     }
                                 }
                             },
@@ -647,6 +686,9 @@ async fn main() -> Result<()> {
                                     bytes_done: None,
                                     bytes_total: None,
                                     percent: None,
+                                    codec: download_codec.clone(),
+                                    track_index: track.track_index,
+                                    total_tracks: track.total_tracks,
                                 }
                             }
                         }
@@ -670,36 +712,51 @@ async fn main() -> Result<()> {
                                     bytes_done,
                                     bytes_total,
                                     percent,
+                                    codec: progress.codec.clone().or_else(|| task.codec.clone()),
+                                    track_index: track.track_index,
+                                    total_tracks: track.total_tracks,
                                 }
                             }
                             UploadLane::ArchiveBuild {
+                                archive,
                                 progress: byte_progress,
-                                ..
                             } => {
                                 let (bytes_done, bytes_total, percent) =
                                     lane_byte_values(byte_progress);
+                                let archive_codec = extract_archive_codec(archive)
+                                    .or_else(|| progress.codec.clone())
+                                    .or_else(|| task.codec.clone());
                                 server::rip_tasks::RipTaskUploadLane {
                                     stage: Stage::BuildingArchive,
-                                    title: Some("Album ZIP archive".to_owned()),
+                                    title: Some(archive.clone()),
                                     artist: None,
                                     bytes_done,
                                     bytes_total,
                                     percent,
+                                    codec: archive_codec,
+                                    track_index: None,
+                                    total_tracks: None,
                                 }
                             }
                             UploadLane::ArchiveUpload {
+                                archive,
                                 progress: byte_progress,
-                                ..
                             } => {
                                 let (bytes_done, bytes_total, percent) =
                                     lane_byte_values(byte_progress);
+                                let archive_codec = extract_archive_codec(archive)
+                                    .or_else(|| progress.codec.clone())
+                                    .or_else(|| task.codec.clone());
                                 server::rip_tasks::RipTaskUploadLane {
                                     stage: Stage::UploadingArchive,
-                                    title: Some("Album ZIP archive".to_owned()),
+                                    title: Some(archive.clone()),
                                     artist: None,
                                     bytes_done,
                                     bytes_total,
                                     percent,
+                                    codec: archive_codec,
+                                    track_index: None,
+                                    total_tracks: None,
                                 }
                             }
                         }
@@ -732,9 +789,8 @@ async fn main() -> Result<()> {
                         }
                     };
 
-                    let (current_track_title, current_track_artist) = if is_archive {
-                        (Some("Album ZIP archive".to_owned()), None)
-                    } else if let Some(upload) = &upload {
+                    let (current_track_title, current_track_artist) = if let Some(upload) = &upload
+                    {
                         (upload.title.clone(), upload.artist.clone())
                     } else if let Some(download) = &download {
                         (download.title.clone(), download.artist.clone())
@@ -743,18 +799,24 @@ async fn main() -> Result<()> {
                     };
 
                     let is_album = job.total_tracks > 1;
-                    let (current_track_index, total_tracks, completed_tracks) = if is_album {
-                        let total = job.total_tracks as u32;
-                        if is_archive {
-                            (None, Some(total), Some(total))
+                    let (current_track_index, total_tracks, completed_tracks, failed_tracks) =
+                        if is_album {
+                            let total = job.total_tracks as u32;
+                            let failed = if job.failed_count > 0 {
+                                Some(job.failed_count as u32)
+                            } else {
+                                None
+                            };
+                            if is_archive {
+                                (None, Some(total), Some(total), failed)
+                            } else {
+                                let finished = (job.cached_count + job.ripped_count) as u32;
+                                let current_idx = (finished + 1).min(total);
+                                (Some(current_idx), Some(total), Some(finished), failed)
+                            }
                         } else {
-                            let finished = (job.cached_count + job.ripped_count) as u32;
-                            let current_idx = (finished + 1).min(total);
-                            (Some(current_idx), Some(total), Some(finished))
-                        }
-                    } else {
-                        (None, None, None)
-                    };
+                            (None, None, None, None)
+                        };
 
                     let next_progress = server::rip_tasks::RipTaskProgress {
                         job_stage: map_job_stage(progress.job_activity.as_ref()),
@@ -766,7 +828,7 @@ async fn main() -> Result<()> {
                         current_track_index,
                         total_tracks,
                         completed_tracks,
-                        codec: progress.codec.clone(),
+                        failed_tracks,
                     };
                     let should_emit = progress_throttles
                         .lock()
@@ -921,6 +983,9 @@ mod tests {
                 bytes_done: Some(bytes_done),
                 bytes_total: Some(100),
                 percent: Some(bytes_done as f32),
+                codec: None,
+                track_index: None,
+                total_tracks: None,
             }),
             upload: None,
             percent: Some(bytes_done as f32),
@@ -929,7 +994,7 @@ mod tests {
             current_track_index: Some(1),
             total_tracks: Some(1),
             completed_tracks: Some(0),
-            codec: None,
+            failed_tracks: None,
         }
     }
 

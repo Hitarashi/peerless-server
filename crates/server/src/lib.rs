@@ -240,9 +240,6 @@ impl ServerState {
                 .or(previous.current_track_index);
             progress.completed_tracks = progress.completed_tracks.or(previous.completed_tracks);
         }
-        if let Some(codec) = progress.codec.take() {
-            task.codec = Some(codec);
-        }
         task.latest_progress = progress;
         drop(tasks);
         let _ = self.task_sync_tx.send(rip_tasks::TaskSyncEvent::Updated {

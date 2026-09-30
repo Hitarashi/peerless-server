@@ -871,7 +871,6 @@
           "task_id",
           "provider",
           "source_track_id",
-          "codec",
           "title",
           "artist",
           "album",
@@ -896,13 +895,6 @@
           },
           "source_track_id": {
             "type": "string"
-          },
-          "codec": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Resolved audio codec of the task (`alac`, `ec-3`, `aac`, `flac`). Reflects the actual stream rendition or archive codec."
           },
           "title": {
             "type": [
@@ -996,6 +988,11 @@
             "type": "integer",
             "format": "uint32",
             "description": "Completed per-track items. During archive build/upload this equals total_tracks."
+          },
+          "failed_tracks": {
+            "type": "integer",
+            "format": "uint32",
+            "description": "Count of failed tracks in an album task; null or omitted when none failed."
           },
           "job_stage": {
             "anyOf": [
@@ -1185,6 +1182,31 @@
             ],
             "format": "float",
             "description": "Phase-local percentage; null whenever bytes_total is unknown."
+          },
+          "codec": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Audio codec associated with this download activity, when known."
+          },
+          "track_index": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 1,
+            "description": "1-based index of the track within the album currently being processed in this lane."
+          },
+          "total_tracks": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 1,
+            "description": "Total tracks in the album being processed in this lane."
           }
         }
       },
@@ -1241,6 +1263,31 @@
             ],
             "format": "float",
             "description": "Phase-local percentage; null whenever bytes_total is unknown."
+          },
+          "codec": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Audio codec associated with this upload activity, when known."
+          },
+          "track_index": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 1,
+            "description": "1-based index of the track within the album currently being processed in this lane."
+          },
+          "total_tracks": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 1,
+            "description": "Total tracks in the album being processed in this lane."
           }
         }
       }

@@ -49,7 +49,6 @@ impl ServerTaskMeta {
             task_id: self.task_id.clone(),
             provider: self.provider.as_str().to_owned(),
             source_track_id: self.track_id.clone(),
-            codec: self.codec.clone(),
             title: self.title.clone(),
             artist: self.artist.clone(),
             album: self.album.clone(),
@@ -70,6 +69,7 @@ impl ServerTaskMeta {
             current_track_index: progress.current_track_index,
             total_tracks: progress.total_tracks,
             completed_tracks: progress.completed_tracks,
+            failed_tracks: progress.failed_tracks,
         }
     }
 }
@@ -80,9 +80,6 @@ pub struct RipTaskSnapshot {
     pub task_id: String,
     pub provider: String,
     pub source_track_id: String,
-    /// Resolved audio codec of the task (`alac`, `ec-3`, `flac`, `aac`).
-    #[schema(example = "alac")]
-    pub codec: Option<String>,
     pub title: Option<String>,
     pub artist: Option<String>,
     pub album: Option<String>,
@@ -114,6 +111,8 @@ pub struct RipTaskSnapshot {
     pub total_tracks: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_tracks: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_tracks: Option<u32>,
 }
 
 /// Orchestration activity that may coexist with either byte-oriented lane.
@@ -183,6 +182,15 @@ pub struct RipTaskDownloadLane {
     pub bytes_total: Option<u64>,
     /// Percentage within this lane's current phase; null when the total is unknown.
     pub percent: Option<f32>,
+    /// Audio codec associated with this lane, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codec: Option<String>,
+    /// 1-based index of the track within the album currently being processed in this lane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track_index: Option<u32>,
+    /// Total tracks in the album being processed in this lane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tracks: Option<u32>,
 }
 
 /// Structured progress for the one serialized upload lane.
@@ -200,6 +208,15 @@ pub struct RipTaskUploadLane {
     pub bytes_total: Option<u64>,
     /// Percentage within this lane's current phase; null when the total is unknown.
     pub percent: Option<f32>,
+    /// Audio codec associated with this lane, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codec: Option<String>,
+    /// 1-based index of the track within the album currently being processed in this lane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track_index: Option<u32>,
+    /// Total tracks in the album being processed in this lane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tracks: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -213,7 +230,7 @@ pub struct RipTaskProgress {
     pub current_track_index: Option<u32>,
     pub total_tracks: Option<u32>,
     pub completed_tracks: Option<u32>,
-    pub codec: Option<String>,
+    pub failed_tracks: Option<u32>,
 }
 
 /// Derive a phase-local percentage without inventing a value for an unknown or zero total.
@@ -244,6 +261,9 @@ mod tests {
             bytes_done: Some(40),
             bytes_total: Some(100),
             percent: Some(40.0),
+            codec: Some("alac".to_owned()),
+            track_index: Some(4),
+            total_tracks: Some(8),
         };
         let upload = RipTaskUploadLane {
             stage: RipTaskUploadStage::UploadingTrack,
@@ -252,6 +272,9 @@ mod tests {
             bytes_done: Some(75),
             bytes_total: Some(100),
             percent: Some(75.0),
+            codec: Some("alac".to_owned()),
+            track_index: Some(3),
+            total_tracks: Some(8),
         };
         let task = ServerTaskMeta {
             task_id: "task-1".to_owned(),
@@ -276,7 +299,7 @@ mod tests {
                 current_track_index: Some(4),
                 total_tracks: Some(8),
                 completed_tracks: Some(3),
-                codec: None,
+                failed_tracks: None,
             },
             is_album: true,
         };
@@ -357,6 +380,9 @@ mod tests {
             bytes_done,
             bytes_total,
             percent: lane_percent(bytes_done, bytes_total),
+            codec: None,
+            track_index: None,
+            total_tracks: None,
         };
 
         assert_eq!(lane.bytes_done, Some(512));

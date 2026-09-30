@@ -137,6 +137,8 @@ pub struct ByteProgress {
 pub struct TrackLabel {
     pub title: String,
     pub artist: String,
+    pub track_index: Option<u32>,
+    pub total_tracks: Option<u32>,
 }
 
 impl TrackLabel {
@@ -144,11 +146,30 @@ impl TrackLabel {
         Self {
             title: title.into(),
             artist: artist.into(),
+            track_index: None,
+            total_tracks: None,
         }
     }
 
+    pub fn with_position(mut self, track_index: Option<u32>, total_tracks: Option<u32>) -> Self {
+        self.track_index = track_index;
+        self.total_tracks = total_tracks;
+        self
+    }
+
     pub fn from_meta(meta: &crate::types::TrackMeta) -> Self {
-        Self::new(meta.title.clone(), meta.artist.clone())
+        Self {
+            title: meta.title.clone(),
+            artist: meta.artist.clone(),
+            track_index: meta
+                .track_number
+                .and_then(|n| u32::try_from(n).ok())
+                .filter(|n| *n > 0),
+            total_tracks: meta
+                .track_count
+                .and_then(|n| u32::try_from(n).ok())
+                .filter(|n| *n > 0),
+        }
     }
 }
 

@@ -170,6 +170,8 @@ struct PipelineItem {
     is_streamable: Option<bool>,
     rendition: Rendition,
     cached: Option<CachedTrack>,
+    track_index: Option<u32>,
+    total_tracks: Option<u32>,
 }
 
 /// One finished rip awaiting its upload.
@@ -178,6 +180,8 @@ struct PipelineRipResult {
     rip_result: TrackRipResult,
     start_time_ms: u64,
     rendition: Rendition,
+    track_index: Option<u32>,
+    total_tracks: Option<u32>,
 }
 
 /// Independent archive state for one requested rendition. Keeping the
@@ -1660,10 +1664,13 @@ impl RipOrchestrator {
             }
         }
 
-        for item in &tracks_to_process {
+        let is_multi = tracks_to_process.len() > 1;
+        let total_count = is_multi.then_some(tracks_to_process.len() as u32);
+        for (index, item) in tracks_to_process.iter().enumerate() {
             if job_controller.is_cancelled() {
                 return Err(OrchestratorError::Cancelled);
             }
+            let track_idx = is_multi.then_some((index + 1) as u32);
             for rendition in options.rendition_policy.renditions() {
                 let cached = rendition.accepted_cache_codecs().iter().find_map(|codec| {
                     existing_tracks_map
@@ -1678,6 +1685,8 @@ impl RipOrchestrator {
                     is_streamable: item.is_streamable,
                     rendition: *rendition,
                     cached,
+                    track_index: track_idx,
+                    total_tracks: total_count,
                 });
             }
         }
@@ -1887,7 +1896,8 @@ impl RipOrchestrator {
                         self.bus.set_download(
                             &shared,
                             Some(DownloadLane::CachedDelivery {
-                                track: TrackLabel::new(cached.title.clone(), cached.artist.clone()),
+                                track: TrackLabel::new(cached.title.clone(), cached.artist.clone())
+                                    .with_position(item.track_index, item.total_tracks),
                             }),
                         );
                         self.bus.emit_progress(&shared);
@@ -2480,11 +2490,28 @@ where
     let track_start_time = now_ms();
     let update_single_track_header =
         !ctx.is_multi_track && item.meta_title.is_none() && item.meta_artist.is_none();
+    let item_track_index = item.track_index;
+    let item_total_tracks = item.total_tracks;
 
     let on_progress: RipProgressCallback = {
         let shared = Arc::clone(shared);
         let bus = bus.clone();
-        Arc::new(move |activity| {
+        Arc::new(move |mut activity| {
+            match &mut activity {
+                RipActivity::Connecting { track }
+                | RipActivity::Downloading { track, .. }
+                | RipActivity::MaterializingCachedMedia { track, .. }
+                | RipActivity::Decrypting { track }
+                | RipActivity::Tagging { track } => {
+                    if track.track_index.is_none() {
+                        track.track_index = item_track_index;
+                    }
+                    if track.total_tracks.is_none() {
+                        track.total_tracks = item_total_tracks;
+                    }
+                }
+                RipActivity::ResolvingMetadata => {}
+            }
             if update_single_track_header {
                 let track = match &activity {
                     RipActivity::Connecting { track }
@@ -2620,6 +2647,8 @@ where
         rip_result,
         start_time_ms: track_start_time,
         rendition: item.rendition,
+        track_index: item.track_index,
+        total_tracks: item.total_tracks,
     }))
 }
 
@@ -2731,7 +2760,8 @@ where
     bus.set_download(
         shared,
         Some(DownloadLane::CachedDelivery {
-            track: TrackLabel::new(cached.title.clone(), cached.artist.clone()),
+            track: TrackLabel::new(cached.title.clone(), cached.artist.clone())
+                .with_position(item.track_index, item.total_tracks),
         }),
     );
     bus.emit_progress(shared);
@@ -2834,7 +2864,8 @@ where
             cached.codec.as_str(),
         );
         let destination = state.dir.join(&filename);
-        let track = TrackLabel::new(cached.title.clone(), cached.artist.clone());
+        let track = TrackLabel::new(cached.title.clone(), cached.artist.clone())
+            .with_position(item.track_index, item.total_tracks);
         bus.set_download(
             shared,
             Some(DownloadLane::Rip(RipActivity::MaterializingCachedMedia {
@@ -4153,20 +4184,12 @@ where
                 plan.archive_filename.clone().into_partial()
             };
             let output = state.dir.join(&archive_name);
-            let zip_title = if plan.total_parts > 1 {
-                format!(
-                    "{} (Part {}/{})",
-                    ctx.zip_album, plan.part_index, plan.total_parts
-                )
-            } else {
-                ctx.zip_album.clone()
-            };
             let bus_clone = bus.clone();
             let shared_clone = Arc::clone(shared);
             let cancel = job_controller.clone();
             let output_clone = output.clone();
             let plan_clone = plan.clone();
-            let title_clone = zip_title.clone();
+            let title_clone = archive_name.as_str().to_string();
             if is_cancelled() {
                 return Ok(first_delivery);
             }
@@ -4266,7 +4289,7 @@ where
             let on_upload: UploadProgressCallback = {
                 let shared = Arc::clone(shared);
                 let bus = bus.clone();
-                let title = zip_title.clone();
+                let title = archive_name.as_str().to_string();
                 Arc::new(move |uploaded, total| {
                     bus.set_upload(
                         &shared,
@@ -4284,7 +4307,7 @@ where
             bus.set_upload(
                 shared,
                 Some(UploadLane::ArchiveUpload {
-                    archive: zip_title.clone(),
+                    archive: archive_name.as_str().to_string(),
                     progress: ByteProgress {
                         completed: 0,
                         total: None,
@@ -4652,7 +4675,19 @@ where
     let track_id = upload_item.track_id.clone();
     let rip_result = &upload_item.rip_result;
     bus.set_codec(shared, Some(rip_result.codec.clone()));
-    let track_label = TrackLabel::new(rip_result.title.clone(), rip_result.artist.clone());
+    let track_label = TrackLabel::new(rip_result.title.clone(), rip_result.artist.clone())
+        .with_position(
+            upload_item.track_index.or_else(|| {
+                u32::try_from(rip_result.track_number)
+                    .ok()
+                    .filter(|n| *n > 0)
+            }),
+            upload_item.total_tracks.or_else(|| {
+                u32::try_from(rip_result.track_count)
+                    .ok()
+                    .filter(|n| *n > 0)
+            }),
+        );
     let is_cancelled =
         || shared.lock().expect("job poisoned").job.is_cancelled || job_controller.is_cancelled();
 

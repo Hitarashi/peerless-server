@@ -239,7 +239,7 @@ async fn create_task(
             current_track_index: None,
             total_tracks: None,
             completed_tracks: None,
-            codec: None,
+            failed_tracks: None,
         },
         is_album: false,
     };
@@ -414,7 +414,7 @@ mod tests {
                 current_track_index: None,
                 total_tracks: None,
                 completed_tracks: None,
-                codec: None,
+                failed_tracks: None,
             },
             is_album: false,
         }
