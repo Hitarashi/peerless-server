@@ -255,6 +255,9 @@ pub struct SearchQuery {
     /// Return cached sources for this MusicBrainz recording identifier.
     #[param(example = "2c2f8a0d-7f34-4d9e-a944-877112fc2285")]
     pub recording_mbid: Option<String>,
+    /// Return cached sources for this International Standard Recording Code (ISRC).
+    #[param(example = "USUM71703861")]
+    pub isrc: Option<String>,
 }
 
 /// Unified search response containing both cached, live, and canonical catalog results.
@@ -301,6 +304,12 @@ pub async fn search_catalog(
             .find_tracks_by_recording_mbid(&recording_mbid, (offset + limit) as i64)
             .await
             .map_err(|error| ServerError::Internal(error.to_string()))?
+    } else if let Some(isrc) = query.isrc.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        state
+            .tracks_repo
+            .find_tracks_by_isrc(isrc)
+            .await
+            .map_err(|error| ServerError::Internal(error.to_string()))?
     } else {
         state
             .tracks_repo
@@ -321,6 +330,7 @@ pub async fn search_catalog(
     if let Some(ref catalog) = state.catalog_service {
         let provider = query.provider.as_deref().unwrap_or("apple");
         if query.recording_mbid.is_none()
+            && query.isrc.is_none()
             && provider.eq_ignore_ascii_case("apple")
             && !query.q.trim().is_empty()
             && let Ok(results) = catalog
