@@ -245,9 +245,8 @@ async fn resolve_artist_artwork(
 
     let encoded_name = music::url::urlencode(artist_name);
 
-    let search_url = format!(
-        "https://itunes.apple.com/search?term={encoded_name}&entity=musicArtist&limit=5"
-    );
+    let search_url =
+        format!("https://itunes.apple.com/search?term={encoded_name}&entity=musicArtist&limit=5");
 
     let mut artist_id = None;
     let mut artist_link_url = None;
@@ -268,13 +267,13 @@ async fn resolve_artist_artwork(
                 .and_then(|n| n.as_str())
                 .unwrap_or_default()
                 .to_lowercase();
-            let res_norm: String = res_artist
-                .chars()
-                .filter(|c| c.is_alphanumeric())
-                .collect();
+            let res_norm: String = res_artist.chars().filter(|c| c.is_alphanumeric()).collect();
             if res_norm == target_norm || res_artist == artist_name.to_lowercase() {
                 artist_id = item.get("artistId").and_then(|id| id.as_i64());
-                artist_link_url = item.get("artistLinkUrl").and_then(|u| u.as_str()).map(String::from);
+                artist_link_url = item
+                    .get("artistLinkUrl")
+                    .and_then(|u| u.as_str())
+                    .map(String::from);
                 break;
             }
         }
@@ -285,7 +284,9 @@ async fn resolve_artist_artwork(
         && let Some(token_prov) = catalog.token_provider()
     {
         let amp_url = format!("https://amp-api.music.apple.com/v1/catalog/us/artists/{id}");
-        if let Ok(body) = token_prov.fetch_amp(&amp_url, std::time::Duration::from_secs(6)).await
+        if let Ok(body) = token_prov
+            .fetch_amp(&amp_url, std::time::Duration::from_secs(6))
+            .await
             && let Ok(json) = serde_json::from_str::<serde_json::Value>(&body)
             && let Some(url_template) = json
                 .get("data")
@@ -300,7 +301,9 @@ async fn resolve_artist_artwork(
                 .replace("{w}", &size.to_string())
                 .replace("{h}", &size.to_string())
                 .replace("{f}", "jpg");
-            ARTIST_ARTWORK_CACHE.insert(cache_key, formatted.clone()).await;
+            ARTIST_ARTWORK_CACHE
+                .insert(cache_key, formatted.clone())
+                .await;
             return Ok(formatted);
         }
     }
@@ -319,19 +322,18 @@ async fn resolve_artist_artwork(
             .await
             && resp.status().is_success()
             && let Ok(html) = resp.text().await
+            && let Some(pos) = html.find("property=\"og:image\" content=\"")
         {
-            if let Some(pos) = html.find("property=\"og:image\" content=\"") {
-                let rest = &html[pos + 29..];
-                if let Some(end) = rest.find('\"') {
-                    let og_image = &rest[..end];
-                    let formatted = if let Some(last_slash) = og_image.rfind('/') {
-                        format!("{}/{size}x{size}bb.jpg", &og_image[..last_slash])
-                    } else {
-                        og_image.to_string()
-                    };
-                    ARTIST_ARTWORK_CACHE.insert(cache_key, formatted.clone()).await;
-                    return Ok(formatted);
-                }
+            let rest = &html[pos + 29..];
+            if let Some(end) = rest.find('\"') {
+                let og_image = &rest[..end];
+                let formatted = if let Some(last_slash) = og_image.rfind('/') {
+                    format!("{}/{size}x{size}bb.jpg", &og_image[..last_slash])
+                } else {
+                    og_image.to_string()
+                };
+                ARTIST_ARTWORK_CACHE.insert(cache_key, formatted.clone()).await;
+                return Ok(formatted);
             }
         }
     }

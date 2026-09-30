@@ -172,6 +172,76 @@ impl FerogramTelegramSink {
     }
 }
 
+/// Force an uploaded document to be classified as music.
+///
+/// The uploader infers a MIME type from the file and builds document attributes
+/// to match. `.m4a` is an MP4 container, and the inference is inconsistent: some
+/// tracks come back as `video/mp4` carrying a `Video` attribute instead of
+/// `audio/m4a` with an `Audio` one. Telegram then renders them as a black video
+/// player with a 00:00 scrubber under "Media" rather than a Music entry, and the
+/// upload's own post-send audio check rejects them, leaving an orphaned message
+/// in the dump channel with no database row.
+///
+/// Rather than trust the inference, state the intent: drop any non-audio
+/// attribute, carry an explicit `Audio` attribute with the real duration, and
+/// give the document an `audio/*` MIME type so both Telegram and the streaming
+/// server agree on what the file is.
+fn force_audio_document(
+    document: &mut ferogram::tl::types::InputMediaUploadedDocument,
+    file_path: &std::path::Path,
+    duration: i32,
+    title: &str,
+    performer: &str,
+) {
+    use ferogram::tl::enums::DocumentAttribute;
+
+    if !document.mime_type.starts_with("audio/") {
+        document.mime_type = audio_mime_for(file_path).to_string();
+    }
+
+    // Keep the display filename; discard whatever the uploader inferred.
+    let filename = document
+        .attributes
+        .iter()
+        .find_map(|attribute| match attribute {
+            DocumentAttribute::Filename(name) => Some(name.file_name.clone()),
+            _ => None,
+        });
+    document.attributes.clear();
+    document.attributes.push(DocumentAttribute::Audio(
+        ferogram::tl::types::DocumentAttributeAudio {
+            voice: false,
+            duration,
+            title: Some(title.to_string()),
+            performer: Some(performer.to_string()),
+            waveform: None,
+        },
+    ));
+    if let Some(name) = filename {
+        document.attributes.push(DocumentAttribute::Filename(
+            ferogram::tl::types::DocumentAttributeFilename { file_name: name },
+        ));
+    }
+}
+
+/// The MIME type to declare for a lossless rip, matching the codec the rip
+/// pipeline selected rather than the container extension.
+fn audio_mime_for(file_path: &std::path::Path) -> &'static str {
+    match file_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("flac") => "audio/flac",
+        Some("m4a" | "mp4" | "m4b") => "audio/mp4",
+        Some("ogg" | "oga") => "audio/ogg",
+        Some("opus") => "audio/opus",
+        Some("mp3") => "audio/mpeg",
+        _ => "audio/mp4",
+    }
+}
+
 impl Delivery for FerogramTelegramSink {
     fn publish_to_dump<'a>(
         &'a self,
@@ -207,15 +277,13 @@ impl Delivery for FerogramTelegramSink {
                     let mut media = uploaded.as_auto_media();
                     if let ferogram::tl::enums::InputMedia::UploadedDocument(document) = &mut media
                     {
-                        for attribute in &mut document.attributes {
-                            if let ferogram::tl::enums::DocumentAttribute::Audio(audio) = attribute
-                            {
-                                audio.voice = false;
-                                audio.duration = duration;
-                                audio.title = Some(title.clone());
-                                audio.performer = Some(performer.clone());
-                            }
-                        }
+                        force_audio_document(
+                            document,
+                            std::path::Path::new(&file_path),
+                            duration,
+                            &title,
+                            &performer,
+                        );
                     }
                     let message = self
                         .client
@@ -547,5 +615,149 @@ mod tests {
             FerogramTelegramSink::file_ids(&ferogram::media::Document::from_raw(raw));
         assert_eq!(file_id, "mtproto:v1:2:7:11");
         assert_eq!(unique_id, "mtproto:document:7");
+    }
+
+    /// Build the document shape the uploader produces when it misclassifies a
+    /// `.m4a` as video — the exact state observed in the dump channel.
+    fn video_classified_document() -> ferogram::tl::types::InputMediaUploadedDocument {
+        ferogram::tl::types::InputMediaUploadedDocument {
+            nosound_video: false,
+            force_file: false,
+            spoiler: false,
+            file: ferogram::tl::enums::InputFile::Big(ferogram::tl::types::InputFileBig {
+                id: 1,
+                parts: 1,
+                name: "probe.m4a".into(),
+            }),
+            thumb: None,
+            mime_type: "video/mp4".into(),
+            attributes: vec![
+                ferogram::tl::enums::DocumentAttribute::Video(
+                    ferogram::tl::types::DocumentAttributeVideo {
+                        round_message: false,
+                        supports_streaming: true,
+                        nosound: false,
+                        duration: 0.0,
+                        w: 320,
+                        h: 320,
+                        preload_prefix_size: None,
+                        video_start_ts: None,
+                        video_codec: None,
+                    },
+                ),
+                ferogram::tl::enums::DocumentAttribute::Filename(
+                    ferogram::tl::types::DocumentAttributeFilename {
+                        file_name: "05. Song [Atmos].m4a".into(),
+                    },
+                ),
+            ],
+            stickers: None,
+            ttl_seconds: None,
+            video_cover: None,
+            video_timestamp: None,
+        }
+    }
+
+    #[test]
+    fn video_classified_upload_is_forced_back_to_audio() {
+        let mut document = video_classified_document();
+        force_audio_document(
+            &mut document,
+            std::path::Path::new("/tmp/05. Song [Atmos].m4a"),
+            196,
+            "The Maari Swag",
+            "Anirudh Ravichander",
+        );
+
+        assert_eq!(document.mime_type, "audio/mp4");
+        assert!(document.mime_type.starts_with("audio/"));
+
+        let audio = document
+            .attributes
+            .iter()
+            .find_map(|attribute| match attribute {
+                ferogram::tl::enums::DocumentAttribute::Audio(audio) => Some(audio),
+                _ => None,
+            })
+            .expect("an audio attribute must exist");
+        assert!(!audio.voice);
+        assert_eq!(audio.duration, 196);
+        assert_eq!(audio.title.as_deref(), Some("The Maari Swag"));
+        assert_eq!(audio.performer.as_deref(), Some("Anirudh Ravichander"));
+
+        assert!(
+            !document.attributes.iter().any(|attribute| matches!(
+                attribute,
+                ferogram::tl::enums::DocumentAttribute::Video(_)
+            )),
+            "a video attribute would make Telegram render this as media"
+        );
+    }
+
+    #[test]
+    fn already_audio_upload_keeps_its_filename_and_gains_real_duration() {
+        let mut document = video_classified_document();
+        document.mime_type = "audio/m4a".into();
+        document.attributes = vec![ferogram::tl::enums::DocumentAttribute::Audio(
+            ferogram::tl::types::DocumentAttributeAudio {
+                voice: false,
+                duration: 0,
+                title: Some("stale".into()),
+                performer: None,
+                waveform: None,
+            },
+        )];
+
+        force_audio_document(
+            &mut document,
+            std::path::Path::new("/tmp/track.flac"),
+            130,
+            "Heartbreak Hotel",
+            "Elvis Presley",
+        );
+
+        // A correct audio upload must not be rewritten into a different
+        // container type; only the attribute detail is filled in.
+        assert_eq!(document.mime_type, "audio/m4a");
+        let audio = document
+            .attributes
+            .iter()
+            .find_map(|attribute| match attribute {
+                ferogram::tl::enums::DocumentAttribute::Audio(audio) => Some(audio),
+                _ => None,
+            })
+            .expect("audio attribute");
+        assert_eq!(audio.duration, 130);
+        assert_eq!(audio.title.as_deref(), Some("Heartbreak Hotel"));
+    }
+
+    #[test]
+    fn filename_survives_the_rewrite() {
+        let mut document = video_classified_document();
+        force_audio_document(
+            &mut document,
+            std::path::Path::new("/tmp/05. Song [Atmos].m4a"),
+            196,
+            "The Maari Swag",
+            "Anirudh Ravichander",
+        );
+        assert!(
+            document.attributes.iter().any(|attribute| matches!(
+                attribute,
+                ferogram::tl::enums::DocumentAttribute::Filename(name)
+                    if name.file_name == "05. Song [Atmos].m4a"
+            )),
+            "the displayed filename must be preserved"
+        );
+    }
+
+    #[test]
+    fn mime_follows_the_ripped_container() {
+        assert_eq!(audio_mime_for(std::path::Path::new("a.m4a")), "audio/mp4");
+        assert_eq!(audio_mime_for(std::path::Path::new("a.FLAC")), "audio/flac");
+        assert_eq!(audio_mime_for(std::path::Path::new("a.opus")), "audio/opus");
+        assert_eq!(audio_mime_for(std::path::Path::new("a.mp3")), "audio/mpeg");
+        // Unknown extension: still audio, never video.
+        assert!(audio_mime_for(std::path::Path::new("a.bin")).starts_with("audio/"));
     }
 }
