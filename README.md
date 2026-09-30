@@ -39,7 +39,7 @@ mirrors with native client applications (such as [Peerless KMP](https://github.c
 │  ┌─────────────────────────┴──────────────────────────┐  │
 │  │ Axum Web Server & Playback Sync Hub                │  │
 │  │ - /api/v1/stream (HMAC signed tickets)             │  │
-│  │ - /api/v1/ws/playback (Spotify Connect WebSockets) │  │
+│  │ - /api/v1/ws/sync (Playback & Task Sync WebSockets) │  │
 │  │ - /api/v1/search (ISRC canonical results)           │  │
 │  │ - /api/v1/assets/tracks/{id}/lyrics (Lyrics)        │  │
 │  │ - /api/v1/integrations/lastfm (Encrypted AES-GCM)  │  │
@@ -60,7 +60,7 @@ mirrors with native client applications (such as [Peerless KMP](https://github.c
   distributing load across healthy tokens.
 - **Uniform Block Chunk Cache**: Fixed 512KB block LRU cache (`moka`) preventing duplicate Telegram downloads on seeks
   and scrubs.
-- **Spotify Connect-Style WebSockets (`/api/v1/ws/playback`)**: Full-duplex playback synchronization hub fanning out
+- **Spotify Connect-Style WebSockets (`/api/v1/ws/sync`)**: Full-duplex synchronization hub fanning out
   track state, progress, and remote playback commands across connected clients.
 - **Multi-Provider Synced Lyrics Engine (`crates/lyrics`)**: Aggregates word-by-word and line-synced lyrics from Apple
   Music TTML (`amll-ttml-db`), BetterLyrics, Paxsenix, Unison, NetEase, QQ Music, Kugou, Musixmatch, Spotify, YouTube
@@ -101,7 +101,7 @@ mirrors with native client applications (such as [Peerless KMP](https://github.c
 |                  | `GET`      | `/api/v1/auth/me/avatar`                                        | Fetch the authenticated user's Telegram avatar               |
 | **Streaming**    | `GET`      | `/api/v1/tracks/{id}/playback`                                  | Acquire short-lived signed stream ticket                     |
 |                  | `GET/HEAD` | `/api/v1/stream?ticket=...`                                     | HTTP byte-range streaming (206 for Range requests)           |
-|                  | `GET`      | `/api/v1/ws/playback`                                           | Playback sync; create, cancel, and observe rip tasks         |
+|                  | `GET`      | `/api/v1/ws/sync`                                               | Playback sync; create, cancel, and observe rip tasks         |
 | **Catalog**      | `GET`      | `/api/v1/search?q=...`                                          | Hybrid search (cached PostgreSQL + live catalog)             |
 |                  | `GET`      | `/api/v1/tracks/{id}`                                           | Complete track metadata and audio specifications             |
 |                  | `GET`      | `/api/v1/albums`                                                | Paginated list of cached albums                              |
@@ -152,7 +152,7 @@ Public routes, which need no session bearer token:
 - `GET`/`HEAD /api/v1/stream?ticket=...` — authorized by its own short-lived HMAC-signed ticket derived from `APP_KEY`,
   not by a session bearer token. Get one from `GET /api/v1/tracks/{id}/playback`.
 
-The playback WebSocket `GET /api/v1/ws/playback` requires the same `Authorization: Bearer <token>` header during the
+The playback WebSocket `GET /api/v1/ws/sync` requires the same `Authorization: Bearer <token>` header during the
 HTTP upgrade. It previously also accepted the session token as a `?token=` query parameter; **that form has been
 removed and a `token` query parameter is rejected**, because query-string credentials end up in URLs, proxy and access
 logs, and browser history.
@@ -161,7 +161,7 @@ logs, and browser history.
 
 ## Rip Tasks over the Playback WebSocket
 
-Rip-task creation, cancellation, and listing have moved from REST to the authenticated `GET /api/v1/ws/playback`
+Rip-task creation, cancellation, and listing have moved from REST to the authenticated `GET /api/v1/ws/sync`
 WebSocket. This is a breaking change for clients using the removed `POST /api/v1/tasks/rip`, `GET /api/v1/tasks`, or
 `DELETE /api/v1/tasks/{id}` endpoints. Messages use a `type` and `payload` JSON envelope. The authoritative contract is
 [`/api/v1/docs-ws.json`](/api/v1/docs-ws.json); the rendered reference is available at [`/api/v1/docs`](/api/v1/docs).
