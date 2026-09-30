@@ -95,7 +95,7 @@ impl RecordingMbidResolver {
             }
         }
 
-        let url = format!("https://musicbrainz.org/ws/2/isrc/{isrc}?fmt=json");
+        let url = format!("https://musicbrainz.org/ws/2/isrc/{isrc}?inc=artists&fmt=json");
         let response = self.client.get(&url).send().await;
         *gate = Some(Instant::now());
         let response = match response.and_then(reqwest::Response::error_for_status) {
