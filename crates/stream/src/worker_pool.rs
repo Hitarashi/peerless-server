@@ -8,7 +8,7 @@ use std::{
 
 use bytes::Bytes;
 pub use db::hash_token as hash_bot_token;
-use ferogram::{ErrorKind, InvocationErrorExt, tl};
+use ferogram::{ErrorKind, InvocationErrorExt, PeerRef, tl};
 use tokio::sync::{Mutex, Semaphore};
 
 use crate::{
@@ -278,6 +278,57 @@ impl StreamWorkerPool {
         best_worker.ok_or(StreamError::AllWorkersUnavailable)
     }
 
+    /// Pick one healthy worker for the lifetime of an HTTP audio stream.
+    pub fn select_worker_for_stream(&self) -> Result<usize, StreamError> {
+        self.pick_least_loaded().or_else(|error| {
+            if self.primary_fallback.is_some() {
+                Ok(usize::MAX)
+            } else {
+                Err(error)
+            }
+        })
+    }
+
+    /// Fetch a source message using the same Telegram login that will download
+    /// its file. A worker may need its own peer cache populated before resolving
+    /// a private dump channel by ID, so load its dialogs once on a cache miss.
+    pub async fn get_messages_for_worker(
+        &self,
+        worker_id: usize,
+        peer: PeerRef,
+        ids: &[i32],
+    ) -> Result<Vec<ferogram::update::IncomingMessage>, StreamError> {
+        let worker = self
+            .worker_by_id(worker_id)
+            .ok_or(StreamError::AllWorkersUnavailable)?;
+        match worker.client.get_messages(peer.clone(), ids).await {
+            Ok(messages) => Ok(messages),
+            Err(_) => {
+                worker
+                    .client
+                    .get_dialogs(100)
+                    .await
+                    .map_err(StreamError::Telegram)?;
+                worker
+                    .client
+                    .get_messages(peer, ids)
+                    .await
+                    .map_err(StreamError::Telegram)
+            }
+        }
+    }
+
+    fn worker_by_id(&self, worker_id: usize) -> Option<&WorkerInstance> {
+        self.workers
+            .iter()
+            .find(|worker| worker.id == worker_id)
+            .or_else(|| {
+                self.primary_fallback
+                    .as_ref()
+                    .filter(|worker| worker.id == worker_id)
+            })
+    }
+
     /// Fetch a single MTProto file chunk with least-loaded dispatch and failover retries.
     pub async fn fetch_chunk(
         &self,
@@ -306,7 +357,25 @@ impl StreamWorkerPool {
     ) -> Result<Bytes, StreamError> {
         let started = Instant::now();
         let result = self
-            .fetch_chunk_with_budget(location, dc_id, offset, limit, deadline)
+            .fetch_chunk_with_budget(location, dc_id, offset, limit, deadline, None)
+            .await;
+        self.metrics
+            .record_chunk_fetch(started.elapsed(), result.is_ok());
+        result
+    }
+
+    pub(crate) async fn fetch_chunk_until_on_worker(
+        &self,
+        worker_id: usize,
+        location: &tl::enums::InputFileLocation,
+        dc_id: &AtomicI32,
+        offset: i64,
+        limit: i32,
+        deadline: tokio::time::Instant,
+    ) -> Result<Bytes, StreamError> {
+        let started = Instant::now();
+        let result = self
+            .fetch_chunk_with_budget(location, dc_id, offset, limit, deadline, Some(worker_id))
             .await;
         self.metrics
             .record_chunk_fetch(started.elapsed(), result.is_ok());
@@ -320,8 +389,11 @@ impl StreamWorkerPool {
         offset: i64,
         limit: i32,
         deadline: tokio::time::Instant,
+        pinned_worker_id: Option<usize>,
     ) -> Result<Bytes, StreamError> {
-        let worker_attempt_limit = if self.primary_fallback.is_some() && !self.workers.is_empty() {
+        let worker_attempt_limit = if pinned_worker_id.is_some() {
+            MAX_FETCH_ATTEMPTS
+        } else if self.primary_fallback.is_some() && !self.workers.is_empty() {
             MAX_FETCH_ATTEMPTS - 1
         } else {
             MAX_FETCH_ATTEMPTS
@@ -349,36 +421,60 @@ impl StreamWorkerPool {
             self.metrics
                 .record_rpc_slot_wait(slot_wait_started.elapsed());
 
-            let (worker, is_primary) = match self.pick_least_loaded() {
-                Ok(worker_id) => (&self.workers[worker_id], false),
-                Err(StreamError::AllWorkersUnavailable)
-                    if (!primary_attempted || self.workers.is_empty())
-                        && let Some(ref primary) = self.primary_fallback =>
-                {
-                    primary_attempted = true;
-                    (primary, true)
-                }
-                Err(StreamError::AllWorkersUnavailable) if !self.workers.is_empty() => {
+            let (worker, is_primary) = if let Some(worker_id) = pinned_worker_id {
+                let Some(worker) = self.worker_by_id(worker_id) else {
+                    return Err(StreamError::AllWorkersUnavailable);
+                };
+                let is_primary = self
+                    .primary_fallback
+                    .as_ref()
+                    .is_some_and(|primary| primary.id == worker_id);
+                if !is_primary && !self.circuit_breaker.is_available(worker_id) {
                     drop(slot_permit.take());
                     let wait = self
-                        .workers
-                        .iter()
-                        .filter_map(|worker| self.circuit_breaker.quarantine_remaining(worker.id))
-                        .min()
+                        .circuit_breaker
+                        .quarantine_remaining(worker_id)
                         .unwrap_or(Duration::from_millis(500));
-                    tracing::debug!(
-                        wait_ms = wait.as_millis(),
-                        "All stream workers are quarantined; waiting for the next worker"
-                    );
                     if !sleep_before_retry(wait, deadline).await {
                         break;
                     }
                     continue;
                 }
-                Err(StreamError::AllWorkersUnavailable) => {
-                    return Err(StreamError::AllWorkersUnavailable);
+                (worker, is_primary)
+            } else {
+                match self.pick_least_loaded() {
+                    Ok(worker_id) => (&self.workers[worker_id], false),
+                    Err(StreamError::AllWorkersUnavailable)
+                        if (!primary_attempted || self.workers.is_empty())
+                            && let Some(ref primary) = self.primary_fallback =>
+                    {
+                        primary_attempted = true;
+                        (primary, true)
+                    }
+                    Err(StreamError::AllWorkersUnavailable) if !self.workers.is_empty() => {
+                        drop(slot_permit.take());
+                        let wait = self
+                            .workers
+                            .iter()
+                            .filter_map(|worker| {
+                                self.circuit_breaker.quarantine_remaining(worker.id)
+                            })
+                            .min()
+                            .unwrap_or(Duration::from_millis(500));
+                        tracing::debug!(
+                            wait_ms = wait.as_millis(),
+                            "All stream workers are quarantined; waiting for the next worker"
+                        );
+                        if !sleep_before_retry(wait, deadline).await {
+                            break;
+                        }
+                        continue;
+                    }
+                    Err(StreamError::AllWorkersUnavailable) => {
+                        return Err(StreamError::AllWorkersUnavailable);
+                    }
+                    Err(err) => return Err(err),
                 }
-                Err(err) => return Err(err),
             };
             let slot_permit = slot_permit.expect("RPC slot permit is held after worker selection");
 
@@ -547,7 +643,8 @@ impl StreamWorkerPool {
         }
 
         // Reserve the final attempt for the primary client when it was not already used.
-        if let Some(ref primary) = self.primary_fallback
+        if pinned_worker_id.is_none()
+            && let Some(ref primary) = self.primary_fallback
             && !primary_attempted
             && attempts < MAX_FETCH_ATTEMPTS
             && tokio::time::Instant::now() < deadline

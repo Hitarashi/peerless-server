@@ -63,8 +63,8 @@ pub struct AudioStreamHeaders {
 pub struct StreamEngine {
     worker_pool: Arc<StreamWorkerPool>,
     cache: Arc<ChunkCache>,
-    metadata_cache: Cache<i32, Arc<TrackMediaMetadata>>,
-    metadata_refresh_locks: Cache<i32, Arc<Mutex<()>>>,
+    metadata_cache: Cache<(i32, usize), Arc<TrackMediaMetadata>>,
+    metadata_refresh_locks: Cache<(i32, usize), Arc<Mutex<()>>>,
     tracks_repo: db::TracksRepository,
     primary_client: Option<ferogram::Client>,
     dump_peer: PeerRef,
@@ -117,16 +117,28 @@ impl StreamEngine {
         db_track_id: i32,
         force_refresh: bool,
     ) -> Result<Arc<TrackMediaMetadata>, StreamError> {
-        if !force_refresh && let Some(cached) = self.metadata_cache.get(&db_track_id).await {
+        self.resolve_track_media_for_worker(db_track_id, usize::MAX, force_refresh)
+            .await
+    }
+
+    async fn resolve_track_media_for_worker(
+        &self,
+        db_track_id: i32,
+        worker_id: usize,
+        force_refresh: bool,
+    ) -> Result<Arc<TrackMediaMetadata>, StreamError> {
+        let cache_key = (db_track_id, worker_id);
+        if !force_refresh && let Some(cached) = self.metadata_cache.get(&cache_key).await {
             return Ok(cached);
         }
 
-        self.load_track_media(db_track_id).await
+        self.load_track_media(db_track_id, worker_id).await
     }
 
     async fn load_track_media(
         &self,
         db_track_id: i32,
+        worker_id: usize,
     ) -> Result<Arc<TrackMediaMetadata>, StreamError> {
         let track = self
             .tracks_repo
@@ -134,15 +146,20 @@ impl StreamEngine {
             .await?
             .ok_or(StreamError::TrackNotFound(db_track_id))?;
 
-        let client = self
-            .primary_client
-            .as_ref()
-            .ok_or(StreamError::AllWorkersUnavailable)?;
-
-        let messages = client
-            .get_messages(self.dump_peer.clone(), &[track.message_id])
-            .await
-            .map_err(StreamError::Telegram)?;
+        let messages = if worker_id == usize::MAX {
+            let client = self
+                .primary_client
+                .as_ref()
+                .ok_or(StreamError::AllWorkersUnavailable)?;
+            client
+                .get_messages(self.dump_peer.clone(), &[track.message_id])
+                .await
+                .map_err(StreamError::Telegram)?
+        } else {
+            self.worker_pool
+                .get_messages_for_worker(worker_id, self.dump_peer.clone(), &[track.message_id])
+                .await?
+        };
 
         let message = messages
             .into_iter()
@@ -170,7 +187,7 @@ impl StreamEngine {
         });
 
         self.metadata_cache
-            .insert(db_track_id, Arc::clone(&metadata))
+            .insert((db_track_id, worker_id), Arc::clone(&metadata))
             .await;
         Ok(metadata)
     }
@@ -178,21 +195,23 @@ impl StreamEngine {
     async fn refresh_track_media_if_stale(
         &self,
         db_track_id: i32,
+        worker_id: usize,
         stale_file_reference: &[u8],
     ) -> Result<Arc<TrackMediaMetadata>, StreamError> {
+        let cache_key = (db_track_id, worker_id);
         let refresh_lock = self
             .metadata_refresh_locks
-            .get_with(db_track_id, async { Arc::new(Mutex::new(())) })
+            .get_with(cache_key, async { Arc::new(Mutex::new(())) })
             .await;
         let _guard = refresh_lock.lock().await;
 
-        if let Some(cached) = self.metadata_cache.get(&db_track_id).await
+        if let Some(cached) = self.metadata_cache.get(&cache_key).await
             && cached.file_reference.as_slice() != stale_file_reference
         {
             return Ok(cached);
         }
 
-        self.load_track_media(db_track_id).await
+        self.load_track_media(db_track_id, worker_id).await
     }
 
     /// Open an audio byte stream for the given track and HTTP Range header.
@@ -202,8 +221,11 @@ impl StreamEngine {
         &self,
         db_track_id: i32,
         range_header: Option<&str>,
+        worker_id: usize,
     ) -> Result<(Arc<TrackMediaMetadata>, AudioStreamHeaders, ByteRange), StreamError> {
-        let meta = self.resolve_track_media(db_track_id, false).await?;
+        let meta = self
+            .resolve_track_media_for_worker(db_track_id, worker_id, false)
+            .await?;
 
         let (range, status, content_range) = if let Some(header) = range_header {
             let parsed_range = ByteRange::parse(header, meta.file_size)?;
@@ -236,7 +258,9 @@ impl StreamEngine {
         db_track_id: i32,
         range_header: Option<&str>,
     ) -> Result<AudioStreamHeaders, StreamError> {
-        let (_, headers, _) = self.prepare_stream(db_track_id, range_header).await?;
+        let (_, headers, _) = self
+            .prepare_stream(db_track_id, range_header, usize::MAX)
+            .await?;
         Ok(headers)
     }
 
@@ -248,7 +272,10 @@ impl StreamEngine {
         db_track_id: i32,
         range_header: Option<&str>,
     ) -> Result<AudioStreamResponse, StreamError> {
-        let (meta, headers, range) = self.prepare_stream(db_track_id, range_header).await?;
+        let worker_id = self.worker_pool.select_worker_for_stream()?;
+        let (meta, headers, range) = self
+            .prepare_stream(db_track_id, range_header, worker_id)
+            .await?;
         let engine = self.clone();
         let stale_file_reference = meta.file_reference.clone();
         let refresher: crate::pipe::LocationRefresher = Arc::new(move || {
@@ -256,7 +283,7 @@ impl StreamEngine {
             let stale_file_reference = stale_file_reference.clone();
             Box::pin(async move {
                 let fresh_meta = engine
-                    .refresh_track_media_if_stale(db_track_id, &stale_file_reference)
+                    .refresh_track_media_if_stale(db_track_id, worker_id, &stale_file_reference)
                     .await?;
                 Ok(fresh_meta.input_location())
             })
@@ -266,6 +293,7 @@ impl StreamEngine {
             range,
             document_id: meta.document_id,
             location: Arc::new(tokio::sync::RwLock::new(meta.input_location())),
+            worker_id,
             dc_id: Arc::new(std::sync::atomic::AtomicI32::new(meta.dc_id)),
             refresh_location: Some(refresher),
         };

@@ -111,6 +111,7 @@ pub struct StreamPipeParams {
     pub range: ByteRange,
     pub document_id: i64,
     pub location: Arc<RwLock<tl::enums::InputFileLocation>>,
+    pub worker_id: usize,
     pub dc_id: Arc<AtomicI32>,
     pub refresh_location: Option<LocationRefresher>,
 }
@@ -170,7 +171,13 @@ pub fn create_stream_pipe(
             let chunk_data = match chunk_result {
                 Ok(bytes) => bytes,
                 Err(err) => {
-                    tracing::warn!(chunk_idx, %err, "Stream chunk fetch failed");
+                    tracing::warn!(
+                        worker_id = params.worker_id,
+                        document_id = params.document_id,
+                        chunk_idx,
+                        %err,
+                        "Stream chunk fetch failed"
+                    );
                     let io_err = std::io::Error::other(format!(
                         "Failed to fetch stream chunk {chunk_idx}: {err}"
                     ));
@@ -230,7 +237,14 @@ async fn fetch_chunk_with_refresh(
     let current_location = params.location.read().await.clone();
 
     match worker_pool
-        .fetch_chunk_until(&current_location, &params.dc_id, offset, limit, deadline)
+        .fetch_chunk_until_on_worker(
+            params.worker_id,
+            &current_location,
+            &params.dc_id,
+            offset,
+            limit,
+            deadline,
+        )
         .await
     {
         Err(StreamError::FileReferenceExpired) => {
@@ -238,6 +252,12 @@ async fn fetch_chunk_with_refresh(
                 return Err(StreamError::FileReferenceExpired);
             };
 
+            tracing::debug!(
+                worker_id = params.worker_id,
+                document_id = params.document_id,
+                chunk_idx,
+                "Refreshing Telegram file reference with the selected stream worker"
+            );
             metrics.record_file_reference_refresh();
             let new_location = match tokio::time::timeout_at(deadline, refresher()).await {
                 Ok(result) => result?,
@@ -249,7 +269,14 @@ async fn fetch_chunk_with_refresh(
             };
             *params.location.write().await = new_location.clone();
             worker_pool
-                .fetch_chunk_until(&new_location, &params.dc_id, offset, limit, deadline)
+                .fetch_chunk_until_on_worker(
+                    params.worker_id,
+                    &new_location,
+                    &params.dc_id,
+                    offset,
+                    limit,
+                    deadline,
+                )
                 .await
         }
         result => result,
