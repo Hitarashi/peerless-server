@@ -18,8 +18,8 @@ use crate::{
 };
 
 const MAX_FETCH_ATTEMPTS: usize = 4;
-pub(crate) const CHUNK_FETCH_DEADLINE: Duration = Duration::from_secs(45);
-const RPC_TIMEOUT: Duration = Duration::from_secs(15);
+pub(crate) const CHUNK_FETCH_DEADLINE: Duration = Duration::from_secs(25);
+const RPC_TIMEOUT: Duration = Duration::from_secs(12);
 const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(2);
 
 fn is_stale_file_reference_error(error: &ferogram::InvocationError) -> bool {
