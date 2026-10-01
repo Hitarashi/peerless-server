@@ -13,6 +13,14 @@ use tokio::sync::Mutex;
 
 use crate::{StreamError, circuit_breaker::CircuitBreaker};
 
+fn is_stale_file_reference_error(error: &ferogram::InvocationError) -> bool {
+    matches!(
+        error,
+        ferogram::InvocationError::Rpc(rpc)
+            if rpc.name == "FILE_REFERENCE_EXPIRED" || rpc.name == "FILE_REFERENCE_INVALID"
+    )
+}
+
 struct InFlightGuard<'a>(&'a AtomicUsize);
 
 impl<'a> InFlightGuard<'a> {
@@ -323,6 +331,9 @@ impl StreamWorkerPool {
                 Ok(tl::enums::upload::File::CdnRedirect(_)) => {
                     return Err(StreamError::UnsupportedCdnRedirect);
                 }
+                Err(err) if is_stale_file_reference_error(&err) => {
+                    return Err(StreamError::FileReferenceExpired);
+                }
                 Err(err) => match err.kind() {
                     ErrorKind::FloodWait(secs) => {
                         attempts += 1;
@@ -353,9 +364,6 @@ impl StreamWorkerPool {
                             break;
                         }
                         continue;
-                    }
-                    ErrorKind::Rpc { ref name, .. } if name == "FILE_REFERENCE_EXPIRED" => {
-                        return Err(StreamError::FileReferenceExpired);
                     }
                     ErrorKind::Rpc { ref name, .. } if name == "CONNECTION_NOT_INITED" => {
                         attempts += 1;
@@ -428,10 +436,10 @@ impl StreamWorkerPool {
                 Ok(tl::enums::upload::File::CdnRedirect(_)) => {
                     return Err(StreamError::UnsupportedCdnRedirect);
                 }
+                Err(err) if is_stale_file_reference_error(&err) => {
+                    return Err(StreamError::FileReferenceExpired);
+                }
                 Err(err) => match err.kind() {
-                    ErrorKind::Rpc { ref name, .. } if name == "FILE_REFERENCE_EXPIRED" => {
-                        return Err(StreamError::FileReferenceExpired);
-                    }
                     ErrorKind::FloodWait(secs) => return Err(StreamError::FloodWait(secs)),
                     _ => return Err(StreamError::Telegram(err)),
                 },
