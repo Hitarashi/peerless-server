@@ -1,5 +1,7 @@
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
 
 #[derive(Clone, Copy)]
 pub(crate) enum RetryReason {
@@ -221,5 +223,5 @@ fn average_millis(total_micros: u64, count: u64) -> Option<u64> {
 }
 
 fn nonzero_millis(micros: u64, count: u64) -> Option<u64> {
-    (count > 0).then(|| micros / 1_000)
+    (count > 0).then_some(micros / 1_000)
 }

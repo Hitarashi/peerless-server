@@ -1,7 +1,9 @@
-use std::future::Future;
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
+use std::{
+    future::Future,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use bytes::Bytes;
