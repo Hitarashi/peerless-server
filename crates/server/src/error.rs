@@ -90,6 +90,7 @@ impl From<stream::StreamError> for ServerError {
             stream::StreamError::UnsupportedCdnRedirect => {
                 ServerError::Internal("Unsupported CDN redirect".into())
             }
+            stream::StreamError::ChunkFetchFailed(msg) => ServerError::Internal(msg),
             stream::StreamError::Connect(e) => ServerError::Internal(e.to_string()),
             stream::StreamError::Telegram(e) => ServerError::Internal(e.to_string()),
             stream::StreamError::Db(e) => ServerError::from(e),

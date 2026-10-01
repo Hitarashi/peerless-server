@@ -115,6 +115,7 @@ impl Modify for SecurityAddon {
             crate::integrations::ListenbrainzLoginRequest,
             crate::integrations::ListenbrainzStatusResponse,
             crate::health::HealthResponse,
+            crate::health::StreamingMetrics,
             crate::probe::StatusReport,
             crate::probe::SubsystemReport,
             crate::probe::SubsystemState,

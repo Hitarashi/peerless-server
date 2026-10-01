@@ -7,14 +7,17 @@ use std::{
 
 use bytes::Bytes;
 use ferogram::tl;
-use futures_util::Stream;
+use futures_util::{Stream, StreamExt, stream::FuturesOrdered};
 use tokio::sync::{RwLock, mpsc};
 
 use crate::{
     StreamError,
     cache::{CHUNK_SIZE, ChunkCache},
-    worker_pool::StreamWorkerPool,
+    metrics::StreamMetrics,
+    worker_pool::{CHUNK_FETCH_DEADLINE, StreamWorkerPool},
 };
+
+const STREAM_PREFETCH_CHUNKS: usize = 2;
 
 /// Parsed HTTP byte range [start, end] (inclusive).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,110 +121,65 @@ pub fn create_stream_pipe(
     worker_pool: Arc<StreamWorkerPool>,
     cache: Arc<ChunkCache>,
 ) -> ChunkStream {
-    // 2-chunk prefetch window (~1 MB memory buffer)
+    // Bound both queued output and in-flight source reads per stream.
     let (tx, rx) = mpsc::channel(2);
+    let metrics = Arc::clone(worker_pool.metrics());
+    metrics.record_stream_started();
 
     let join_handle = tokio::spawn(async move {
         let chunk_size_u64 = CHUNK_SIZE as u64;
         let start_chunk = params.range.start / chunk_size_u64;
         let end_chunk = params.range.end / chunk_size_u64;
+        let stream_started = std::time::Instant::now();
+        let mut first_chunk = true;
+        let mut next_chunk = start_chunk;
+        let mut pending = FuturesOrdered::new();
 
-        for chunk_idx in start_chunk..=end_chunk {
+        while next_chunk <= end_chunk || !pending.is_empty() {
+            while next_chunk <= end_chunk && pending.len() < STREAM_PREFETCH_CHUNKS {
+                let chunk_idx = next_chunk;
+                let params = params.clone();
+                let worker_pool = Arc::clone(&worker_pool);
+                let cache = Arc::clone(&cache);
+                let metrics = Arc::clone(&metrics);
+                pending.push_back(async move {
+                    let result = cache
+                        .get_or_fetch(
+                            params.document_id,
+                            chunk_idx,
+                            fetch_chunk_with_refresh(
+                                chunk_idx,
+                                params.clone(),
+                                worker_pool,
+                                metrics,
+                            ),
+                        )
+                        .await;
+                    (chunk_idx, result)
+                });
+                next_chunk += 1;
+            }
+
+            let Some((chunk_idx, chunk_result)) = pending.next().await else {
+                break;
+            };
             if tx.is_closed() {
                 break;
             }
 
-            // 1. Check in-memory chunk cache
-            let chunk_data = if let Some(cached) = cache.get(params.document_id, chunk_idx).await {
-                cached
-            } else {
-                if tx.is_closed() {
+            let chunk_data = match chunk_result {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    tracing::warn!(chunk_idx, %err, "Stream chunk fetch failed");
+                    let io_err = std::io::Error::other(format!(
+                        "Failed to fetch stream chunk {chunk_idx}: {err}"
+                    ));
+                    let _ = tx.send(Err(io_err)).await;
                     break;
-                }
-                // Fetch from MTProto worker pool with retries
-                let offset = (chunk_idx * chunk_size_u64) as i64;
-                let limit = CHUNK_SIZE as i32;
-
-                let mut fetched = None;
-                for attempt in 0..3 {
-                    if tx.is_closed() {
-                        break;
-                    }
-                    let current_loc = params.location.read().await.clone();
-                    match worker_pool
-                        .fetch_chunk(&current_loc, &params.dc_id, offset, limit)
-                        .await
-                    {
-                        Ok(bytes) => {
-                            cache
-                                .insert(params.document_id, chunk_idx, bytes.clone())
-                                .await;
-                            fetched = Some(bytes);
-                            break;
-                        }
-                        Err(StreamError::FileReferenceExpired)
-                            if params.refresh_location.is_some() =>
-                        {
-                            let refresher = params.refresh_location.as_ref().unwrap();
-                            match refresher().await {
-                                Ok(new_loc) => {
-                                    *params.location.write().await = new_loc.clone();
-                                    match worker_pool
-                                        .fetch_chunk(&new_loc, &params.dc_id, offset, limit)
-                                        .await
-                                    {
-                                        Ok(bytes) => {
-                                            cache
-                                                .insert(
-                                                    params.document_id,
-                                                    chunk_idx,
-                                                    bytes.clone(),
-                                                )
-                                                .await;
-                                            fetched = Some(bytes);
-                                            break;
-                                        }
-                                        Err(err) => {
-                                            tracing::warn!(chunk_idx, attempt, %err, "Failed to fetch chunk after location refresh; retrying");
-                                            tokio::time::sleep(std::time::Duration::from_millis(
-                                                300 * (attempt + 1),
-                                            ))
-                                            .await;
-                                        }
-                                    }
-                                }
-                                Err(err) => {
-                                    tracing::warn!(chunk_idx, attempt, %err, "Failed to refresh file location; retrying");
-                                    tokio::time::sleep(std::time::Duration::from_millis(
-                                        300 * (attempt + 1),
-                                    ))
-                                    .await;
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            tracing::warn!(chunk_idx, attempt, %err, "Transient error fetching chunk; retrying");
-                            tokio::time::sleep(std::time::Duration::from_millis(
-                                300 * (attempt + 1),
-                            ))
-                            .await;
-                        }
-                    }
-                }
-
-                match fetched {
-                    Some(bytes) => bytes,
-                    None => {
-                        let io_err = std::io::Error::other(format!(
-                            "Failed to fetch chunk {chunk_idx} after retries"
-                        ));
-                        let _ = tx.send(Err(io_err)).await;
-                        break;
-                    }
                 }
             };
 
-            // 2. Slice chunk according to range boundaries
+            // Slice the chunk according to the requested HTTP range.
             let chunk_offset_start = chunk_idx * chunk_size_u64;
             let slice_start = if chunk_idx == start_chunk {
                 (params.range.start.saturating_sub(chunk_offset_start)) as usize
@@ -239,11 +197,15 @@ pub fn create_stream_pipe(
             if slice_start < chunk_data.len() {
                 let actual_end = slice_end.min(chunk_data.len());
                 let sliced = chunk_data.slice(slice_start..actual_end);
+                let bytes_enqueued = sliced.len();
 
-                // 3. Send into bounded prefetch queue; halts if player paused or disconnected
                 if tx.send(Ok(sliced)).await.is_err() {
-                    // Receiver dropped (client closed connection or seeked away)
                     break;
+                }
+                metrics.record_bytes_enqueued(bytes_enqueued);
+                if first_chunk {
+                    metrics.record_first_chunk(stream_started.elapsed());
+                    first_chunk = false;
                 }
             }
         }
@@ -252,6 +214,45 @@ pub fn create_stream_pipe(
     ChunkStream {
         receiver: rx,
         abort_handle: join_handle.abort_handle(),
+    }
+}
+
+async fn fetch_chunk_with_refresh(
+    chunk_idx: u64,
+    params: StreamPipeParams,
+    worker_pool: Arc<StreamWorkerPool>,
+    metrics: Arc<StreamMetrics>,
+) -> Result<Bytes, StreamError> {
+    let chunk_size_u64 = CHUNK_SIZE as u64;
+    let offset = (chunk_idx * chunk_size_u64) as i64;
+    let limit = CHUNK_SIZE as i32;
+    let deadline = tokio::time::Instant::now() + CHUNK_FETCH_DEADLINE;
+    let current_location = params.location.read().await.clone();
+
+    match worker_pool
+        .fetch_chunk_until(&current_location, &params.dc_id, offset, limit, deadline)
+        .await
+    {
+        Err(StreamError::FileReferenceExpired) => {
+            let Some(refresher) = params.refresh_location else {
+                return Err(StreamError::FileReferenceExpired);
+            };
+
+            metrics.record_file_reference_refresh();
+            let new_location = match tokio::time::timeout_at(deadline, refresher()).await {
+                Ok(result) => result?,
+                Err(_) => {
+                    return Err(StreamError::ChunkFetchFailed(
+                        "timed out refreshing the Telegram file reference".to_owned(),
+                    ));
+                }
+            };
+            *params.location.write().await = new_location.clone();
+            worker_pool
+                .fetch_chunk_until(&new_location, &params.dc_id, offset, limit, deadline)
+                .await
+        }
+        result => result,
     }
 }
 

@@ -269,28 +269,45 @@ pub async fn stream_handler(
 
     let range_header = headers.get(header::RANGE).and_then(|h| h.to_str().ok());
 
-    let response = state
-        .stream_engine
-        .open_stream(db_track_id, range_header)
-        .await?;
+    let (status, content_type, accept_ranges, content_length, content_range, body) =
+        if method == Method::HEAD {
+            let headers = state
+                .stream_engine
+                .open_stream_headers(db_track_id, range_header)
+                .await?;
+            (
+                headers.status,
+                headers.content_type,
+                headers.accept_ranges,
+                headers.content_length,
+                headers.content_range,
+                Body::empty(),
+            )
+        } else {
+            let response = state
+                .stream_engine
+                .open_stream(db_track_id, range_header)
+                .await?;
+            (
+                response.status,
+                response.content_type,
+                response.accept_ranges,
+                response.content_length,
+                response.content_range,
+                Body::from_stream(response.stream),
+            )
+        };
 
     let mut builder = Response::builder()
-        .status(StatusCode::from_u16(response.status).unwrap_or(StatusCode::OK))
-        .header(header::CONTENT_TYPE, response.content_type)
-        .header(header::ACCEPT_RANGES, response.accept_ranges)
-        .header(header::CONTENT_LENGTH, response.content_length.to_string());
+        .status(StatusCode::from_u16(status).unwrap_or(StatusCode::OK))
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::ACCEPT_RANGES, accept_ranges)
+        .header(header::CONTENT_LENGTH, content_length.to_string());
 
-    if let Some(content_range) = response.content_range {
+    if let Some(content_range) = content_range {
         builder = builder.header(header::CONTENT_RANGE, content_range);
     }
-
-    if method == Method::HEAD {
-        return builder
-            .body(Body::empty())
-            .map_err(|e| ServerError::Internal(e.to_string()));
-    }
-
     builder
-        .body(Body::from_stream(response.stream))
+        .body(body)
         .map_err(|e| ServerError::Internal(e.to_string()))
 }

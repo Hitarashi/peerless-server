@@ -7,12 +7,14 @@
 pub mod cache;
 pub mod circuit_breaker;
 pub mod engine;
+pub mod metrics;
 pub mod pipe;
 pub mod worker_pool;
 
-pub use cache::{CHUNK_SIZE, ChunkCache, ChunkKey};
+pub use cache::{CHUNK_SIZE, ChunkCache, ChunkCacheMetricsSnapshot, ChunkKey};
 pub use circuit_breaker::CircuitBreaker;
-pub use engine::{AudioStreamResponse, StreamEngine, TrackMediaMetadata};
+pub use engine::{AudioStreamHeaders, AudioStreamResponse, StreamEngine, TrackMediaMetadata};
+pub use metrics::{StreamMetrics, StreamMetricsSnapshot};
 pub use pipe::{ByteRange, ChunkStream, LocationRefresher, StreamPipeParams, create_stream_pipe};
 pub use worker_pool::{StreamWorkerPool, hash_bot_token};
 
@@ -30,6 +32,9 @@ pub enum StreamError {
 
     #[error("Unsupported CDN redirect")]
     UnsupportedCdnRedirect,
+
+    #[error("Chunk fetch retry budget exhausted: {0}")]
+    ChunkFetchFailed(String),
 
     #[error("Telegram connect error: {0}")]
     Connect(#[from] ferogram::QuickConnectError),

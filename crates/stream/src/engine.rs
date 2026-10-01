@@ -3,6 +3,7 @@ use std::sync::Arc;
 use ferogram::{PeerRef, tl};
 use moka::future::Cache;
 use music::Codec;
+use tokio::sync::Mutex;
 
 use crate::{
     StreamError,
@@ -47,12 +48,23 @@ pub struct AudioStreamResponse {
     pub stream: ChunkStream,
 }
 
+/// HTTP headers for a stream or HEAD request, without starting chunk transfer.
+#[derive(Debug, Clone)]
+pub struct AudioStreamHeaders {
+    pub status: u16,
+    pub content_type: String,
+    pub content_length: u64,
+    pub content_range: Option<String>,
+    pub accept_ranges: &'static str,
+}
+
 /// Deep streaming module coordinating MTProto workers, chunk cache, and HTTP range translation.
 #[derive(Clone)]
 pub struct StreamEngine {
     worker_pool: Arc<StreamWorkerPool>,
     cache: Arc<ChunkCache>,
     metadata_cache: Cache<i32, Arc<TrackMediaMetadata>>,
+    metadata_refresh_locks: Cache<i32, Arc<Mutex<()>>>,
     tracks_repo: db::TracksRepository,
     primary_client: Option<ferogram::Client>,
     dump_peer: PeerRef,
@@ -70,11 +82,16 @@ impl StreamEngine {
             .max_capacity(1000)
             .time_to_live(std::time::Duration::from_secs(3600 * 24))
             .build();
+        let metadata_refresh_locks = Cache::builder()
+            .max_capacity(1000)
+            .time_to_live(std::time::Duration::from_secs(3600 * 24))
+            .build();
 
         Self {
             worker_pool,
             cache,
             metadata_cache,
+            metadata_refresh_locks,
             tracks_repo,
             primary_client,
             dump_peer,
@@ -104,6 +121,13 @@ impl StreamEngine {
             return Ok(cached);
         }
 
+        self.load_track_media(db_track_id).await
+    }
+
+    async fn load_track_media(
+        &self,
+        db_track_id: i32,
+    ) -> Result<Arc<TrackMediaMetadata>, StreamError> {
         let track = self
             .tracks_repo
             .find_track_by_id(db_track_id)
@@ -151,14 +175,34 @@ impl StreamEngine {
         Ok(metadata)
     }
 
+    async fn refresh_track_media_if_stale(
+        &self,
+        db_track_id: i32,
+        stale_file_reference: &[u8],
+    ) -> Result<Arc<TrackMediaMetadata>, StreamError> {
+        let refresh_lock = self
+            .metadata_refresh_locks
+            .get_with(db_track_id, async { Arc::new(Mutex::new(())) })
+            .await;
+        let _guard = refresh_lock.lock().await;
+
+        if let Some(cached) = self.metadata_cache.get(&db_track_id).await
+            && cached.file_reference.as_slice() != stale_file_reference
+        {
+            return Ok(cached);
+        }
+
+        self.load_track_media(db_track_id).await
+    }
+
     /// Open an audio byte stream for the given track and HTTP Range header.
     ///
     /// `db_track_id` is the local database row id (`db::Track::id`).
-    pub async fn open_stream(
+    async fn prepare_stream(
         &self,
         db_track_id: i32,
         range_header: Option<&str>,
-    ) -> Result<AudioStreamResponse, StreamError> {
+    ) -> Result<(Arc<TrackMediaMetadata>, AudioStreamHeaders, ByteRange), StreamError> {
         let meta = self.resolve_track_media(db_track_id, false).await?;
 
         let (range, status, content_range) = if let Some(header) = range_header {
@@ -176,11 +220,44 @@ impl StreamEngine {
             )
         };
 
+        let headers = AudioStreamHeaders {
+            status,
+            content_type: meta.mime_type.clone(),
+            content_length: range.length(),
+            content_range,
+            accept_ranges: "bytes",
+        };
+        Ok((meta, headers, range))
+    }
+
+    /// Resolve playback headers without creating a background chunk-transfer task.
+    pub async fn open_stream_headers(
+        &self,
+        db_track_id: i32,
+        range_header: Option<&str>,
+    ) -> Result<AudioStreamHeaders, StreamError> {
+        let (_, headers, _) = self.prepare_stream(db_track_id, range_header).await?;
+        Ok(headers)
+    }
+
+    /// Open an audio byte stream for the given track and HTTP Range header.
+    ///
+    /// `db_track_id` is the local database row id (`db::Track::id`).
+    pub async fn open_stream(
+        &self,
+        db_track_id: i32,
+        range_header: Option<&str>,
+    ) -> Result<AudioStreamResponse, StreamError> {
+        let (meta, headers, range) = self.prepare_stream(db_track_id, range_header).await?;
         let engine = self.clone();
+        let stale_file_reference = meta.file_reference.clone();
         let refresher: crate::pipe::LocationRefresher = Arc::new(move || {
             let engine = engine.clone();
+            let stale_file_reference = stale_file_reference.clone();
             Box::pin(async move {
-                let fresh_meta = engine.resolve_track_media(db_track_id, true).await?;
+                let fresh_meta = engine
+                    .refresh_track_media_if_stale(db_track_id, &stale_file_reference)
+                    .await?;
                 Ok(fresh_meta.input_location())
             })
         });
@@ -199,11 +276,11 @@ impl StreamEngine {
         );
 
         Ok(AudioStreamResponse {
-            status,
-            content_type: meta.mime_type.clone(),
-            content_length: range.length(),
-            content_range,
-            accept_ranges: "bytes",
+            status: headers.status,
+            content_type: headers.content_type,
+            content_length: headers.content_length,
+            content_range: headers.content_range,
+            accept_ranges: headers.accept_ranges,
             stream,
         })
     }

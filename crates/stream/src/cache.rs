@@ -1,3 +1,9 @@
+use std::future::Future;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+
 use bytes::Bytes;
 use moka::future::Cache;
 
@@ -24,6 +30,20 @@ impl ChunkKey {
 #[derive(Clone)]
 pub struct ChunkCache {
     cache: Cache<ChunkKey, Bytes>,
+    metrics: Arc<ChunkCacheMetrics>,
+}
+
+#[derive(Default)]
+struct ChunkCacheMetrics {
+    hits: AtomicU64,
+    misses: AtomicU64,
+}
+
+/// Cumulative chunk-cache lookups since process start.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ChunkCacheMetricsSnapshot {
+    pub hits: u64,
+    pub misses: u64,
 }
 
 impl ChunkCache {
@@ -33,7 +53,10 @@ impl ChunkCache {
             .weigher(|_key, val: &Bytes| val.len() as u32)
             .max_capacity(max_capacity_bytes)
             .build();
-        Self { cache }
+        Self {
+            cache,
+            metrics: Arc::new(ChunkCacheMetrics::default()),
+        }
     }
 
     /// Retrieve a cached chunk if present.
@@ -50,7 +73,34 @@ impl ChunkCache {
 
     /// Retrieve a cached chunk by ChunkKey if present.
     pub async fn get_by_key(&self, key: ChunkKey) -> Option<Bytes> {
-        self.cache.get(&key).await
+        let value = self.cache.get(&key).await;
+        if value.is_some() {
+            self.metrics.hits.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.metrics.misses.fetch_add(1, Ordering::Relaxed);
+        }
+        value
+    }
+
+    /// Return a cached chunk or coalesce concurrent misses for the same key.
+    ///
+    /// Successful values are stored in the bounded cache. Failed loads are
+    /// shared with current waiters but are not cached, so a later request can retry.
+    pub async fn get_or_fetch<E>(
+        &self,
+        document_id: i64,
+        chunk_index: u64,
+        fetch: impl Future<Output = Result<Bytes, E>>,
+    ) -> Result<Bytes, Arc<E>>
+    where
+        E: Send + Sync + 'static,
+    {
+        let key = ChunkKey::new(document_id, chunk_index);
+        if let Some(value) = self.get_by_key(key).await {
+            return Ok(value);
+        }
+
+        self.cache.try_get_with(key, fetch).await
     }
 
     /// Insert a fetched chunk into the cache by ChunkKey.
@@ -66,6 +116,14 @@ impl ChunkCache {
     /// Current memory size in bytes consumed by chunks.
     pub fn weighted_size(&self) -> u64 {
         self.cache.weighted_size()
+    }
+
+    /// Cache hit and miss totals since process start.
+    pub fn metrics_snapshot(&self) -> ChunkCacheMetricsSnapshot {
+        ChunkCacheMetricsSnapshot {
+            hits: self.metrics.hits.load(Ordering::Relaxed),
+            misses: self.metrics.misses.load(Ordering::Relaxed),
+        }
     }
 }
 
