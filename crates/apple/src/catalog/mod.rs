@@ -576,9 +576,7 @@ fn map_itunes_item(item: &ItunesRawItem) -> TrackMeta {
 fn is_track_item(item: &ItunesRawItem) -> bool {
     match item.kind.as_deref() {
         Some("song") | Some("music-video") => true,
-        Some("feature-movie")
-        | Some("tv-episode")
-        | Some("podcast-episode") => false,
+        Some("feature-movie") | Some("tv-episode") | Some("podcast-episode") => false,
         _ => item.wrapper_type.as_deref() == Some("track"),
     }
 }
@@ -819,9 +817,7 @@ impl<T: Transport> Catalog<T> {
 
         if matches!(
             track_item.kind.as_deref(),
-            Some("feature-movie")
-                | Some("tv-episode")
-                | Some("podcast-episode")
+            Some("feature-movie") | Some("tv-episode") | Some("podcast-episode")
         ) {
             let kind = match track_item.kind.as_deref() {
                 Some("feature-movie") => "feature movie",
@@ -955,7 +951,9 @@ impl<T: Transport> Catalog<T> {
                 provider
                     .fetch_amp(&mv_url, TRACK_TIMEOUT)
                     .await
-                    .map_err(|err| CatalogError::Message(format!("AMP track fetch failed: {err}")))?
+                    .map_err(|err| {
+                        CatalogError::Message(format!("AMP track fetch failed: {err}"))
+                    })?
             }
         };
 

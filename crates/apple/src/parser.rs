@@ -53,7 +53,14 @@ pub fn parse_single_item(raw_token: &str) -> Option<ParsedTargetItem> {
     if token.is_empty() {
         return None;
     }
-    let [playlist, artist, song_with_album, song_direct, music_video, album] = regexes();
+    let [
+        playlist,
+        artist,
+        song_with_album,
+        song_direct,
+        music_video,
+        album,
+    ] = regexes();
 
     if let Some(caps) = playlist.captures(token)
         && let Some(id) = caps.get(2)
@@ -258,10 +265,9 @@ mod tests {
         assert_eq!(res.items[0].kind, TargetKind::Track);
         assert_eq!(res.storefront.as_deref(), Some("us"));
 
-        let single = parse_single_item(
-            "https://music.apple.com/us/music-video/thug-story/1452880086",
-        )
-        .unwrap();
+        let single =
+            parse_single_item("https://music.apple.com/us/music-video/thug-story/1452880086")
+                .unwrap();
         assert_eq!(single.id, "1452880086");
         assert_eq!(single.kind, TargetKind::Track);
         assert_eq!(single.storefront.as_deref(), Some("us"));

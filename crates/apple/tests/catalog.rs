@@ -629,11 +629,7 @@ async fn album_includes_music_videos_as_tracks() {
         .fetch_album_tracks("1753101056", "us")
         .await
         .expect("album tracks");
-    assert_eq!(
-        res.tracks.len(),
-        2,
-        "both song and music-video included"
-    );
+    assert_eq!(res.tracks.len(), 2, "both song and music-video included");
     assert_eq!(res.tracks[0].id, "1753101068");
     assert_eq!(res.tracks[0].title, "IDK HOW");
     assert_eq!(res.tracks[1].id, "1753101549");
