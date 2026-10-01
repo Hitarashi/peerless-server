@@ -288,7 +288,6 @@ pub fn create_router(state: Arc<ServerState>) -> Router {
             "/api/v1/assets/artists/artwork",
             get(assets::get_artist_artwork),
         )
-        .route("/api/v1/assets/tracks/{id}/lyrics", get(assets::get_lyrics))
         .nest("/api/v1/integrations/lastfm", integrations::lastfm_router())
         .nest(
             "/api/v1/integrations/listenbrainz",

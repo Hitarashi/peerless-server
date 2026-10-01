@@ -43,7 +43,7 @@ impl Modify for SecurityAddon {
     info(
         title = "ALAC Lossless Media Streaming Server API",
         version = "1.0.0",
-        description = "# Lossless Audio & Media Streaming Engine\n\nHigh-performance lossless audio streaming server powered by Telegram MTProto backend, serving ripped ALAC/FLAC source bytes via HTTP byte ranges without server-side transcoding, with sliding session auth, live catalog discovery, on-demand ripping, and synchronized lyrics.\n\nFor the authenticated playback WebSocket message contract, see the [Playback WebSocket AsyncAPI document](/api/v1/docs-ws.json).\n\n### Core Workflows\n1. **Authentication**: Users authenticate via the Telegram bot command `/stream` to obtain a single-use OTP code, exchanged at `/api/v1/auth/exchange` for sliding session tokens.\n2. **Source-byte Streaming**: Lossless streams are requested via `/api/v1/tracks/{id}/playback` and served at `/api/v1/stream` with HTTP 206 Partial Content Range support. The server returns the ripped ALAC/FLAC source bytes without server-side transcoding.\n3. **Catalog & Discovery**: Query cached tracks and live Apple Music catalog items simultaneously via `/api/v1/search`.\n4. **On-Demand Ripping**: Create and cancel rip tasks over the authenticated playback WebSocket RPC; `rip_tasks_snapshot` remains the authoritative active-task list, with live progress delivered on the same WebSocket.",
+        description = "# Lossless Audio & Media Streaming Engine\n\nHigh-performance lossless audio streaming server powered by Telegram MTProto backend, serving ripped ALAC/FLAC source bytes via HTTP byte ranges without server-side transcoding, with sliding session auth, live catalog discovery, and on-demand ripping.\n\nFor the authenticated playback WebSocket message contract, see the [Playback WebSocket AsyncAPI document](/api/v1/docs-ws.json).\n\n### Core Workflows\n1. **Authentication**: Users authenticate via the Telegram bot command `/stream` to obtain a single-use OTP code, exchanged at `/api/v1/auth/exchange` for sliding session tokens.\n2. **Source-byte Streaming**: Lossless streams are requested via `/api/v1/tracks/{id}/playback` and served at `/api/v1/stream` with HTTP 206 Partial Content Range support. The server returns the ripped ALAC/FLAC source bytes without server-side transcoding.\n3. **Catalog & Discovery**: Query cached tracks and live Apple Music catalog items simultaneously via `/api/v1/search`.\n4. **On-Demand Ripping**: Create and cancel rip tasks over the authenticated playback WebSocket RPC; `rip_tasks_snapshot` remains the authoritative active-task list, with live progress delivered on the same WebSocket.",
         license(name = "MIT")
     ),
     servers(
@@ -67,7 +67,6 @@ impl Modify for SecurityAddon {
         crate::assets::get_artwork,
         crate::assets::get_provider_artwork,
         crate::assets::get_artist_artwork,
-        crate::assets::get_lyrics,
         crate::integrations::lastfm_login,
         crate::integrations::lastfm_status,
         crate::integrations::lastfm_disconnect,
@@ -106,10 +105,6 @@ impl Modify for SecurityAddon {
             crate::rip_tasks::RipTaskDownloadLane,
             crate::rip_tasks::RipTaskUploadLane,
             crate::assets::ArtworkUrlResponse,
-            crate::assets::LyricsResponse,
-            crate::assets::LyricsLineDto,
-            crate::assets::LyricsWordDto,
-            crate::assets::LyricsTranslationDto,
             crate::integrations::LastfmLoginRequest,
             crate::integrations::LastfmStatusResponse,
             crate::integrations::ListenbrainzLoginRequest,
@@ -128,7 +123,7 @@ impl Modify for SecurityAddon {
         (name = "auth", description = "Telegram OTP exchange, sliding session refresh, and user profile management"),
         (name = "stream", description = "Direct ripped ALAC/FLAC source-byte streaming via HTTP byte ranges without server-side transcoding, and HMAC-SHA256 playback ticket generation"),
         (name = "catalog", description = "Music catalog search, track metadata, album tracklists, and artist discographies"),
-        (name = "assets", description = "High-resolution album artwork provider URL resolution and synchronized TTML/LRC lyrics resolution"),
+        (name = "assets", description = "High-resolution album artwork provider URL resolution"),
         (name = "integrations", description = "Third-party integrations (Last.fm, ListenBrainz) and scrobbling/playlist authentication"),
         (name = "system", description = "Server liveness check, per-subsystem diagnostics, and telemetry. GET /api/v1/health is the narrow liveness probe driving the Docker HEALTHCHECK (200 or 503); GET /api/v1/status is the wide diagnostics report and always returns 200."),
         (name = "ws", description = "Authenticated, bidirectional playback synchronization WebSocket handshake; see /api/v1/docs-ws.json for the AsyncAPI message protocol"),

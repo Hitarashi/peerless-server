@@ -33,7 +33,6 @@ ferogram.workspace = true
 
 music = { path = "../music" }
 apple = { path = "../apple" }
-lyrics = { path = "../lyrics", features = ["all-providers"] }
 engine = { path = "../engine" }
 db = { path = "../db" }
 stream = { path = "../stream" }
@@ -41,6 +40,7 @@ stream = { path = "../stream" }
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 dotenvy.workspace = true
+lyrics = { path = "../lyrics", features = ["all-providers"] }
 
 [lints]
 workspace = true

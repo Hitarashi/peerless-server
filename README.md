@@ -41,7 +41,6 @@ mirrors with native client applications (such as [Peerless KMP](https://github.c
 │  │ - /api/v1/stream (HMAC signed tickets)             │  │
 │  │ - /api/v1/ws/sync (Playback & Task Sync WebSockets) │  │
 │  │ - /api/v1/search (ISRC canonical results)           │  │
-│  │ - /api/v1/assets/tracks/{id}/lyrics (Lyrics)        │  │
 │  │ - /api/v1/integrations/lastfm (Encrypted AES-GCM)  │  │
 │  │ - /api/v1/docs (OpenAPI 3.1 Scalar UI)              │  │
 │  └─────────────────────────┬──────────────────────────┘  │
@@ -109,7 +108,6 @@ mirrors with native client applications (such as [Peerless KMP](https://github.c
 |                  | `GET`      | `/api/v1/artists/{name}/tracks`                                 | All cached tracks by an artist                               |
 | **Assets**       | `GET`      | `/api/v1/assets/tracks/{id}/artwork`                            | Provider artwork URL as JSON                                 |
 |                  | `GET`      | `/api/v1/assets/providers/{provider}/tracks/{track_id}/artwork` | Provider artwork URL as JSON                                 |
-|                  | `GET`      | `/api/v1/assets/tracks/{id}/lyrics`                             | Synced TTML/LRC word-level lyrics                            |
 | **Integrations** | `POST`     | `/api/v1/integrations/lastfm/login`                             | Connect Last.fm account (AES-256-GCM encrypted)              |
 |                  | `GET`      | `/api/v1/integrations/lastfm/status`                            | Get Last.fm connection status                                |
 |                  | `DELETE`   | `/api/v1/integrations/lastfm`                                   | Disconnect Last.fm account                                   |
@@ -137,8 +135,8 @@ curl https://server.example/api/v1/search?q=blue%20monday \
 ```
 
 Authenticated routes: the whole **Catalog** group (`/api/v1/search`, `/api/v1/tracks/{id}`, `/api/v1/albums`,
-`/api/v1/albums/{album_ref}`, `/api/v1/artists/{name}/tracks`), every **Assets** route (both artwork routes and
-`/api/v1/assets/tracks/{id}/lyrics`), `/api/v1/tracks/{id}/playback`, all **Integrations** routes, and the
+`/api/v1/albums/{album_ref}`, `/api/v1/artists/{name}/tracks`), every **Assets** route (track artwork, provider track
+artwork, and artist artwork), `/api/v1/tracks/{id}/playback`, all **Integrations** routes, and the
 `/api/v1/auth/me`, `/api/v1/auth/me/avatar`, and `/api/v1/auth/logout` routes (logout also accepts the token in its JSON
 body).
 
