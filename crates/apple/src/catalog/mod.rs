@@ -575,9 +575,8 @@ fn map_itunes_item(item: &ItunesRawItem) -> TrackMeta {
 
 fn is_track_item(item: &ItunesRawItem) -> bool {
     match item.kind.as_deref() {
-        Some("song") => true,
-        Some("music-video")
-        | Some("feature-movie")
+        Some("song") | Some("music-video") => true,
+        Some("feature-movie")
         | Some("tv-episode")
         | Some("podcast-episode") => false,
         _ => item.wrapper_type.as_deref() == Some("track"),
@@ -820,13 +819,11 @@ impl<T: Transport> Catalog<T> {
 
         if matches!(
             track_item.kind.as_deref(),
-            Some("music-video")
-                | Some("feature-movie")
+            Some("feature-movie")
                 | Some("tv-episode")
                 | Some("podcast-episode")
         ) {
             let kind = match track_item.kind.as_deref() {
-                Some("music-video") => "music video",
                 Some("feature-movie") => "feature movie",
                 Some("tv-episode") => "TV episode",
                 Some("podcast-episode") => "podcast episode",
@@ -941,16 +938,26 @@ impl<T: Transport> Catalog<T> {
     ) -> Result<TrackMeta, CatalogError> {
         info_span!("amp_track", track_id, storefront = sf)
             .in_scope(|| debug!("Querying Apple Music AMP API for song..."));
-        let url = format!(
+        let song_url = format!(
             "https://amp-api.music.apple.com/v1/catalog/{}/songs/{}?include=albums",
             urlencode(sf),
             urlencode(track_id)
         );
         let start = Instant::now();
-        let body = provider
-            .fetch_amp(&url, TRACK_TIMEOUT)
-            .await
-            .map_err(|err| CatalogError::Message(format!("AMP track fetch failed: {err}")))?;
+        let body = match provider.fetch_amp(&song_url, TRACK_TIMEOUT).await {
+            Ok(body) => body,
+            Err(_) => {
+                let mv_url = format!(
+                    "https://amp-api.music.apple.com/v1/catalog/{}/music-videos/{}?include=albums",
+                    urlencode(sf),
+                    urlencode(track_id)
+                );
+                provider
+                    .fetch_amp(&mv_url, TRACK_TIMEOUT)
+                    .await
+                    .map_err(|err| CatalogError::Message(format!("AMP track fetch failed: {err}")))?
+            }
+        };
 
         let meta = Self::parse_amp_song_body(&body, track_id)?;
         info!(

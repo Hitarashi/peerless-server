@@ -9,8 +9,8 @@ use std::sync::OnceLock;
 use music::{ParsedAlacInput, ParsedTargetItem, TargetKind};
 use regex::Regex;
 
-fn regexes() -> &'static [Regex; 5] {
-    static RE: OnceLock<[Regex; 5]> = OnceLock::new();
+fn regexes() -> &'static [Regex; 6] {
+    static RE: OnceLock<[Regex; 6]> = OnceLock::new();
     RE.get_or_init(|| {
         // 1. music.apple.com/…/playlist/<slug>/pl.xxx or pl.u-xxx
         let playlist = Regex::new(
@@ -25,9 +25,14 @@ fn regexes() -> &'static [Regex; 5] {
             .expect("song with album regex");
         // 4. direct song URL
         let song_direct = Regex::new(r"(?i)(?:music|itunes)\.apple\.com/(?:([a-z]{2})/)?song/(?:[^/]+/)?(\d+)").expect("song direct regex");
-        // 5. album URL
+        // 5. direct music video URL
+        let music_video = Regex::new(
+            r"(?i)(?:music|itunes)\.apple\.com/(?:([a-z]{2})/)?music-video/(?:[^/]+/)?(\d+)",
+        )
+        .expect("music video regex");
+        // 6. album URL
         let album = Regex::new(r"(?i)(?:music|itunes)\.apple\.com/(?:([a-z]{2})/)?album/(?:[^/]+/)?(\d+)").expect("album regex");
-        [playlist, artist, song_with_album, song_direct, album]
+        [playlist, artist, song_with_album, song_direct, music_video, album]
     })
 }
 
@@ -48,7 +53,7 @@ pub fn parse_single_item(raw_token: &str) -> Option<ParsedTargetItem> {
     if token.is_empty() {
         return None;
     }
-    let [playlist, artist, song_with_album, song_direct, album] = regexes();
+    let [playlist, artist, song_with_album, song_direct, music_video, album] = regexes();
 
     if let Some(caps) = playlist.captures(token)
         && let Some(id) = caps.get(2)
@@ -66,6 +71,11 @@ pub fn parse_single_item(raw_token: &str) -> Option<ParsedTargetItem> {
         return Some(item(id.as_str(), TargetKind::Track, &caps));
     }
     if let Some(caps) = song_direct.captures(token)
+        && let Some(id) = caps.get(2)
+    {
+        return Some(item(id.as_str(), TargetKind::Track, &caps));
+    }
+    if let Some(caps) = music_video.captures(token)
         && let Some(id) = caps.get(2)
     {
         return Some(item(id.as_str(), TargetKind::Track, &caps));
@@ -234,6 +244,27 @@ mod tests {
         .unwrap();
         assert_eq!(res.items, vec![track("1122334455", Some("in"))]);
         assert_eq!(res.storefront.as_deref(), Some("in"));
+    }
+
+    #[test]
+    fn extracts_track_from_direct_music_video_link() {
+        let res = parse_alac_input(
+            "/alac https://music.apple.com/us/music-video/thug-story/1452880086",
+            None,
+        )
+        .unwrap();
+        assert_eq!(res.items, vec![track("1452880086", Some("us"))]);
+        assert_eq!(res.track_id, "1452880086");
+        assert_eq!(res.items[0].kind, TargetKind::Track);
+        assert_eq!(res.storefront.as_deref(), Some("us"));
+
+        let single = parse_single_item(
+            "https://music.apple.com/us/music-video/thug-story/1452880086",
+        )
+        .unwrap();
+        assert_eq!(single.id, "1452880086");
+        assert_eq!(single.kind, TargetKind::Track);
+        assert_eq!(single.storefront.as_deref(), Some("us"));
     }
 
     #[test]

@@ -595,7 +595,7 @@ async fn clear_cache_forces_refetch() {
 }
 
 #[tokio::test]
-async fn album_filters_out_music_videos() {
+async fn album_includes_music_videos_as_tracks() {
     let json = r#"{
         "results": [
             {
@@ -631,15 +631,17 @@ async fn album_filters_out_music_videos() {
         .expect("album tracks");
     assert_eq!(
         res.tracks.len(),
-        1,
-        "music video filtered out from audio album"
+        2,
+        "both song and music-video included"
     );
     assert_eq!(res.tracks[0].id, "1753101068");
     assert_eq!(res.tracks[0].title, "IDK HOW");
+    assert_eq!(res.tracks[1].id, "1753101549");
+    assert_eq!(res.tracks[1].title, "Up Next: Karan Aujla (Exclusive)");
 }
 
 #[tokio::test]
-async fn fetch_track_rejects_music_videos() {
+async fn fetch_track_supports_music_videos() {
     let json = r#"{
         "results": [
             {
@@ -655,15 +657,40 @@ async fn fetch_track_rejects_music_videos() {
     let mut fake = FakeTransport::new();
     fake.on("id=1753101549", json);
     let catalog = Catalog::new(fake);
-    let err = catalog
+    let meta = catalog
         .fetch_track_meta("1753101549", "us")
         .await
-        .expect_err("music video should be rejected");
+        .expect("music video should be supported as track");
+    assert_eq!(meta.id, "1753101549");
+    assert_eq!(meta.title, "Up Next: Karan Aujla (Exclusive)");
+}
+
+#[tokio::test]
+async fn fetch_track_rejects_feature_movies() {
+    let json = r#"{
+        "results": [
+            {
+                "wrapperType": "track",
+                "kind": "feature-movie",
+                "trackId": 999999999,
+                "trackName": "Some Movie",
+                "artistName": "Some Director",
+                "trackTimeMillis": 7200000
+            }
+        ]
+    }"#;
+    let mut fake = FakeTransport::new();
+    fake.on("id=999999999", json);
+    let catalog = Catalog::new(fake);
+    let err = catalog
+        .fetch_track_meta("999999999", "us")
+        .await
+        .expect_err("feature movie should be rejected");
     match err {
         CatalogError::Message(msg) => {
-            assert!(
-                msg.contains("music video") && msg.contains("only audio tracks are supported"),
-                "unexpected error message: {msg}"
+            assert_eq!(
+                msg,
+                "iTunes item 999999999 is a feature movie; only audio tracks are supported"
             );
         }
         other => panic!("expected CatalogError::Message, got {other:?}"),
