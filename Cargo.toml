@@ -70,6 +70,7 @@ mp4ameta = "0.13"
 metaflac = "0.2"
 id3 = "1"
 font8x8 = "0.3"
+mp4-track = "=0.1.0"
 temari = { git = "https://github.com/WorldObservationLog/Temari" }
 moka = { version = "0.12", features = ["future", "sync"] }
 parking_lot = "0.12"

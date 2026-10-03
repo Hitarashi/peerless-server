@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 mod decode;
 mod fragmented;
+mod remux;
 mod spectrogram;
 mod tags;
 

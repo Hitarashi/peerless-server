@@ -220,14 +220,23 @@ pub(super) fn finalize_m4a_sync(
     if part.exists() {
         std::fs::remove_file(&part)?;
     }
-    std::fs::copy(source, &part)?;
+    let is_flac = ext.eq_ignore_ascii_case("flac") || info.codec == "flac";
+    let is_mp3 = ext.eq_ignore_ascii_case("mp3") || info.codec == "mp3";
+    let is_m4a = ext.eq_ignore_ascii_case("m4a")
+        || ext.eq_ignore_ascii_case("mp4")
+        || ext.eq_ignore_ascii_case("m4b");
     let result = (|| {
         if cancellation.is_cancelled() {
             return Err(MediaError::Cancelled);
         }
 
-        let is_flac = ext == "flac" || info.codec == "flac";
-        let is_mp3 = ext == "mp3" || info.codec == "mp3";
+        let remuxed = is_m4a
+            && !is_flac
+            && !is_mp3
+            && crate::remux::remux_if_fragmented(source, &part, cancellation)?;
+        if !remuxed {
+            std::fs::copy(source, &part)?;
+        }
 
         if is_flac {
             tag_flac(&part, tags)?;

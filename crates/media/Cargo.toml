@@ -13,6 +13,7 @@ symphonia.workspace = true
 mp4ameta.workspace = true
 metaflac.workspace = true
 id3.workspace = true
+mp4-track.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
