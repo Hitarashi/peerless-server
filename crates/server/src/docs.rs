@@ -85,7 +85,7 @@ impl Modify for SecurityAddon {
             crate::lookup::LookupRequest,
             crate::lookup::TrackFormatResult,
             crate::lookup::TrackLookupResult,
-            crate::lookup::AlbumZipFormatResult,
+            crate::lookup::AlbumZipPartResult,
             crate::lookup::AlbumLookupResult,
             crate::lookup::LookupResponse,
             crate::rip_tasks::RipTaskRequest,

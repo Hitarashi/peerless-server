@@ -237,6 +237,8 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
         let max_collection_limit = settings.max_collection_tracks;
         let rip_orchestrator = Arc::clone(&state.rip_orchestrator);
         let rip_deps = Arc::clone(&state.rip_deps);
+        let admission_group_id = format!("get-batch:{chat}:{}", msg.id());
+        let default_storefront = default_storefront.to_owned();
         let base_options = engine::orchestrator::types::RipTaskOptions {
             provider: parsed.provider,
             chat_id: chat,
@@ -255,43 +257,112 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
         };
 
         tokio::spawn(async move {
-            let mut total_tracks = 0usize;
+            let mut selected_tracks = 0usize;
+            let mut selected_album_jobs = Vec::with_capacity(expanded_albums.len());
             for album_item in expanded_albums {
                 if !owner_is_admin
                     && max_collection_limit > 0
-                    && total_tracks >= max_collection_limit as usize
+                    && selected_tracks >= max_collection_limit as usize
                 {
                     tracing::info!(
                         user_id = owner_id,
-                        total_tracks,
+                        selected_tracks,
                         max_collection_limit,
                         "discography reached collection limit, stopping"
                     );
                     break;
                 }
 
-                let mut album_options = base_options.clone();
-                album_options.parsed_items = vec![album_item];
-
-                match rip_orchestrator
-                    .start_task(Arc::clone(&rip_deps), &album_options)
-                    .await
-                {
-                    Ok(summary) => {
-                        total_tracks += summary.total_tracks;
-                    }
-                    Err(engine::orchestrator::OrchestratorError::Cancelled) => {
-                        tracing::info!(user_id = owner_id, "album sequence cancelled by user");
-                        break;
-                    }
-                    Err(error) => {
-                        tracing::warn!(
+                if !owner_is_admin && max_collection_limit > 0 {
+                    let storefront = album_item
+                        .storefront
+                        .as_deref()
+                        .or(base_options.single_storefront.as_deref())
+                        .unwrap_or(&default_storefront);
+                    let track_count = match album_item.kind {
+                        engine::types::TargetKind::Track => Ok(1),
+                        engine::types::TargetKind::Album => rip_deps
+                            .fetch_album_tracks(
+                                base_options.provider.clone(),
+                                &album_item.id,
+                                storefront.into(),
+                            )
+                            .await
+                            .map(|album| album.tracks.len()),
+                        engine::types::TargetKind::Playlist => rip_deps
+                            .fetch_playlist_tracks(
+                                base_options.provider.clone(),
+                                &album_item.id,
+                                storefront.into(),
+                            )
+                            .await
+                            .map(|playlist| playlist.tracks.len()),
+                        engine::types::TargetKind::Artist => {
+                            Err("artist links must be expanded before starting album jobs"
+                                .to_owned())
+                        }
+                    };
+                    match track_count {
+                        Ok(count) => {
+                            selected_tracks = selected_tracks
+                                .saturating_add(count.min(max_collection_limit as usize));
+                        }
+                        Err(error) => tracing::warn!(
+                            item_id = %album_item.id,
                             error = %error,
-                            "album job in artist sequence failed"
-                        );
+                            "could not estimate collection size before scheduling its job"
+                        ),
                     }
                 }
+                selected_album_jobs.push(album_item);
             }
+
+            let mut jobs = tokio::task::JoinSet::new();
+            for album_item in selected_album_jobs {
+                let item_id = album_item.id.clone();
+                let mut album_options = base_options.clone();
+                album_options.parsed_items = vec![album_item];
+                let rip_orchestrator = Arc::clone(&rip_orchestrator);
+                let rip_deps = Arc::clone(&rip_deps);
+                let admission_group_id = admission_group_id.clone();
+                jobs.spawn(async move {
+                    let result = rip_orchestrator
+                        .start_task_in_group(rip_deps, &album_options, admission_group_id)
+                        .await;
+                    (item_id, result)
+                });
+            }
+
+            let mut total_tracks = 0usize;
+            while let Some(result) = jobs.join_next().await {
+                match result {
+                    Ok((album_id, Ok(summary))) => {
+                        total_tracks = total_tracks.saturating_add(summary.total_tracks);
+                        tracing::info!(
+                            user_id = owner_id,
+                            album_id,
+                            tracks = summary.total_tracks,
+                            "artist album job completed"
+                        );
+                    }
+                    Ok((album_id, Err(engine::orchestrator::OrchestratorError::Cancelled))) => {
+                        tracing::info!(user_id = owner_id, album_id, "artist album job cancelled");
+                    }
+                    Ok((album_id, Err(error))) => {
+                        tracing::warn!(
+                            album_id,
+                            error = %error,
+                            "artist album job failed"
+                        );
+                    }
+                    Err(error) => tracing::error!(
+                        user_id = owner_id,
+                        error = %error,
+                        "artist album task panicked"
+                    ),
+                }
+            }
+            tracing::info!(user_id = owner_id, total_tracks, "artist batch completed");
         });
         return;
     }

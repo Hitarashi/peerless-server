@@ -21,6 +21,9 @@ pub struct LookupRequest {
 /// One format available for a cached Apple Music track.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct TrackFormatResult {
+    /// Database track ID to pass to `/api/v1/tracks/{id}/playback` for this format.
+    #[schema(example = 123)]
+    pub id: i32,
     /// Cached Apple format (`alac`, `aac`, or `ec-3`).
     #[schema(example = "alac")]
     pub format: String,
@@ -39,15 +42,24 @@ pub struct TrackLookupResult {
     pub formats: Vec<TrackFormatResult>,
 }
 
-/// One complete cached ZIP rendition for an Apple Music album.
+/// One cached part of a complete ZIP rendition for an Apple Music album.
 #[derive(Debug, Serialize, ToSchema)]
-pub struct AlbumZipFormatResult {
+pub struct AlbumZipPartResult {
+    /// Database row ID for this cached archive part.
+    #[schema(example = 223)]
+    pub id: i32,
     /// Cached Apple format (`alac`, `aac`, or `ec-3`).
     #[schema(example = "alac")]
     pub format: String,
-    /// Total size of all archive parts in bytes.
-    #[schema(example = 987654321_u64)]
+    /// Size of this archive part in bytes.
+    #[schema(example = 34343_u64)]
     pub file_size_bytes: u64,
+    /// One-based index of this part within the archive.
+    #[schema(example = 1)]
+    pub part: i32,
+    /// Total number of parts in this archive rendition.
+    #[schema(example = 1)]
+    pub total_parts: i32,
 }
 
 /// Cached ZIP availability for one Apple Music album.
@@ -58,8 +70,8 @@ pub struct AlbumLookupResult {
     pub apple_album_id: String,
     /// True when every archive part for at least one rendition is cached.
     pub zip_available: bool,
-    /// Complete ZIP renditions and the total size of their archive parts.
-    pub zip_formats: Vec<AlbumZipFormatResult>,
+    /// Parts of complete ZIP renditions, grouped by `format` and ordered by part number.
+    pub zip_formats: Vec<AlbumZipPartResult>,
 }
 
 /// Results for a batch Apple Music cache lookup.
@@ -76,10 +88,10 @@ pub struct LookupResponse {
     path = "/api/v1/lookup",
     tag = "lookup",
     summary = "Look Up Cached Apple Tracks and Album ZIPs",
-    description = "Checks local Apple Music cache entries by provider-native IDs. Track results include cached formats and their exact file sizes when media metadata can be resolved. Album results include whether a complete ZIP rendition is available and each rendition's total size. Unavailable tracks are omitted; every requested album is returned. At least one of `track_ids` or `album_ids` must contain an ID.",
+    description = "Checks local Apple Music cache entries by provider-native IDs. Each track format includes its database track ID for requesting playback, and its exact file size when media metadata can be resolved. Album results include whether a complete ZIP rendition is available and list each part of every complete rendition with its database row ID, size, part number, and total part count. Unavailable tracks are omitted; every requested album is returned. At least one of `track_ids` or `album_ids` must contain an ID.",
     request_body = LookupRequest,
     responses(
-        (status = 200, description = "Cached track formats and file sizes, plus album ZIP availability and total sizes", body = LookupResponse),
+        (status = 200, description = "Cached track formats and file sizes, plus album ZIP availability and per-part IDs, sizes, and counts", body = LookupResponse),
         (status = 400, description = "Both ID lists are empty or an ID is blank"),
         (status = 401, description = "Unauthorized - Missing or invalid Bearer token"),
         (status = 500, description = "Internal error while checking the cache")
@@ -104,7 +116,7 @@ pub async fn lookup(
         .find_album_parts_by_ids(&album_ids)
         .await?;
 
-    let mut track_formats = HashMap::<String, HashMap<Codec, Option<u64>>>::new();
+    let mut track_formats = HashMap::<String, HashMap<Codec, (i32, Option<u64>)>>::new();
     for (db_track_id, track_id, codec) in track_rows {
         if apple_format(codec).is_some() {
             let file_size_bytes = state
@@ -116,7 +128,7 @@ pub async fn lookup(
             track_formats
                 .entry(track_id)
                 .or_default()
-                .insert(codec, file_size_bytes);
+                .insert(codec, (db_track_id, file_size_bytes));
         }
     }
     let tracks = track_ids
@@ -145,7 +157,7 @@ pub async fn lookup(
         .map(|apple_album_id| {
             let zip_formats = album_parts
                 .get(&apple_album_id)
-                .map(|parts| complete_zip_formats(parts))
+                .map(|parts| complete_zip_parts(parts))
                 .unwrap_or_default();
             AlbumLookupResult {
                 apple_album_id,
@@ -184,12 +196,13 @@ fn apple_format(codec: Codec) -> Option<&'static str> {
     }
 }
 
-fn ordered_track_formats(formats: HashMap<Codec, Option<u64>>) -> Vec<TrackFormatResult> {
+fn ordered_track_formats(formats: HashMap<Codec, (i32, Option<u64>)>) -> Vec<TrackFormatResult> {
     [Codec::Alac, Codec::Aac, Codec::Ec3]
         .into_iter()
         .filter_map(|codec| {
-            let file_size_bytes = formats.get(&codec)?;
+            let (id, file_size_bytes) = formats.get(&codec)?;
             Some(TrackFormatResult {
+                id: *id,
                 format: apple_format(codec)?.to_owned(),
                 file_size_bytes: *file_size_bytes,
             })
@@ -197,25 +210,33 @@ fn ordered_track_formats(formats: HashMap<Codec, Option<u64>>) -> Vec<TrackForma
         .collect()
 }
 
-fn complete_zip_formats(parts: &[db::Album]) -> Vec<AlbumZipFormatResult> {
+fn complete_zip_parts(parts: &[db::Album]) -> Vec<AlbumZipPartResult> {
     [Codec::Alac, Codec::Aac, Codec::Ec3]
         .into_iter()
         .filter_map(|codec| {
-            let codec_parts = parts
+            let mut codec_parts = parts
                 .iter()
                 .filter(|part| part.codec == codec)
                 .collect::<Vec<_>>();
             if !has_complete_archive_parts(&codec_parts) {
                 return None;
             }
-            let file_size_bytes = codec_parts.iter().try_fold(0_u64, |total, part| {
-                total.checked_add(u64::try_from(part.file_size).ok()?)
-            })?;
-            Some(AlbumZipFormatResult {
-                format: apple_format(codec)?.to_owned(),
-                file_size_bytes,
-            })
+            codec_parts.sort_by_key(|part| part.part_index);
+            let format = apple_format(codec)?.to_owned();
+            codec_parts
+                .into_iter()
+                .map(|part| {
+                    Some(AlbumZipPartResult {
+                        id: part.id,
+                        format: format.clone(),
+                        file_size_bytes: u64::try_from(part.file_size).ok()?,
+                        part: part.part_index,
+                        total_parts: part.total_parts,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()
         })
+        .flatten()
         .collect()
 }
 

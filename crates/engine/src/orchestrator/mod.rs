@@ -402,6 +402,7 @@ struct EventBus {
 struct Admission {
     user_id: i64,
     is_admin: bool,
+    group_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -1011,6 +1012,28 @@ impl RipOrchestrator {
         deps: Arc<D>,
         options: &RipTaskOptions,
     ) -> Result<RipTaskSummary, OrchestratorError> {
+        self.start_task_with_group(deps, options, None).await
+    }
+
+    /// Start one independent task within a caller-owned batch admission group.
+    /// Tasks in the same group each get their own task ID and queue position,
+    /// while collectively consuming one per-user/global admission slot.
+    pub async fn start_task_in_group<D: TaskDeps>(
+        &self,
+        deps: Arc<D>,
+        options: &RipTaskOptions,
+        group_id: String,
+    ) -> Result<RipTaskSummary, OrchestratorError> {
+        self.start_task_with_group(deps, options, Some(group_id))
+            .await
+    }
+
+    async fn start_task_with_group<D: TaskDeps>(
+        &self,
+        deps: Arc<D>,
+        options: &RipTaskOptions,
+        admission_group_id: Option<String>,
+    ) -> Result<RipTaskSummary, OrchestratorError> {
         if !deps.supports_provider(options.provider.clone()) {
             return Err(OrchestratorError::Message(format!(
                 "provider {} is not available",
@@ -1018,7 +1041,7 @@ impl RipOrchestrator {
             )));
         }
         let job_id = cuid2::create_id();
-        self.admit(&job_id, options)?;
+        self.admit_in_group(&job_id, options, admission_group_id.as_deref())?;
         let mut admission_guard = AdmissionGuard::new(Arc::clone(&self.admissions), job_id.clone());
 
         // Settings are a snapshot.  The live-availability decision is made
@@ -1185,26 +1208,49 @@ impl RipOrchestrator {
         result
     }
 
+    #[cfg(test)]
     fn admit(&self, job_id: &str, options: &RipTaskOptions) -> Result<(), OrchestratorError> {
+        self.admit_in_group(job_id, options, None)
+    }
+
+    fn admit_in_group(
+        &self,
+        job_id: &str,
+        options: &RipTaskOptions,
+        group_id: Option<&str>,
+    ) -> Result<(), OrchestratorError> {
         let mut admissions = self.admissions.lock().expect("admissions poisoned");
         // Admins bypass every admission cap (user + global). Their jobs still
         // occupy a slot so `/cancel_<id>` bookkeeping and the dashboard can find
         // them, but they never crowd anyone out nor get crowded out.
         if !options.is_admin {
-            let non_admin_jobs = admissions
-                .jobs
-                .values()
-                .filter(|admission| !admission.is_admin)
-                .count();
-            if non_admin_jobs >= 16 {
+            let group_already_admitted = group_id.is_some_and(|group_id| {
+                admissions.jobs.values().any(|admission| {
+                    !admission.is_admin
+                        && admission.user_id == options.user_id
+                        && admission.group_id.as_deref() == Some(group_id)
+                })
+            });
+            let mut global_groups = HashSet::new();
+            let mut user_groups = HashSet::new();
+            for (existing_job_id, admission) in &admissions.jobs {
+                if admission.is_admin {
+                    continue;
+                }
+                let group_key = admission
+                    .group_id
+                    .clone()
+                    .unwrap_or_else(|| existing_job_id.clone());
+                global_groups.insert((admission.user_id, group_key.clone()));
+                if admission.user_id == options.user_id {
+                    user_groups.insert(group_key);
+                }
+            }
+
+            if !group_already_admitted && global_groups.len() >= 16 {
                 return Err(OrchestratorError::AdmissionLimit);
             }
-            let user_jobs = admissions
-                .jobs
-                .values()
-                .filter(|admission| admission.user_id == options.user_id)
-                .count();
-            if user_jobs >= 4 {
+            if !group_already_admitted && user_groups.len() >= 4 {
                 return Err(OrchestratorError::UserAdmissionLimit);
             }
         }
@@ -1213,6 +1259,7 @@ impl RipOrchestrator {
             Admission {
                 user_id: options.user_id,
                 is_admin: options.is_admin,
+                group_id: group_id.map(str::to_owned),
             },
         );
         Ok(())
