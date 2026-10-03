@@ -876,7 +876,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -929,7 +929,7 @@ dependencies = [
 [[package]]
 name = "ferogram"
 version = "0.6.5"
-source = "git+https://github.com/sayeed205/ferogram?branch=fix%2Fevict-connection-not-inited#d1e6a479042828194299109131b3bcc8a32f3af3"
+source = "git+https://github.com/ankit-chaubey/ferogram?rev=be3fbc17d8ffd818679957356f92ca99caf9df16#be3fbc17d8ffd818679957356f92ca99caf9df16"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -959,7 +959,7 @@ dependencies = [
 [[package]]
 name = "ferogram-connect"
 version = "0.6.5"
-source = "git+https://github.com/sayeed205/ferogram?branch=fix%2Fevict-connection-not-inited#d1e6a479042828194299109131b3bcc8a32f3af3"
+source = "git+https://github.com/ankit-chaubey/ferogram?rev=be3fbc17d8ffd818679957356f92ca99caf9df16#be3fbc17d8ffd818679957356f92ca99caf9df16"
 dependencies = [
  "ferogram-crypto",
  "ferogram-mtproto",
@@ -973,7 +973,7 @@ dependencies = [
 [[package]]
 name = "ferogram-crypto"
 version = "0.6.5"
-source = "git+https://github.com/sayeed205/ferogram?branch=fix%2Fevict-connection-not-inited#d1e6a479042828194299109131b3bcc8a32f3af3"
+source = "git+https://github.com/ankit-chaubey/ferogram?rev=be3fbc17d8ffd818679957356f92ca99caf9df16#be3fbc17d8ffd818679957356f92ca99caf9df16"
 dependencies = [
  "aes",
  "ctr",
@@ -990,7 +990,7 @@ dependencies = [
 [[package]]
 name = "ferogram-msgbox"
 version = "0.6.5"
-source = "git+https://github.com/sayeed205/ferogram?branch=fix%2Fevict-connection-not-inited#d1e6a479042828194299109131b3bcc8a32f3af3"
+source = "git+https://github.com/ankit-chaubey/ferogram?rev=be3fbc17d8ffd818679957356f92ca99caf9df16#be3fbc17d8ffd818679957356f92ca99caf9df16"
 dependencies = [
  "ferogram-tl-types",
  "tracing",
@@ -999,7 +999,7 @@ dependencies = [
 [[package]]
 name = "ferogram-mtproto"
 version = "0.6.5"
-source = "git+https://github.com/sayeed205/ferogram?branch=fix%2Fevict-connection-not-inited#d1e6a479042828194299109131b3bcc8a32f3af3"
+source = "git+https://github.com/ankit-chaubey/ferogram?rev=be3fbc17d8ffd818679957356f92ca99caf9df16#be3fbc17d8ffd818679957356f92ca99caf9df16"
 dependencies = [
  "ferogram-crypto",
  "ferogram-tl-types",
@@ -1011,7 +1011,7 @@ dependencies = [
 [[package]]
 name = "ferogram-mtsender"
 version = "0.6.5"
-source = "git+https://github.com/sayeed205/ferogram?branch=fix%2Fevict-connection-not-inited#d1e6a479042828194299109131b3bcc8a32f3af3"
+source = "git+https://github.com/ankit-chaubey/ferogram?rev=be3fbc17d8ffd818679957356f92ca99caf9df16#be3fbc17d8ffd818679957356f92ca99caf9df16"
 dependencies = [
  "ferogram-connect",
  "ferogram-crypto",
@@ -1025,7 +1025,7 @@ dependencies = [
 [[package]]
 name = "ferogram-parsers"
 version = "0.6.5"
-source = "git+https://github.com/sayeed205/ferogram?branch=fix%2Fevict-connection-not-inited#d1e6a479042828194299109131b3bcc8a32f3af3"
+source = "git+https://github.com/ankit-chaubey/ferogram?rev=be3fbc17d8ffd818679957356f92ca99caf9df16#be3fbc17d8ffd818679957356f92ca99caf9df16"
 dependencies = [
  "ferogram-tl-types",
 ]
@@ -1033,7 +1033,7 @@ dependencies = [
 [[package]]
 name = "ferogram-session"
 version = "0.6.5"
-source = "git+https://github.com/sayeed205/ferogram?branch=fix%2Fevict-connection-not-inited#d1e6a479042828194299109131b3bcc8a32f3af3"
+source = "git+https://github.com/ankit-chaubey/ferogram?rev=be3fbc17d8ffd818679957356f92ca99caf9df16#be3fbc17d8ffd818679957356f92ca99caf9df16"
 dependencies = [
  "base64 0.23.1",
  "thiserror",
@@ -1043,7 +1043,7 @@ dependencies = [
 [[package]]
 name = "ferogram-tl-gen"
 version = "0.6.5"
-source = "git+https://github.com/sayeed205/ferogram?branch=fix%2Fevict-connection-not-inited#d1e6a479042828194299109131b3bcc8a32f3af3"
+source = "git+https://github.com/ankit-chaubey/ferogram?rev=be3fbc17d8ffd818679957356f92ca99caf9df16#be3fbc17d8ffd818679957356f92ca99caf9df16"
 dependencies = [
  "ferogram-tl-parser",
 ]
@@ -1051,12 +1051,12 @@ dependencies = [
 [[package]]
 name = "ferogram-tl-parser"
 version = "0.6.5"
-source = "git+https://github.com/sayeed205/ferogram?branch=fix%2Fevict-connection-not-inited#d1e6a479042828194299109131b3bcc8a32f3af3"
+source = "git+https://github.com/ankit-chaubey/ferogram?rev=be3fbc17d8ffd818679957356f92ca99caf9df16#be3fbc17d8ffd818679957356f92ca99caf9df16"
 
 [[package]]
 name = "ferogram-tl-types"
 version = "0.6.5"
-source = "git+https://github.com/sayeed205/ferogram?branch=fix%2Fevict-connection-not-inited#d1e6a479042828194299109131b3bcc8a32f3af3"
+source = "git+https://github.com/ankit-chaubey/ferogram?rev=be3fbc17d8ffd818679957356f92ca99caf9df16#be3fbc17d8ffd818679957356f92ca99caf9df16"
 dependencies = [
  "ferogram-tl-gen",
  "ferogram-tl-parser",
@@ -2334,7 +2334,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2610,7 +2610,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2669,7 +2669,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3284,10 +3284,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3950,7 +3950,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

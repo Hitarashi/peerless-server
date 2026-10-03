@@ -63,6 +63,9 @@ fn map_invocation(error: InvocationError) -> DeliveryError {
         | ErrorKind::Network
         | ErrorKind::Migration(_)
         | ErrorKind::Transfer => DeliveryError::Transient(detail),
+        // Preserve the existing retryable treatment for media delivery now
+        // that Ferogram distinguishes this from generic transfer errors.
+        ErrorKind::FileReferenceExpired => DeliveryError::Transient(detail),
         ErrorKind::Rpc { code, .. } if code >= 500 => DeliveryError::Transient(detail),
         ErrorKind::Rpc { name, .. } if name == "ENTITY_BOUNDS_INVALID" => {
             DeliveryError::Rejected(DeliveryRejection::EntityBoundsInvalid)

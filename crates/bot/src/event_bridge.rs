@@ -155,14 +155,14 @@ async fn consume(state: Arc<BotState>, mut rx: mpsc::Receiver<BridgeEvent>) {
     while let Some(event) = rx.recv().await {
         match event {
             BridgeEvent::Created { job } => {
-                let mut created_jobs = vec![job];
+                let mut created_jobs = vec![*job];
                 let mut deferred_events = Vec::new();
                 let mut deadline = tokio::time::Instant::now() + CREATED_EVENT_QUIET_PERIOD;
                 let mut channel_closed = false;
                 loop {
                     match tokio::time::timeout_at(deadline, rx.recv()).await {
                         Ok(Some(BridgeEvent::Created { job })) => {
-                            created_jobs.push(job);
+                            created_jobs.push(*job);
                             deadline = tokio::time::Instant::now() + CREATED_EVENT_QUIET_PERIOD;
                         }
                         Ok(Some(event)) => deferred_events.push(event),
@@ -271,7 +271,7 @@ async fn handle_event(state: Arc<BotState>, event: BridgeEvent) -> Result<(), St
     let state_ref = state.as_ref();
     match event {
         BridgeEvent::Created { job } => {
-            refresh_dashboard_for_created_jobs(state_ref, vec![job]).await;
+            refresh_dashboard_for_created_jobs(state_ref, vec![*job]).await;
         }
         BridgeEvent::Progress { job, progress } => {
             registry().remember(&job);
@@ -311,8 +311,8 @@ async fn refresh_dashboard(state: &BotState, force: bool) {
 
 /// Remember a burst of created jobs, then send or edit each affected chat's
 /// dashboard once with a snapshot that includes the whole burst.
-async fn refresh_dashboard_for_created_jobs(state: &BotState, jobs: Vec<Box<ActiveRipTask>>) {
-    let mut chats = HashMap::<i64, Box<ActiveRipTask>>::new();
+async fn refresh_dashboard_for_created_jobs(state: &BotState, jobs: Vec<ActiveRipTask>) {
+    let mut chats = HashMap::<i64, ActiveRipTask>::new();
     for job in jobs {
         registry().remember(&job);
         if job.chat_id > 0 {

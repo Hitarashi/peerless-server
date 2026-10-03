@@ -23,11 +23,7 @@ const RPC_TIMEOUT: Duration = Duration::from_secs(12);
 const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(2);
 
 fn is_stale_file_reference_error(error: &ferogram::InvocationError) -> bool {
-    matches!(
-        error,
-        ferogram::InvocationError::Rpc(rpc)
-            if rpc.name == "FILE_REFERENCE_EXPIRED" || rpc.name == "FILE_REFERENCE_INVALID"
-    )
+    matches!(error.kind(), ErrorKind::FileReferenceExpired)
 }
 
 struct InFlightGuard<'a>(&'a AtomicUsize);

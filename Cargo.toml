@@ -18,7 +18,11 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
-ferogram = { git = "https://github.com/sayeed205/ferogram", branch = "fix/evict-connection-not-inited", features = ["html"] }
+ferogram = {
+    git = "https://github.com/ankit-chaubey/ferogram",
+    rev = "be3fbc17d8ffd818679957356f92ca99caf9df16",
+    features = ["html"],
+}
 diesel = { version = "2", features = ["postgres", "chrono", "serde_json"] }
 diesel-async = { version = "0.9", features = ["postgres", "bb8", "async-connection-wrapper"] }
 diesel_migrations = "2"
