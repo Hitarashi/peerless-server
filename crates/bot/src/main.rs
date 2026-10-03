@@ -357,10 +357,6 @@ async fn main() -> Result<()> {
         app_key: app_key.clone(),
     };
 
-    let apple_catalog = Arc::new(apple::Catalog::with_endpoint(
-        apple::ReqwestTransport::new(),
-        settings_store.lyricsporn_api_endpoint(),
-    ));
     let orchestrator_for_tasks = orchestrator.clone();
     let rip_deps_for_tasks = rip_deps.clone();
     let settings_store_for_tasks = Arc::clone(&settings_store);
@@ -426,7 +422,6 @@ async fn main() -> Result<()> {
             app_key.clone(),
         )
         .with_admin_id(env.admin_id)
-        .with_catalog_service(apple_catalog)
         .with_telegram_client(client.clone())
         .with_rip_task_runner(rip_task_runner),
     );
@@ -542,6 +537,7 @@ async fn main() -> Result<()> {
                     .or_else(|| is_album.then(|| format!("{} tracks", job.total_tracks))),
                 album: None,
                 duration: None,
+                artwork_url: None,
                 controller: tokio_util::sync::CancellationToken::new(),
                 created_at: std::time::Instant::now(),
                 latest_progress: server::rip_tasks::RipTaskProgress {
@@ -551,6 +547,7 @@ async fn main() -> Result<()> {
                     percent: Some(0.0),
                     current_track_title: None,
                     current_track_artist: None,
+                    current_track_artwork_url: None,
                     current_track_index: None,
                     total_tracks: is_album.then_some(job.total_tracks as u32),
                     completed_tracks: is_album.then_some(0),
@@ -600,6 +597,7 @@ async fn main() -> Result<()> {
                                         stage: Stage::ResolvingMetadata,
                                         title: None,
                                         artist: None,
+                                        artwork_url: None,
                                         bytes_done: None,
                                         bytes_total: None,
                                         percent: None,
@@ -613,6 +611,7 @@ async fn main() -> Result<()> {
                                         stage: Stage::Connecting,
                                         title: Some(track.title.clone()),
                                         artist: Some(track.artist.clone()),
+                                        artwork_url: track.artwork_url.clone(),
                                         bytes_done: None,
                                         bytes_total: None,
                                         percent: None,
@@ -628,6 +627,7 @@ async fn main() -> Result<()> {
                                         stage: Stage::Downloading,
                                         title: Some(track.title.clone()),
                                         artist: Some(track.artist.clone()),
+                                        artwork_url: track.artwork_url.clone(),
                                         bytes_done,
                                         bytes_total,
                                         percent,
@@ -643,6 +643,7 @@ async fn main() -> Result<()> {
                                         stage: Stage::MaterializingCachedMedia,
                                         title: Some(track.title.clone()),
                                         artist: Some(track.artist.clone()),
+                                        artwork_url: track.artwork_url.clone(),
                                         bytes_done,
                                         bytes_total,
                                         percent,
@@ -656,6 +657,7 @@ async fn main() -> Result<()> {
                                         stage: Stage::Decrypting,
                                         title: Some(track.title.clone()),
                                         artist: Some(track.artist.clone()),
+                                        artwork_url: track.artwork_url.clone(),
                                         bytes_done: None,
                                         bytes_total: None,
                                         percent: None,
@@ -669,6 +671,7 @@ async fn main() -> Result<()> {
                                         stage: Stage::Tagging,
                                         title: Some(track.title.clone()),
                                         artist: Some(track.artist.clone()),
+                                        artwork_url: track.artwork_url.clone(),
                                         bytes_done: None,
                                         bytes_total: None,
                                         percent: None,
@@ -683,6 +686,7 @@ async fn main() -> Result<()> {
                                     stage: Stage::CachedDelivery,
                                     title: Some(track.title.clone()),
                                     artist: Some(track.artist.clone()),
+                                    artwork_url: track.artwork_url.clone(),
                                     bytes_done: None,
                                     bytes_total: None,
                                     percent: None,
@@ -709,6 +713,7 @@ async fn main() -> Result<()> {
                                     stage: Stage::UploadingTrack,
                                     title: Some(track.title.clone()),
                                     artist: Some(track.artist.clone()),
+                                    artwork_url: track.artwork_url.clone(),
                                     bytes_done,
                                     bytes_total,
                                     percent,
@@ -730,6 +735,7 @@ async fn main() -> Result<()> {
                                     stage: Stage::BuildingArchive,
                                     title: Some(archive.clone()),
                                     artist: None,
+                                    artwork_url: task.artwork_url.clone(),
                                     bytes_done,
                                     bytes_total,
                                     percent,
@@ -751,6 +757,7 @@ async fn main() -> Result<()> {
                                     stage: Stage::UploadingArchive,
                                     title: Some(archive.clone()),
                                     artist: None,
+                                    artwork_url: task.artwork_url.clone(),
                                     bytes_done,
                                     bytes_total,
                                     percent,
@@ -789,14 +796,22 @@ async fn main() -> Result<()> {
                         }
                     };
 
-                    let (current_track_title, current_track_artist) = if let Some(upload) = &upload
-                    {
-                        (upload.title.clone(), upload.artist.clone())
-                    } else if let Some(download) = &download {
-                        (download.title.clone(), download.artist.clone())
-                    } else {
-                        (None, None)
-                    };
+                    let (current_track_title, current_track_artist, current_track_artwork_url) =
+                        if let Some(upload) = &upload {
+                            (
+                                upload.title.clone(),
+                                upload.artist.clone(),
+                                upload.artwork_url.clone(),
+                            )
+                        } else if let Some(download) = &download {
+                            (
+                                download.title.clone(),
+                                download.artist.clone(),
+                                download.artwork_url.clone(),
+                            )
+                        } else {
+                            (None, None, None)
+                        };
 
                     let is_album = job.total_tracks > 1;
                     let (current_track_index, total_tracks, completed_tracks, failed_tracks) =
@@ -825,6 +840,7 @@ async fn main() -> Result<()> {
                         percent: overall_percent,
                         current_track_title,
                         current_track_artist,
+                        current_track_artwork_url,
                         current_track_index,
                         total_tracks,
                         completed_tracks,
@@ -978,6 +994,7 @@ mod tests {
                 stage,
                 title: Some("Track".to_owned()),
                 artist: Some("Artist".to_owned()),
+                artwork_url: None,
                 bytes_done: Some(bytes_done),
                 bytes_total: Some(100),
                 percent: Some(bytes_done as f32),
@@ -989,6 +1006,7 @@ mod tests {
             percent: Some(bytes_done as f32),
             current_track_title: Some("Track".to_owned()),
             current_track_artist: Some("Artist".to_owned()),
+            current_track_artwork_url: None,
             current_track_index: Some(1),
             total_tracks: Some(1),
             completed_tracks: Some(0),

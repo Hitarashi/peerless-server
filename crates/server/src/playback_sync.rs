@@ -693,6 +693,7 @@ mod tests {
                 artist: None,
                 album: None,
                 duration: None,
+                artwork_url: None,
             },
         };
         let round_trip: ClientMessage =

@@ -32,6 +32,9 @@ fn default_stream_server_port() -> u16 {
 }
 
 /// Validate and normalize a configured Lyricsporn API base URL.
+///
+/// The value must include the API path prefix (for example, `https://host/api/v1`),
+/// because API clients append resource paths such as `/tracks/{id}` to it.
 pub fn normalize_lyricsporn_api_url(value: &str) -> Option<String> {
     let trimmed = value.trim().trim_end_matches('/');
     let parsed = reqwest::Url::parse(trimmed).ok()?;

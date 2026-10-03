@@ -221,6 +221,7 @@ async fn create_task(
         artist: request.artist,
         album: request.album,
         duration: request.duration,
+        artwork_url: request.artwork_url,
         controller: controller.clone(),
         created_at: std::time::Instant::now(),
         latest_progress: RipTaskProgress {
@@ -230,6 +231,7 @@ async fn create_task(
             percent: Some(0.0),
             current_track_title: None,
             current_track_artist: None,
+            current_track_artwork_url: None,
             current_track_index: None,
             total_tracks: None,
             completed_tracks: None,
@@ -396,6 +398,7 @@ mod tests {
             artist: None,
             album: None,
             duration: None,
+            artwork_url: None,
             controller: tokio_util::sync::CancellationToken::new(),
             created_at: std::time::Instant::now(),
             latest_progress: RipTaskProgress {
@@ -405,6 +408,7 @@ mod tests {
                 percent: Some(0.0),
                 current_track_title: None,
                 current_track_artist: None,
+                current_track_artwork_url: None,
                 current_track_index: None,
                 total_tracks: None,
                 completed_tracks: None,

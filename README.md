@@ -98,12 +98,7 @@ mirrors with native client applications (such as [Peerless KMP](https://github.c
 | **Streaming**    | `GET`      | `/api/v1/tracks/{id}/playback`                                  | Acquire short-lived signed stream ticket                     |
 |                  | `GET/HEAD` | `/api/v1/stream?ticket=...`                                     | HTTP byte-range streaming (206 for Range requests)           |
 |                  | `GET`      | `/api/v1/ws/sync`                                               | Playback sync; create, cancel, and observe rip tasks         |
-|                  | `GET`      | `/api/v1/tracks/{id}`                                           | Complete track metadata and audio specifications             |
-|                  | `GET`      | `/api/v1/albums`                                                | Paginated list of cached albums                              |
-|                  | `GET`      | `/api/v1/albums/{album_ref}`                                    | Album tracks by title, provider id, or track id              |
-|                  | `GET`      | `/api/v1/artists/{name}/tracks`                                 | All cached tracks by an artist                               |
-| **Assets**       | `GET`      | `/api/v1/assets/tracks/{id}/artwork`                            | Apple Music artwork URL as JSON                               |
-|                  | `GET`      | `/api/v1/assets/artists/artwork?name=...`                       | Artist artwork URL as JSON                                   |
+| **Lookup**       | `POST`     | `/api/v1/lookup`                                                | Apple track formats and file sizes; complete album ZIP availability and total sizes |
 | **Integrations** | `POST`     | `/api/v1/integrations/lastfm/login`                             | Connect Last.fm account (AES-256-GCM encrypted)              |
 |                  | `GET`      | `/api/v1/integrations/lastfm/status`                            | Get Last.fm connection status                                |
 |                  | `DELETE`   | `/api/v1/integrations/lastfm`                                   | Disconnect Last.fm account                                   |
@@ -120,16 +115,36 @@ mirrors with native client applications (such as [Peerless KMP](https://github.c
 
 ### Authentication
 
-The catalog and asset routes are **not** open. Every row above except the public routes listed below requires an
+Every row above except the public routes listed below requires an
 `Authorization: Bearer <token>` header, where `<token>` is the opaque session token returned by
 `POST /api/v1/auth/exchange` (and slid forward by `POST /api/v1/auth/refresh`). A missing or invalid header is rejected
 with `401`.
 
-Authenticated routes: the whole **Catalog** group (`/api/v1/tracks/{id}`, `/api/v1/albums`,
-`/api/v1/albums/{album_ref}`, `/api/v1/artists/{name}/tracks`), every **Assets** route (track and artist artwork),
-`/api/v1/tracks/{id}/playback`, all **Integrations** routes, and the
+Authenticated routes: `POST /api/v1/lookup`, `/api/v1/tracks/{id}/playback`, all **Integrations** routes, and the
 `/api/v1/auth/me`, `/api/v1/auth/me/avatar`, and `/api/v1/auth/logout` routes (logout also accepts the token in its JSON
 body).
+
+`POST /api/v1/lookup` accepts `track_ids`, `album_ids`, or both; at least one list must contain an ID. Track format
+entries include `file_size_bytes` from Telegram media metadata (`null` when that metadata cannot be resolved). Each
+complete album ZIP format includes `file_size_bytes`, the sum of its cached archive parts.
+
+```json
+{
+  "tracks": [
+    {
+      "apple_track_id": "1440832410",
+      "formats": [{ "format": "alac", "file_size_bytes": 123456789 }]
+    }
+  ],
+  "albums": [
+    {
+      "apple_album_id": "1451234567",
+      "zip_available": true,
+      "zip_formats": [{ "format": "alac", "file_size_bytes": 987654321 }]
+    }
+  ]
+}
+```
 
 Public routes, which need no session bearer token:
 
@@ -330,8 +345,11 @@ docker run -d --name peerless \
 | `/index`          | Reconcile dump channel messages, captions, and ISRCs with PostgreSQL                |
 | `/export`         | Export compressed PostgreSQL backup archive                                         |
 
-Set the Lyricsporn API base URL with `/settings lyricsporn_url <URL>`; use
-`/settings lyricsporn_url clear` to disable API-backed catalog, lyrics, and artwork lookups.
+Set the Lyricsporn API base URL with `/settings lyricsporn_url <URL>` using the versioned API prefix, for example
+`https://<host>/api/v1`. Do not use only the site origin or the OpenAPI document URL: the client appends paths such as
+`/tracks/{id}` to the configured base. The URL has no default and must be configured. Use `/settings lyricsporn_url clear`
+to disable API-backed catalog, lyrics, and artwork lookups. The bot command updates the running process immediately;
+direct database edits require a bot restart because settings are cached in memory.
 
 ---
 

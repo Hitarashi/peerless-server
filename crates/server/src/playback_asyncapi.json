@@ -419,6 +419,13 @@
                         "null"
                       ],
                       "format": "int32"
+                    },
+                    "artwork_url": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Artwork URL the client already has for this track."
                     }
                   }
                 }
@@ -437,7 +444,8 @@
                   "provider": "apple",
                   "track_id": "1440857781",
                   "codec": "alac",
-                  "title": "Example track"
+                  "title": "Example track",
+                  "artwork_url": "https://example.com/cover.jpg"
                 }
               }
             }
@@ -920,6 +928,10 @@
             ],
             "format": "int32"
           },
+          "artwork_url": {
+            "type": "string",
+            "description": "Latest known task artwork, initially from request metadata and then from rip progress."
+          },
           "percent": {
             "type": [
               "number",
@@ -972,6 +984,10 @@
           "current_track_artist": {
             "type": "string",
             "description": "Current display artist. Lane objects carry independent artists when download and upload concern different tracks."
+          },
+          "current_track_artwork_url": {
+            "type": "string",
+            "description": "Artwork URL matching the current display track; follows the same upload-before-download selection as current_track_title."
           },
           "current_track_index": {
             "type": "integer",
@@ -1156,6 +1172,10 @@
             ],
             "description": "Track artist associated with this download activity, when known."
           },
+          "artwork_url": {
+            "type": "string",
+            "description": "Artwork URL associated with this download lane's track, when known."
+          },
           "bytes_done": {
             "type": [
               "integer",
@@ -1236,6 +1256,10 @@
               "null"
             ],
             "description": "Track artist associated with this upload activity, when known."
+          },
+          "artwork_url": {
+            "type": "string",
+            "description": "Artwork URL associated with this upload lane's track, when known."
           },
           "bytes_done": {
             "type": [

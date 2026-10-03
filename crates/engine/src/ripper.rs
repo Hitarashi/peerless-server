@@ -876,6 +876,7 @@ impl AlacTrackRipper {
                     title: meta.title.clone(),
                     artist: meta.artist.clone(),
                     album: meta.album.clone(),
+                    artwork_url: meta.artwork_url.clone(),
                     duration: meta.duration_secs,
                     bit_depth: stream.bit_depth,
                     sample_rate: stream.sample_rate,

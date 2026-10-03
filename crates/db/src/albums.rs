@@ -48,6 +48,24 @@ impl AlbumsRepository {
         Ok(rows)
     }
 
+    /// Finds all archive parts for the supplied Apple Music album IDs.
+    pub async fn find_album_parts_by_ids(
+        &self,
+        album_ids: &[String],
+    ) -> Result<Vec<Album>, DbError> {
+        if album_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut connection = self.pool.connection().await?;
+        Ok(albums::table
+            .filter(albums::provider.eq(Provider::Apple))
+            .filter(albums::album_id.eq_any(album_ids.to_vec()))
+            .order((albums::album_id.asc(), albums::part_index.asc()))
+            .select(Album::as_select())
+            .load::<Album>(&mut *connection)
+            .await?)
+    }
+
     /// Finds a single album archive record by Telegram file unique id.
     pub async fn find_by_file_unique_id(
         &self,

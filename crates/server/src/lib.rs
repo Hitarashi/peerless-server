@@ -3,14 +3,13 @@
 //! Provides a deep module interface (`run_server`, `create_router`, `ServerState`, `ServerConfig`)
 //! encapsulating all routing, middleware, range streaming, and authentication.
 
-pub mod assets;
 pub mod auth;
-pub mod catalog;
 pub mod docs;
 pub mod error;
 pub mod gateway;
 pub mod health;
 pub mod integrations;
+pub mod lookup;
 pub mod playback_sync;
 pub mod probe;
 pub mod rip_task_rpc;
@@ -81,7 +80,6 @@ pub struct ServerState {
     pub admin_id: i64,
     pub sync_hub: playback_sync::PlaybackSyncHub,
     pub http_client: reqwest::Client,
-    pub catalog_service: Option<apple::SharedCatalog>,
     pub rip_task_runner: RipTaskRunner,
     pub app_key: String,
     pub started_at: std::time::Instant,
@@ -140,7 +138,6 @@ impl ServerState {
             admin_id,
             sync_hub: playback_sync::PlaybackSyncHub::default(),
             http_client,
-            catalog_service: None,
             rip_task_runner,
             app_key,
             started_at: std::time::Instant::now(),
@@ -149,11 +146,6 @@ impl ServerState {
 
     pub fn with_admin_id(mut self, admin_id: i64) -> Self {
         self.admin_id = admin_id;
-        self
-    }
-
-    pub fn with_catalog_service(mut self, catalog_service: apple::SharedCatalog) -> Self {
-        self.catalog_service = Some(catalog_service);
         self
     }
 
@@ -240,6 +232,13 @@ impl ServerState {
                 .or(previous.current_track_index);
             progress.completed_tracks = progress.completed_tracks.or(previous.completed_tracks);
         }
+        progress.current_track_artwork_url = progress
+            .current_track_artwork_url
+            .or_else(|| previous.current_track_artwork_url.clone());
+        task.artwork_url = progress
+            .current_track_artwork_url
+            .clone()
+            .or_else(|| task.artwork_url.clone());
         task.latest_progress = progress;
         drop(tasks);
         let _ = self.task_sync_tx.send(rip_tasks::TaskSyncEvent::Updated {
@@ -266,23 +265,8 @@ pub fn create_router(state: Arc<ServerState>) -> Router {
             get(streaming::stream_handler).head(streaming::stream_handler),
         )
         .route("/api/v1/ws/sync", get(playback_sync::ws_handler))
-        // Catalog
-        .route("/api/v1/tracks/{id}", get(catalog::get_track))
-        .route("/api/v1/albums", get(catalog::list_albums))
-        .route("/api/v1/albums/{album_ref}", get(catalog::get_album_tracks))
-        .route(
-            "/api/v1/artists/{name}/tracks",
-            get(catalog::get_artist_tracks),
-        )
-        // Assets
-        .route(
-            "/api/v1/assets/tracks/{id}/artwork",
-            get(assets::get_artwork),
-        )
-        .route(
-            "/api/v1/assets/artists/artwork",
-            get(assets::get_artist_artwork),
-        )
+        // TODO: Switch to QUERY once Axum releases QUERY method routing.
+        .route("/api/v1/lookup", post(lookup::lookup))
         .nest("/api/v1/integrations/lastfm", integrations::lastfm_router())
         .nest(
             "/api/v1/integrations/listenbrainz",

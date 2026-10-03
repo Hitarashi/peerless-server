@@ -18,6 +18,8 @@ pub struct RipTaskRequest {
     pub artist: Option<String>,
     pub album: Option<String>,
     pub duration: Option<i32>,
+    /// Artwork URL supplied by the client, when it already has one.
+    pub artwork_url: Option<String>,
 }
 
 /// Thread-safe active task metadata stored in `ServerState::active_tasks`.
@@ -36,6 +38,7 @@ pub struct ServerTaskMeta {
     pub artist: Option<String>,
     pub album: Option<String>,
     pub duration: Option<i32>,
+    pub artwork_url: Option<String>,
     pub controller: tokio_util::sync::CancellationToken,
     pub created_at: std::time::Instant,
     pub latest_progress: RipTaskProgress,
@@ -53,6 +56,7 @@ impl ServerTaskMeta {
             artist: self.artist.clone(),
             album: self.album.clone(),
             duration: self.duration,
+            artwork_url: self.artwork_url.clone(),
             job_stage: progress.job_stage,
             download: progress.download.clone(),
             upload: progress.upload.clone(),
@@ -66,6 +70,7 @@ impl ServerTaskMeta {
             is_album: self.is_album,
             current_track_title: progress.current_track_title.clone(),
             current_track_artist: progress.current_track_artist.clone(),
+            current_track_artwork_url: progress.current_track_artwork_url.clone(),
             current_track_index: progress.current_track_index,
             total_tracks: progress.total_tracks,
             completed_tracks: progress.completed_tracks,
@@ -84,6 +89,9 @@ pub struct RipTaskSnapshot {
     pub artist: Option<String>,
     pub album: Option<String>,
     pub duration: Option<i32>,
+    /// Latest known task artwork, initially from request metadata and then from rip progress.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artwork_url: Option<String>,
     /// Optional orchestration activity that may coexist with either lane.
     pub job_stage: Option<RipTaskJobStage>,
     /// Download/materialization progress, independent of the upload lane.
@@ -105,6 +113,8 @@ pub struct RipTaskSnapshot {
     pub current_track_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_track_artist: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_track_artwork_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_track_index: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -176,6 +186,9 @@ pub struct RipTaskDownloadLane {
     pub title: Option<String>,
     /// Track artist associated with this lane, when known.
     pub artist: Option<String>,
+    /// Artwork URL associated with this lane's track, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artwork_url: Option<String>,
     /// Bytes processed so far. Null when the activity has no byte counter.
     pub bytes_done: Option<u64>,
     /// Expected byte total. Null when the total is unknown or the activity has no byte counter.
@@ -202,6 +215,9 @@ pub struct RipTaskUploadLane {
     pub title: Option<String>,
     /// Track artist associated with this lane, when known.
     pub artist: Option<String>,
+    /// Artwork URL associated with this lane's track, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artwork_url: Option<String>,
     /// Bytes processed so far. Null when the activity has no byte counter.
     pub bytes_done: Option<u64>,
     /// Expected byte total. Null when the total is unknown or the activity has no byte counter.
@@ -227,6 +243,7 @@ pub struct RipTaskProgress {
     pub percent: Option<f32>,
     pub current_track_title: Option<String>,
     pub current_track_artist: Option<String>,
+    pub current_track_artwork_url: Option<String>,
     pub current_track_index: Option<u32>,
     pub total_tracks: Option<u32>,
     pub completed_tracks: Option<u32>,
@@ -258,6 +275,7 @@ mod tests {
             stage: RipTaskDownloadStage::Downloading,
             title: Some("Track Four".to_owned()),
             artist: Some("Artist Four".to_owned()),
+            artwork_url: None,
             bytes_done: Some(40),
             bytes_total: Some(100),
             percent: Some(40.0),
@@ -269,6 +287,7 @@ mod tests {
             stage: RipTaskUploadStage::UploadingTrack,
             title: Some("Track Three".to_owned()),
             artist: Some("Artist Three".to_owned()),
+            artwork_url: None,
             bytes_done: Some(75),
             bytes_total: Some(100),
             percent: Some(75.0),
@@ -287,6 +306,7 @@ mod tests {
             artist: None,
             album: None,
             duration: None,
+            artwork_url: None,
             controller: tokio_util::sync::CancellationToken::new(),
             created_at: std::time::Instant::now(),
             latest_progress: RipTaskProgress {
@@ -296,6 +316,7 @@ mod tests {
                 percent: Some(43.75),
                 current_track_title: Some("Track Three".to_owned()),
                 current_track_artist: Some("Artist Three".to_owned()),
+                current_track_artwork_url: None,
                 current_track_index: Some(4),
                 total_tracks: Some(8),
                 completed_tracks: Some(3),
@@ -377,6 +398,7 @@ mod tests {
             stage: RipTaskDownloadStage::Downloading,
             title: None,
             artist: None,
+            artwork_url: None,
             bytes_done,
             bytes_total,
             percent: lane_percent(bytes_done, bytes_total),

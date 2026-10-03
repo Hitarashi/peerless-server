@@ -55,6 +55,7 @@ fn create_rip_rpc_request(
             artist: None,
             album: None,
             duration: None,
+            artwork_url: None,
         },
     }
 }
@@ -255,40 +256,34 @@ async fn test_docs_and_unauthorized_endpoints() {
     assert!(health_res["cache_bytes"].as_u64().is_some());
     assert!(health_res["uptime_seconds"].as_u64().is_some());
 
-    // 11. The ripped catalog and its assets are private. Every one of these
-    //     endpoints must refuse an anonymous caller instead of serving data.
-    let secured_endpoints = [
-        "/api/v1/tracks/2147483000",
-        "/api/v1/albums",
-        "/api/v1/albums/test_album",
-        "/api/v1/artists/taylor/tracks",
-        "/api/v1/assets/tracks/2147483000/artwork",
-        "/api/v1/assets/artists/artwork?name=taylor",
-    ];
-    for uri in secured_endpoints {
-        let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
-        let res = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(
-            res.status(),
-            StatusCode::UNAUTHORIZED,
-            "{uri} must reject anonymous access"
-        );
-    }
+    // 11. Cache lookup is private and must refuse an anonymous caller.
+    let lookup_payload = serde_json::json!({
+        "track_ids": ["2147483000"],
+        "album_ids": ["test_album"]
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/lookup")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_vec(&lookup_payload).unwrap()))
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
-async fn test_catalog_and_assets_require_authenticated_session() {
+async fn test_lookup_requires_authenticated_session() {
     let _ = dotenvy::from_filename(".env");
     let Ok(db_url) = std::env::var("DATABASE_URL").or_else(|_| std::env::var("TEST_DATABASE_URL"))
     else {
-        eprintln!("Skipping catalog authentication test: DATABASE_URL not set");
+        eprintln!("Skipping lookup authentication test: DATABASE_URL not set");
         return;
     };
 
     let pool = match db::connect(&db_url).await {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("Skipping catalog authentication test: cannot connect to {db_url}: {e}");
+            eprintln!("Skipping lookup authentication test: cannot connect to {db_url}: {e}");
             return;
         }
     };
@@ -309,7 +304,7 @@ async fn test_catalog_and_assets_require_authenticated_session() {
     let settings_store = Arc::new(db::SettingsStore::new(pool.clone()));
     let orchestrator = Arc::new(engine::orchestrator::RipOrchestrator::default());
 
-    let app_key = "test_app_key_for_catalog_auth_32_by";
+    let app_key = "test_app_key_for_lookup_auth_32_bytes";
     let state = Arc::new(ServerState::new(
         stream_engine,
         session_mgr.clone(),
@@ -326,7 +321,7 @@ async fn test_catalog_and_assets_require_authenticated_session() {
     let code = session_mgr.create_login_code(user_id).await.unwrap();
     let exchange_payload = serde_json::json!({
         "code": code,
-        "device_name": "Catalog Auth Test",
+        "device_name": "Lookup Auth Test",
         "platform": "linux"
     });
     let req = Request::builder()
@@ -344,39 +339,31 @@ async fn test_catalog_and_assets_require_authenticated_session() {
     let token = exchange_res["token"].as_str().unwrap().to_string();
     assert!(!token.is_empty());
 
-    // Each secured endpoint must reject an anonymous caller and serve a real
-    // session holder. The high track ids do not exist and the provider name is
-    // unparseable, so the authenticated leg stays off the network and only has
-    // to prove the auth check itself was satisfied.
-    let secured_endpoints = [
-        "/api/v1/tracks/2147483000",
-        "/api/v1/albums",
-        "/api/v1/albums/test_album",
-        "/api/v1/artists/taylor/tracks",
-        "/api/v1/assets/tracks/2147483000/artwork",
-        "/api/v1/assets/artists/artwork?name=taylor",
-    ];
-    for uri in secured_endpoints {
-        let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
-        let res = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(
-            res.status(),
-            StatusCode::UNAUTHORIZED,
-            "{uri} must reject anonymous access"
-        );
+    // Unknown IDs stay off external services, while the route still requires a session.
+    let lookup_payload = serde_json::json!({
+        "track_ids": ["2147483000"],
+        "album_ids": ["test_album"]
+    });
+    let body = Body::from(serde_json::to_vec(&lookup_payload).unwrap());
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/lookup")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(body)
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 
-        let req = Request::builder()
-            .uri(uri)
-            .header(header::AUTHORIZATION, format!("Bearer {token}"))
-            .body(Body::empty())
-            .unwrap();
-        let res = app.clone().oneshot(req).await.unwrap();
-        assert_ne!(
-            res.status(),
-            StatusCode::UNAUTHORIZED,
-            "{uri} must serve an authenticated session"
-        );
-    }
+    let body = Body::from(serde_json::to_vec(&lookup_payload).unwrap());
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/lookup")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(body)
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
 }
 
 #[tokio::test]
@@ -695,7 +682,7 @@ async fn test_auth_lifecycle() {
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
 
-    // 2d. Test authorized GET /api/v1/albums/test_album
+    // 2d. Removed catalog routes no longer resolve.
     let req = Request::builder()
         .uri("/api/v1/albums/test_album")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))

@@ -32,7 +32,6 @@ reqwest = { workspace = true, features = ["json", "form"] }
 ferogram.workspace = true
 
 music = { path = "../music" }
-apple = { path = "../apple" }
 engine = { path = "../engine" }
 db = { path = "../db" }
 stream = { path = "../stream" }

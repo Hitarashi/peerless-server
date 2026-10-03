@@ -509,8 +509,9 @@ impl<T: Transport> Catalog<T> {
             return Ok(value);
         }
         let mut original_error = None;
-        for region in storefront_fallbacks(&storefront) {
-            match self.do_fetch_track_meta(track_id, &region).await {
+        let storefronts = storefront_fallbacks(&storefront);
+        for region in &storefronts {
+            match self.do_fetch_track_meta(track_id, region).await {
                 Ok(meta) => {
                     self.set_cached(&key, meta.clone().into_value());
                     return Ok(meta);
@@ -523,11 +524,19 @@ impl<T: Transport> Catalog<T> {
                 }
             }
         }
-        Err(original_error.unwrap_or_else(|| {
-            CatalogError::Message(format!(
-                "Lyricsporn found no song matching track ID {track_id}"
-            ))
-        }))
+        if let Some(error) = original_error {
+            warn!(
+                track_id,
+                configured_api_url = %api_url,
+                storefront = %storefront,
+                error = %error,
+                "Lyricsporn track lookup failed for all storefronts"
+            );
+            return Err(error);
+        }
+        Err(CatalogError::Message(format!(
+            "Lyricsporn found no song matching track ID {track_id}"
+        )))
     }
 
     /// Resolve an album and its ordered track list through Lyricsporn.

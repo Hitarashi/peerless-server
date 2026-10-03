@@ -254,6 +254,7 @@ impl FakeDeps {
             title: "Night Song".into(),
             artist: "A&R <duo>".into(),
             album: "Escapes".into(),
+            artwork_url: "https://example.com/cover.jpg".into(),
             duration: 215,
             bit_depth: 24,
             sample_rate: 48000,

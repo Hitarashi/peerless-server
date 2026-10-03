@@ -137,6 +137,7 @@ pub struct ByteProgress {
 pub struct TrackLabel {
     pub title: String,
     pub artist: String,
+    pub artwork_url: Option<String>,
     pub track_index: Option<u32>,
     pub total_tracks: Option<u32>,
 }
@@ -146,6 +147,7 @@ impl TrackLabel {
         Self {
             title: title.into(),
             artist: artist.into(),
+            artwork_url: None,
             track_index: None,
             total_tracks: None,
         }
@@ -157,10 +159,16 @@ impl TrackLabel {
         self
     }
 
+    pub fn with_artwork_url(mut self, artwork_url: Option<String>) -> Self {
+        self.artwork_url = artwork_url.filter(|url| !url.is_empty());
+        self
+    }
+
     pub fn from_meta(meta: &crate::types::TrackMeta) -> Self {
         Self {
             title: meta.title.clone(),
             artist: meta.artist.clone(),
+            artwork_url: (!meta.artwork_url.is_empty()).then(|| meta.artwork_url.clone()),
             track_index: meta
                 .track_number
                 .and_then(|n| u32::try_from(n).ok())

@@ -478,6 +478,8 @@ pub struct TrackRipResult {
     pub title: String,
     pub artist: String,
     pub album: String,
+    /// Provider artwork URL, or an empty string when unavailable.
+    pub artwork_url: String,
     pub duration: i64,
     pub bit_depth: u32,
     pub sample_rate: u32,

@@ -156,6 +156,7 @@ struct ResolvedTrackItem {
     id: String,
     title: Option<String>,
     artist: Option<String>,
+    artwork_url: Option<String>,
     storefront: Option<String>,
     is_streamable: Option<bool>,
 }
@@ -167,6 +168,7 @@ struct PipelineItem {
     storefront: Option<String>,
     meta_title: Option<String>,
     meta_artist: Option<String>,
+    artwork_url: Option<String>,
     is_streamable: Option<bool>,
     rendition: Rendition,
     cached: Option<CachedTrack>,
@@ -1268,6 +1270,7 @@ impl RipOrchestrator {
                         id: item.id.clone(),
                         title: None,
                         artist: None,
+                        artwork_url: None,
                         storefront: Some(effective_sf.clone()),
                         is_streamable: None,
                     });
@@ -1296,6 +1299,12 @@ impl RipOrchestrator {
                                 id: t.id.clone(),
                                 title: Some(t.title.clone()),
                                 artist: Some(t.artist.clone()),
+                                artwork_url: if t.artwork_url.is_empty() {
+                                    (!album.artwork_url.is_empty())
+                                        .then(|| album.artwork_url.clone())
+                                } else {
+                                    Some(t.artwork_url.clone())
+                                },
                                 storefront: Some(effective_sf.clone()),
                                 is_streamable: t.is_streamable,
                             });
@@ -1324,6 +1333,8 @@ impl RipOrchestrator {
                                     id: t.id.clone(),
                                     title: Some(t.title.clone()),
                                     artist: Some(t.artist.clone()),
+                                    artwork_url: (!t.artwork_url.is_empty())
+                                        .then(|| t.artwork_url.clone()),
                                     storefront: Some(effective_sf.clone()),
                                     is_streamable: None,
                                 });
@@ -1348,6 +1359,7 @@ impl RipOrchestrator {
                                     id: t.id.clone(),
                                     title: Some(t.title.clone()),
                                     artist: Some(t.artist.clone()),
+                                    artwork_url: None,
                                     storefront: Some(effective_sf.clone()),
                                     is_streamable: None,
                                 });
@@ -1688,6 +1700,7 @@ impl RipOrchestrator {
                     storefront: item.storefront.clone(),
                     meta_title: item.title.clone(),
                     meta_artist: item.artist.clone(),
+                    artwork_url: item.artwork_url.clone(),
                     is_streamable: item.is_streamable,
                     rendition: *rendition,
                     cached,
@@ -1906,6 +1919,7 @@ impl RipOrchestrator {
                             &shared,
                             Some(DownloadLane::CachedDelivery {
                                 track: TrackLabel::new(cached.title.clone(), cached.artist.clone())
+                                    .with_artwork_url(item.artwork_url.clone())
                                     .with_position(item.track_index, item.total_tracks),
                             }),
                         );
@@ -2770,6 +2784,7 @@ where
         shared,
         Some(DownloadLane::CachedDelivery {
             track: TrackLabel::new(cached.title.clone(), cached.artist.clone())
+                .with_artwork_url(item.artwork_url.clone())
                 .with_position(item.track_index, item.total_tracks),
         }),
     );
@@ -2874,6 +2889,7 @@ where
         );
         let destination = state.dir.join(&filename);
         let track = TrackLabel::new(cached.title.clone(), cached.artist.clone())
+            .with_artwork_url(item.artwork_url.clone())
             .with_position(item.track_index, item.total_tracks);
         bus.set_download(
             shared,
@@ -4683,6 +4699,9 @@ where
     let rip_result = &upload_item.rip_result;
     bus.set_codec(shared, Some(rip_result.codec.clone()));
     let track_label = TrackLabel::new(rip_result.title.clone(), rip_result.artist.clone())
+        .with_artwork_url(
+            (!rip_result.artwork_url.is_empty()).then(|| rip_result.artwork_url.clone()),
+        )
         .with_position(
             upload_item.track_index.or_else(|| {
                 u32::try_from(rip_result.track_number)

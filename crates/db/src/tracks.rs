@@ -157,6 +157,23 @@ impl TracksRepository {
             .optional()?)
     }
 
+    /// Finds every cached codec for the supplied Apple Music track IDs.
+    pub async fn find_track_formats(
+        &self,
+        track_ids: &[String],
+    ) -> Result<Vec<(i32, String, Codec)>, DbError> {
+        if track_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut connection = self.pool.connection().await?;
+        Ok(tracks::table
+            .filter(tracks::provider.eq(Provider::Apple))
+            .filter(tracks::track_id.eq_any(track_ids.to_vec()))
+            .select((tracks::id, tracks::track_id, tracks::codec))
+            .load::<(i32, String, Codec)>(&mut *connection)
+            .await?)
+    }
+
     pub async fn find_tracks_by_isrc(&self, isrc: &str) -> Result<Vec<Track>, DbError> {
         let mut connection = self.pool.connection().await?;
         Ok(tracks::table
