@@ -164,7 +164,7 @@ async fn search(state: Arc<BotState>, msg: IncomingMessage) {
         .collect::<Vec<_>>()
         .join(" ");
     if query.is_empty() {
-        let usage = "<b>Search music</b><br/><br/><blockquote><b>Usage:</b> <code>/search &lt;track title or artist&gt;</code><br/><i>Searches cached tracks and the Apple Music catalog.</i></blockquote>";
+        let usage = "<b>Search music</b><br/><br/><blockquote><b>Usage:</b> <code>/search &lt;track title or artist&gt;</code><br/><i>Searches cached tracks and the Lyricsporn catalog.</i></blockquote>";
         let _ = msg
             .reply(InputMessage::html(parse_dynamic_html(usage)))
             .await;

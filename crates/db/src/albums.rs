@@ -29,6 +29,9 @@ impl AlbumsRepository {
         album_id: &str,
         codec: Option<Codec>,
     ) -> Result<Vec<Album>, DbError> {
+        if provider != Provider::Apple {
+            return Ok(Vec::new());
+        }
         let mut connection = self.pool.connection().await?;
         let mut query = albums::table
             .filter(albums::provider.eq(provider))
@@ -52,6 +55,7 @@ impl AlbumsRepository {
     ) -> Result<Option<Album>, DbError> {
         let mut connection = self.pool.connection().await?;
         Ok(albums::table
+            .filter(albums::provider.eq(Provider::Apple))
             .filter(albums::file_unique_id.eq(file_unique_id))
             .select(Album::as_select())
             .first::<Album>(&mut *connection)
@@ -61,6 +65,11 @@ impl AlbumsRepository {
 
     /// Inserts or updates an album archive part record.
     pub async fn save_album(&self, input: &NewAlbum<'_>) -> Result<Album, DbError> {
+        if input.provider != Provider::Apple {
+            return Err(DbError::Validation(
+                "only Apple Music albums can be saved".to_owned(),
+            ));
+        }
         let mut connection = self.pool.connection().await?;
         diesel::insert_into(albums::table)
             .values(input)
@@ -84,7 +93,7 @@ impl AlbumsRepository {
             .await?;
 
         albums::table
-            .filter(albums::provider.eq(input.provider))
+            .filter(albums::provider.eq(input.provider.clone()))
             .filter(albums::album_id.eq(input.album_id))
             .filter(albums::codec.eq(input.codec))
             .filter(albums::part_index.eq(input.part_index))
@@ -106,6 +115,11 @@ impl AlbumsRepository {
         expected: &AlbumReplacementExpectation,
         uploads: &[AlbumUpload],
     ) -> Result<AlbumReplacementResult, DbError> {
+        if provider != Provider::Apple {
+            return Err(DbError::Validation(
+                "only Apple Music albums can be replaced".to_owned(),
+            ));
+        }
         let new_albums = uploads
             .iter()
             .map(|upload| {
@@ -118,7 +132,7 @@ impl AlbumsRepository {
                     ));
                 }
                 Ok(NewAlbum {
-                    provider: upload.provider,
+                    provider: upload.provider.clone(),
                     album_id: &upload.album_id,
                     codec: upload.codec,
                     part_index: upload.part_index,
@@ -154,7 +168,7 @@ impl AlbumsRepository {
                         .await?;
 
                     let existing = albums::table
-                        .filter(albums::provider.eq(provider))
+                        .filter(albums::provider.eq(provider.clone()))
                         .filter(albums::album_id.eq(album_id))
                         .filter(albums::codec.eq_any(match codec {
                             Codec::Alac | Codec::Aac => vec![Codec::Alac, Codec::Aac],
@@ -185,7 +199,7 @@ impl AlbumsRepository {
                         .collect::<Vec<_>>();
                     diesel::delete(
                         albums::table
-                            .filter(albums::provider.eq(provider))
+                            .filter(albums::provider.eq(provider.clone()))
                             .filter(albums::album_id.eq(album_id))
                             .filter(albums::codec.eq_any(match codec {
                                 Codec::Alac | Codec::Aac => vec![Codec::Alac, Codec::Aac],
@@ -216,7 +230,7 @@ impl AlbumsRepository {
         album_id: &str,
         codec: Option<Codec>,
     ) -> Result<Vec<Album>, DbError> {
-        let existing = self.find_albums(provider, album_id, codec).await?;
+        let existing = self.find_albums(provider.clone(), album_id, codec).await?;
         if existing.is_empty() {
             return Ok(Vec::new());
         }
@@ -236,6 +250,7 @@ impl AlbumsRepository {
     pub async fn list_albums(&self) -> Result<Vec<Album>, DbError> {
         let mut connection = self.pool.connection().await?;
         Ok(albums::table
+            .filter(albums::provider.eq(Provider::Apple))
             .order(albums::id.desc())
             .select(Album::as_select())
             .load::<Album>(&mut *connection)

@@ -303,13 +303,14 @@ async fn main() -> Result<()> {
     let me = client.get_me().await.context("get bot identity")?;
     info!(username = ?me.username, bot_id = me.id, dump_channel = env.dump_channel_id, "Bot started successfully");
 
+    let settings_store = Arc::new(db::SettingsStore::new(database.clone()));
     let rip_deps = Arc::new(
         bot::rip_deps::RipDeps::new(
             Arc::new(client.clone()),
             PeerRef::from(env.dump_channel_id),
             db::TracksRepository::new(database.clone()),
             db::RequestLogRepository::new(database.clone()),
-            db::SettingsStore::new(database.clone()),
+            Arc::clone(&settings_store),
             database.clone(),
         )
         .await
@@ -342,7 +343,6 @@ async fn main() -> Result<()> {
 
     let session_manager = Arc::new(db::SessionManager::new(database.clone(), env.admin_id));
     let tracks_repo = Arc::new(db::TracksRepository::new(database.clone()));
-    let settings_store = Arc::new(db::SettingsStore::new(database.clone()));
     let app_key = env.app_key.clone();
 
     let initial_settings = settings_store.get_settings();
@@ -357,7 +357,10 @@ async fn main() -> Result<()> {
         app_key: app_key.clone(),
     };
 
-    let apple_catalog = Arc::new(apple::Catalog::new(apple::ReqwestTransport::new()));
+    let apple_catalog = Arc::new(apple::Catalog::with_endpoint(
+        apple::ReqwestTransport::new(),
+        settings_store.lyricsporn_api_endpoint(),
+    ));
     let orchestrator_for_tasks = orchestrator.clone();
     let rip_deps_for_tasks = rip_deps.clone();
     let settings_store_for_tasks = Arc::clone(&settings_store);
@@ -527,16 +530,13 @@ async fn main() -> Result<()> {
                 task_id: task_id.clone(),
                 rip_task_id: job.id.clone(),
                 owner_id: job.user_id,
-                provider: job.provider,
+                provider: job.provider.clone(),
                 track_id: job
                     .source_track_ids
                     .first()
                     .cloned()
                     .unwrap_or_else(|| job.id.clone()),
-                codec: match job.provider {
-                    music::Provider::Apple => None,
-                    music::Provider::Qobuz => Some("flac".to_string()),
-                },
+                codec: None,
                 title: Some(parsed_title),
                 artist: parsed_artist
                     .or_else(|| is_album.then(|| format!("{} tracks", job.total_tracks))),
@@ -918,8 +918,6 @@ async fn main() -> Result<()> {
 
     // Bridge subscribes once; its consumer renders status messages + dashboard.
     bot::event_bridge::start(Arc::clone(&state));
-    // 24h auto-dump scheduler .
-    tokio::spawn(bot::handlers::dump::scheduler_loop(Arc::clone(&state)));
     let mut dispatcher = Dispatcher::new();
     handlers::register(&mut dispatcher, state);
 

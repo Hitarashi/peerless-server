@@ -227,7 +227,6 @@ async fn settings_defaults_parsing_and_mutations() {
     let store = SettingsStore::new(client.clone());
     store.init().await.expect("load settings");
     assert_eq!(store.get_settings().max_collection_tracks, 50);
-    assert_eq!(store.get_settings().auto_dump_storefronts, vec!["us"]);
 
     assert_eq!(
         store
@@ -243,13 +242,6 @@ async fn settings_defaults_parsing_and_mutations() {
             .await
             .max_collection_tracks,
         50
-    );
-    assert_eq!(
-        store
-            .set_setting("auto_dump_storefronts", json!([]))
-            .await
-            .auto_dump_storefronts,
-        vec!["us"]
     );
     assert!(
         !store
@@ -274,20 +266,8 @@ async fn settings_defaults_parsing_and_mutations() {
     assert_eq!(store.cycle_ripping_mode().await.as_str(), "paused");
     assert_eq!(store.cycle_ripping_mode().await.as_str(), "live");
     assert_eq!(store.set_max_collection_tracks(-8).await, 0);
-    assert_eq!(
-        store.add_auto_dump_storefront(" CA ").await,
-        vec!["us", "ca"]
-    );
-    assert_eq!(store.add_auto_dump_storefront("ca").await, vec!["us", "ca"]);
-    assert_eq!(store.remove_auto_dump_storefront("US").await, vec!["ca"]);
-    assert_eq!(store.remove_auto_dump_storefront("ca").await, vec!["us"]);
-    assert_eq!(store.set_auto_dump_storefronts(&[]).await, vec!["us"]);
-
     store.set_setting("ripping_mode", json!("live")).await;
     store.set_setting("max_collection_tracks", json!(50)).await;
-    store
-        .set_setting("auto_dump_storefronts", json!(["us"]))
-        .await;
     store.set_setting("album_rip_enabled", json!(true)).await;
     store.set_setting("playlist_rip_enabled", json!(true)).await;
     store.set_setting("artist_rip_enabled", json!(true)).await;

@@ -178,12 +178,7 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
     )
     .await;
 
-    let rendition_policy = match parsed.provider {
-        engine::Provider::Apple => {
-            engine::orchestrator::types::RenditionPolicy::PrimaryWithOptionalAtmos
-        }
-        engine::Provider::Qobuz => engine::orchestrator::types::RenditionPolicy::PrimaryOnly,
-    };
+    let rendition_policy = engine::orchestrator::types::RenditionPolicy::PrimaryWithOptionalAtmos;
 
     // If any parsed item is an artist, expand each artist into its constituent
     // albums and process them as individual album jobs so each album is packaged,
@@ -199,21 +194,16 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
         let mut expanded_albums = Vec::new();
         for item in &parsed.items {
             if item.kind == engine::types::TargetKind::Artist {
-                // Qobuz has no regional catalog, so it gets no region at all
-                // rather than a placeholder the adapter has to ignore.
-                let effective_sf = match parsed.provider {
-                    engine::Provider::Qobuz => None,
-                    engine::Provider::Apple => Some(
-                        item.storefront
-                            .as_deref()
-                            .or(parsed.storefront.as_deref())
-                            .unwrap_or(default_storefront),
-                    ),
-                };
+                let effective_sf = Some(
+                    item.storefront
+                        .as_deref()
+                        .or(parsed.storefront.as_deref())
+                        .unwrap_or(default_storefront),
+                );
                 match state
                     .rip_deps
                     .fetch_artist_album_ids(
-                        parsed.provider,
+                        parsed.provider.clone(),
                         &item.id,
                         effective_sf.map(Into::into).unwrap_or_default(),
                     )

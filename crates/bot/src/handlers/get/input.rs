@@ -1,6 +1,6 @@
 //! Input handling for the `/get` command.
 //!
-//! Parses Apple Music and Qobuz links, Telegram replies, and text documents.
+//! Parses Apple Music links, Telegram replies, and text documents.
 
 use std::{
     path::PathBuf,
@@ -29,65 +29,8 @@ pub fn has_force_token(text: &str) -> bool {
     text.split_whitespace().any(|t| t == "-f" || t == "--force")
 }
 
-/// Extracts Qobuz entities from whitespace-separated text tokens.
-pub fn parse_qobuz_entities(text: &str) -> Vec<ParsedTargetItem> {
-    let mut items = Vec::new();
-    for token in text.split_whitespace() {
-        let clean = token.trim_matches(|c| c == '<' || c == '>' || c == '"' || c == '\'');
-        if let Some(entity) = qobuz::parse_qobuz_url(clean) {
-            let kind = match entity.kind {
-                qobuz::QobuzKind::Track => engine::types::TargetKind::Track,
-                qobuz::QobuzKind::Album => engine::types::TargetKind::Album,
-                qobuz::QobuzKind::Artist => engine::types::TargetKind::Artist,
-                qobuz::QobuzKind::Playlist => engine::types::TargetKind::Playlist,
-            };
-            items.push(ParsedTargetItem {
-                id: entity.id,
-                kind,
-                // Qobuz has no storefronts; the provider field carries that fact.
-                storefront: None,
-            });
-        }
-    }
-    items
-}
-
 pub fn parse_text(text: &str, reply: Option<&str>, force_override: bool) -> Option<ParsedCommand> {
-    // 1. Check for direct Qobuz links
-    let direct_qobuz = parse_qobuz_entities(text);
-    if !direct_qobuz.is_empty() {
-        return Some(ParsedCommand {
-            provider: engine::types::Provider::Qobuz,
-            items: direct_qobuz,
-            force: force_override || has_force_token(text),
-            storefront: None,
-            document: false,
-            from_reply: false,
-            reply_sender_id: None,
-            reply_sender_name: None,
-            codec_preference: Some(CodecPreference::HighestQuality),
-        });
-    }
-
-    // 2. Check replied message for Qobuz links
-    if let Some(reply_text) = reply {
-        let reply_qobuz = parse_qobuz_entities(reply_text);
-        if !reply_qobuz.is_empty() {
-            return Some(ParsedCommand {
-                provider: engine::types::Provider::Qobuz,
-                items: reply_qobuz,
-                force: force_override || has_force_token(text),
-                storefront: None,
-                document: false,
-                from_reply: true,
-                reply_sender_id: None,
-                reply_sender_name: None,
-                codec_preference: Some(CodecPreference::HighestQuality),
-            });
-        }
-    }
-
-    // 3. Fall back to Apple Music direct
+    // Check for direct Apple Music links.
     if let Some(direct) = parse_alac_input(text, None)
         && !direct.items.is_empty()
     {
@@ -104,7 +47,7 @@ pub fn parse_text(text: &str, reply: Option<&str>, force_override: bool) -> Opti
         });
     }
 
-    // 4. Fall back to Apple Music reply
+    // Check the replied-to message for an Apple Music link.
     if let Some(reply_text) = reply
         && let Some(parsed) = parse_alac_input(text, Some(reply_text))
     {
@@ -222,20 +165,12 @@ pub async fn parse_message(
             let _ = tokio::fs::remove_file(&path).await;
             if let Ok(content) = result {
                 let apple_items = extract_batch_items(&content);
-                let qobuz_items = parse_qobuz_entities(&content);
-
-                let (provider, items, sf) = if !qobuz_items.is_empty() && apple_items.is_empty() {
-                    (engine::types::Provider::Qobuz, qobuz_items, None)
-                } else {
-                    (engine::types::Provider::Apple, apple_items, None)
-                };
-
-                if !items.is_empty() {
+                if !apple_items.is_empty() {
                     return ParsedCommand {
-                        provider,
-                        items,
+                        provider: engine::types::Provider::Apple,
+                        items: apple_items,
                         force: force_override || message.text().is_some_and(has_force_token),
-                        storefront: sf,
+                        storefront: None,
                         document: true,
                         from_reply: doc_from_reply,
                         reply_sender_id: if doc_from_reply {
@@ -287,33 +222,6 @@ mod tests {
     #[test]
     fn force_token_is_recognized() {
         assert!(has_force_token("/get --force 1"));
-    }
-
-    #[test]
-    fn parse_qobuz_url_routing() {
-        let direct = parse_text(
-            "/get https://play.qobuz.com/album/0060253786977",
-            None,
-            false,
-        );
-        assert!(direct.is_some());
-        let cmd = direct.unwrap();
-        assert_eq!(cmd.provider, engine::types::Provider::Qobuz);
-        assert_eq!(cmd.items.len(), 1);
-        assert_eq!(cmd.items[0].id, "0060253786977");
-        assert_eq!(cmd.codec_preference, Some(CodecPreference::HighestQuality));
-
-        let interpreter = parse_text(
-            "/get https://www.qobuz.com/us-en/interpreter/billie-eilish/2867335",
-            None,
-            false,
-        );
-        assert!(interpreter.is_some());
-        let cmd = interpreter.unwrap();
-        assert_eq!(cmd.provider, engine::types::Provider::Qobuz);
-        assert_eq!(cmd.items.len(), 1);
-        assert_eq!(cmd.items[0].id, "2867335");
-        assert_eq!(cmd.items[0].kind, engine::types::TargetKind::Artist);
     }
 
     #[test]

@@ -1009,7 +1009,7 @@ impl RipOrchestrator {
         deps: Arc<D>,
         options: &RipTaskOptions,
     ) -> Result<RipTaskSummary, OrchestratorError> {
-        if !deps.supports_provider(options.provider) {
+        if !deps.supports_provider(options.provider.clone()) {
             return Err(OrchestratorError::Message(format!(
                 "provider {} is not available",
                 options.provider
@@ -1040,7 +1040,7 @@ impl RipOrchestrator {
         let shared: Arc<Mutex<TaskShared>> = Arc::new(Mutex::new(TaskShared {
             job: ActiveRipTask {
                 id: job_id.clone(),
-                provider: options.provider,
+                provider: options.provider.clone(),
                 source_track_ids: options
                     .parsed_items
                     .iter()
@@ -1084,7 +1084,7 @@ impl RipOrchestrator {
             .parsed_items
             .iter()
             .map(|item| InflightTargetKey {
-                provider: options.provider,
+                provider: options.provider.clone(),
                 kind: item.kind,
                 id: item.id.clone(),
                 storefront: item
@@ -1274,7 +1274,11 @@ impl RipOrchestrator {
                     Ok(())
                 }
                 TargetKind::Album => match deps
-                    .fetch_album_tracks(options.provider, &item.id, effective_sf.as_str().into())
+                    .fetch_album_tracks(
+                        options.provider.clone(),
+                        &item.id,
+                        effective_sf.as_str().into(),
+                    )
                     .await
                 {
                     Ok(AlbumTracks { album, tracks }) => {
@@ -1303,7 +1307,7 @@ impl RipOrchestrator {
                 TargetKind::Artist => {
                     match deps
                         .fetch_artist_tracks(
-                            options.provider,
+                            options.provider.clone(),
                             &item.id,
                             effective_sf.as_str().into(),
                         )
@@ -1332,7 +1336,7 @@ impl RipOrchestrator {
                 TargetKind::Playlist => {
                     match deps
                         .fetch_playlist_tracks(
-                            options.provider,
+                            options.provider.clone(),
                             &item.id,
                             effective_sf.as_str().into(),
                         )
@@ -1413,7 +1417,8 @@ impl RipOrchestrator {
         let header = match (non_empty(&album_name), non_empty(&album_artist)) {
             (Some(name), Some(artist)) => {
                 if let (Some(id), Some(sf)) = (&album_id, &album_sf) {
-                    let album_url = deps.album_url(options.provider, id, sf.as_str().into());
+                    let album_url =
+                        deps.album_url(options.provider.clone(), id, sf.as_str().into());
                     if let Some(album_url) = album_url {
                         format!(
                             "Album: <a href=\"{album_url}\"><b>{}</b></a> by <b>{}</b>",
@@ -1525,7 +1530,8 @@ impl RipOrchestrator {
                     .iter()
                     .flat_map(move |rendition| {
                         rendition.accepted_cache_codecs().iter().map(move |codec| {
-                            TrackKey::new(options.provider, track.id.clone()).with_codec(*codec)
+                            TrackKey::new(options.provider.clone(), track.id.clone())
+                                .with_codec(*codec)
                         })
                     })
             })
@@ -1551,8 +1557,8 @@ impl RipOrchestrator {
             for item in &tracks_to_process {
                 for rendition in options.rendition_policy.renditions() {
                     for codec in rendition.accepted_cache_codecs() {
-                        let lookup_key =
-                            TrackKey::new(options.provider, item.id.clone()).with_codec(*codec);
+                        let lookup_key = TrackKey::new(options.provider.clone(), item.id.clone())
+                            .with_codec(*codec);
                         if let Some(cached) = existing_tracks_map.remove(&lookup_key) {
                             old_message_ids.push(DumpMessageRef::new(cached.message_id));
                             let _ = deps.delete_track(&lookup_key).await;
@@ -1583,7 +1589,7 @@ impl RipOrchestrator {
         // rechecks it while holding the replacement key lock.
         let existing_album_rows = if zip_build {
             match deps
-                .find_albums(options.provider, &options.parsed_items[0].id, None)
+                .find_albums(options.provider.clone(), &options.parsed_items[0].id, None)
                 .await
             {
                 Ok(rows) => rows,
@@ -1604,10 +1610,7 @@ impl RipOrchestrator {
                 .iter()
                 .map(|rendition| {
                     let replacement_codec = match rendition {
-                        Rendition::Primary => match options.provider {
-                            Provider::Qobuz => Codec::Flac,
-                            _ => Codec::Alac,
-                        },
+                        Rendition::Primary => Codec::Alac,
                         Rendition::Atmos => Codec::Ec3,
                     };
                     let rows = existing_album_rows
@@ -1674,7 +1677,10 @@ impl RipOrchestrator {
             for rendition in options.rendition_policy.renditions() {
                 let cached = rendition.accepted_cache_codecs().iter().find_map(|codec| {
                     existing_tracks_map
-                        .get(&TrackKey::new(options.provider, item.id.clone()).with_codec(*codec))
+                        .get(
+                            &TrackKey::new(options.provider.clone(), item.id.clone())
+                                .with_codec(*codec),
+                        )
                         .cloned()
                 });
                 pipeline_items.push(PipelineItem {
@@ -1715,7 +1721,7 @@ impl RipOrchestrator {
                 .filter(|item| {
                     existing_tracks_map
                         .get(
-                            &TrackKey::new(options.provider, item.id.clone())
+                            &TrackKey::new(options.provider.clone(), item.id.clone())
                                 .with_codec(Codec::Ec3),
                         )
                         .is_some_and(|cached| cached.codec == Codec::Ec3)
@@ -1732,18 +1738,20 @@ impl RipOrchestrator {
         let has_fresh = uncached_items.iter().any(|item| item.cached.is_none());
         let cache_hits_present = uncached_items.iter().any(|item| item.cached.is_some());
         let can_rip_live = settings.can_rip_live(options.is_admin)
-            && settings.can_rip_provider(options.provider, options.is_admin);
+            && settings.can_rip_provider(&options.provider, options.is_admin);
 
         if !can_rip_live
-            && !settings.can_rip_provider(options.provider, options.is_admin)
+            && !settings.can_rip_provider(&options.provider, options.is_admin)
             && (has_fresh || !cache_hits_present)
         {
+            let provider_name = if options.provider.is_apple() {
+                "Apple Music"
+            } else {
+                options.provider.as_str()
+            };
             warnings.push(format!(
                 "{} live ripping is currently disabled by administrator.",
-                match options.provider {
-                    music::Provider::Apple => "Apple Music",
-                    music::Provider::Qobuz => "Qobuz",
-                }
+                provider_name
             ));
         }
 
@@ -1891,8 +1899,9 @@ impl RipOrchestrator {
                         ));
                     }
                     if let Some(cached) = &item.cached {
-                        let cache_key = TrackKey::new(options.provider, item.track_id.clone())
-                            .with_codec(cached.codec);
+                        let cache_key =
+                            TrackKey::new(options.provider.clone(), item.track_id.clone())
+                                .with_codec(cached.codec);
                         self.bus.set_download(
                             &shared,
                             Some(DownloadLane::CachedDelivery {
@@ -2027,7 +2036,7 @@ impl RipOrchestrator {
                                             .unwrap_or_default(),
                                         album_url: match (&album_id, &album_sf) {
                                             (Some(id), Some(storefront)) => deps.album_url(
-                                                options.provider,
+                                                options.provider.clone(),
                                                 id,
                                                 storefront.as_str().into(),
                                             ),
@@ -2163,7 +2172,7 @@ impl RipOrchestrator {
                 .unwrap_or_default(),
             zip_album_url: match (&album_id, &album_sf) {
                 (Some(id), Some(storefront)) => {
-                    deps.album_url(options.provider, id, storefront.as_str().into())
+                    deps.album_url(options.provider.clone(), id, storefront.as_str().into())
                 }
                 _ => None,
             },
@@ -2472,7 +2481,7 @@ where
             .log_request(RequestLog {
                 telegram_id: ctx.options.user_id,
                 chat_id: ctx.options.chat_id,
-                track_key: TrackKey::new(ctx.options.provider, item.track_id.clone()),
+                track_key: TrackKey::new(ctx.options.provider.clone(), item.track_id.clone()),
                 is_cache_hit: false,
                 duration_ms: Some(0),
                 status: "failed".to_owned(),
@@ -2550,7 +2559,7 @@ where
             .unwrap_or_else(|| item.rendition.codec_preference())
     };
     let rip_options = RipOptions {
-        provider: ctx.options.provider,
+        provider: ctx.options.provider.clone(),
         storefront: &storefront,
         on_progress: Some(&on_progress),
         signal: Some(queue_signal.clone()),
@@ -2601,9 +2610,9 @@ where
                     telegram_id: ctx.options.user_id,
                     chat_id: ctx.options.chat_id,
                     track_key: if item.rendition == Rendition::Primary {
-                        TrackKey::new(ctx.options.provider, item.track_id.clone())
+                        TrackKey::new(ctx.options.provider.clone(), item.track_id.clone())
                     } else {
-                        TrackKey::new(ctx.options.provider, item.track_id.clone())
+                        TrackKey::new(ctx.options.provider.clone(), item.track_id.clone())
                             .with_codec(item.rendition.accepted_cache_codecs()[0])
                     },
                     is_cache_hit: false,
@@ -4118,7 +4127,7 @@ where
         };
         let thumb_path = match &ctx.zip_artwork_url {
             Some(url) if !url.is_empty() => {
-                let thumb_url = deps.artwork_url_at_size(options.provider, url, 320);
+                let thumb_url = deps.artwork_url_at_size(options.provider.clone(), url, 320);
                 match deps.fetch_artwork(&thumb_url).await {
                     Some(bytes) if !bytes.is_empty() => {
                         let path = state.dir.join("cover_thumb.jpg");
@@ -4135,14 +4144,8 @@ where
         let thumb_path_str = thumb_path
             .as_deref()
             .map(|path| path.to_string_lossy().into_owned());
-        let default_codec = match ctx.options.provider {
-            Provider::Qobuz => "flac",
-            _ => "alac",
-        };
-        let default_enum_codec = match ctx.options.provider {
-            Provider::Qobuz => Codec::Flac,
-            _ => Codec::Alac,
-        };
+        let default_codec = "alac";
+        let default_enum_codec = Codec::Alac;
         let codec = state
             .codec
             .lock()
@@ -4268,7 +4271,7 @@ where
             }
             let caption = format_zip_dump_caption(
                 &DumpZipCaptionMetadata {
-                    provider: options.provider,
+                    provider: options.provider.clone(),
                     album_id: &ctx.zip_album_id,
                     codec: Some(album_codec.as_str()),
                     album: &ctx.zip_album,
@@ -4414,7 +4417,7 @@ where
                         }
                     }
                     replacement_uploads.push(AlbumUpload {
-                        provider: options.provider,
+                        provider: options.provider.clone(),
                         album_id: ctx.zip_album_id.clone(),
                         codec: album_codec,
                         part_index: plan.part_index as i32,
@@ -4457,7 +4460,7 @@ where
                 .unwrap_or(AlbumReplacementExpectation::Mixed);
             let replacement = deps
                 .replace_albums(
-                    options.provider,
+                    options.provider.clone(),
                     &ctx.zip_album_id,
                     album_codec,
                     expected,
@@ -4475,7 +4478,11 @@ where
                     }
                     transfer_zip_dump_messages(ctx, &rendition_dump_messages);
                     let winner_rows = match deps
-                        .find_albums(options.provider, &ctx.zip_album_id, Some(album_codec))
+                        .find_albums(
+                            options.provider.clone(),
+                            &ctx.zip_album_id,
+                            Some(album_codec),
+                        )
                         .await
                     {
                         Ok(rows) => rows,
@@ -4692,7 +4699,7 @@ where
         || shared.lock().expect("job poisoned").job.is_cancelled || job_controller.is_cancelled();
 
     let caption = format_dump_caption(&DumpCaptionMetadata {
-        track_key: TrackKey::new(options.provider, track_id.clone()),
+        track_key: TrackKey::new(options.provider.clone(), track_id.clone()),
         title: &rip_result.title,
         artist: &rip_result.artist,
         album: &rip_result.album,
@@ -4854,7 +4861,7 @@ where
             return Err("cancelled".to_owned());
         }
         let cache_input = SaveTrackInput::from_rip_result(
-            options.provider,
+            options.provider.clone(),
             &track_id,
             rip_result,
             dump_upload.message.id(),
@@ -4876,7 +4883,7 @@ where
             let rip_codec = rip_result.codec.parse::<Codec>().ok();
             rollback_cancelled(
                 deps,
-                options.provider,
+                options.provider.clone(),
                 &track_id,
                 dump_upload.message_id(),
                 true,
@@ -4913,7 +4920,7 @@ where
         if is_cancelled() {
             rollback_cancelled(
                 deps,
-                options.provider,
+                options.provider.clone(),
                 &track_id,
                 dump_upload.message_id(),
                 true,
@@ -4927,7 +4934,7 @@ where
         if let Err(error) = deps.log_request(RequestLog {
             telegram_id: options.user_id,
             chat_id: options.chat_id,
-            track_key: TrackKey::new(options.provider, track_id.clone()),
+            track_key: TrackKey::new(options.provider.clone(), track_id.clone()),
             is_cache_hit: false,
             duration_ms: Some(total_duration_ms),
             status: "completed".to_string(),
@@ -5029,7 +5036,7 @@ async fn record_failure<D>(
         .log_request(RequestLog {
             telegram_id: ctx.options.user_id,
             chat_id: ctx.options.chat_id,
-            track_key: TrackKey::new(ctx.options.provider, details.track_id),
+            track_key: TrackKey::new(ctx.options.provider.clone(), details.track_id),
             is_cache_hit: false,
             duration_ms: Some((now_ms() - details.start_time_ms) as i64),
             status: "failed".to_string(),

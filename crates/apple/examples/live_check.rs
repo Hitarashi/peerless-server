@@ -1,13 +1,17 @@
 //! One-off live smoke check for the production transport + catalog mapping
-//! against the real iTunes API. NOT part of the test suite (network).
+//! against a configured catalog API. NOT part of the test suite (network).
 //!
-//! Run: `cargo run -p apple --example live_check`
+//! Run: `CATALOG_API_URL=https://host/api/v1 cargo run -p apple --example live_check`
 
 use apple::catalog::{Catalog, ReqwestTransport};
+use engine::settings::LyricspornApiEndpoint;
 
 #[tokio::main]
 async fn main() {
-    let catalog = Catalog::new(ReqwestTransport::new());
+    let api_url =
+        std::env::var("CATALOG_API_URL").expect("set CATALOG_API_URL to the catalog API base URL");
+    let endpoint = LyricspornApiEndpoint::new(Some(&api_url));
+    let catalog = Catalog::with_endpoint(ReqwestTransport::new(), endpoint);
 
     let meta = catalog
         .fetch_track_meta("1440841730", "us")

@@ -4,7 +4,7 @@
 //! the Apple mirror policy, wrapper selection, retry ordering, and the native
 //! wrapper path; the engine only sees one `connect_stream` operation.
 
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use engine::{
     orchestrator::types::{RipActivity, TrackLabel},
@@ -22,7 +22,6 @@ use crate::{
     mirror_http::MirrorHttp,
     mirror_policy::{MirrorEndpoint, MirrorPolicyManager},
     playlist::ReqwestPlaylistHttp,
-    token::DeveloperTokenProvider,
     wrapper::{WrapperEngine, WrapperTrackOutcome, WrapperUnavailableReason},
 };
 
@@ -578,9 +577,17 @@ impl engine::orchestrator::deps::ProviderPresentation for ApplePresentation {
 
 impl AppleProduction {
     pub fn new(config: AppleProductionConfig) -> Self {
-        let token_provider = Arc::new(DeveloperTokenProvider::new(ReqwestPlaylistHttp::new()));
-        let catalog = crate::catalog::Catalog::new(crate::catalog::ReqwestTransport::new())
-            .with_token_provider(token_provider.clone());
+        Self::with_api_endpoint(config, engine::settings::LyricspornApiEndpoint::default())
+    }
+
+    pub fn with_api_endpoint(
+        config: AppleProductionConfig,
+        api_endpoint: engine::settings::LyricspornApiEndpoint,
+    ) -> Self {
+        let catalog = crate::catalog::Catalog::with_endpoint(
+            crate::catalog::ReqwestTransport::new(),
+            api_endpoint.clone(),
+        );
         let mirror_policy =
             MirrorPolicyManager::new(ReqwestMirrorHttp::new(), config.mirror_override);
         let stream_transport =
@@ -595,9 +602,9 @@ impl AppleProduction {
         );
         let ripper_deps = AppleRipperDeps::new(catalog, acquisition);
         Self {
-            playlist: crate::playlist::PlaylistClient::with_token_provider(
+            playlist: crate::playlist::PlaylistClient::with_endpoint(
                 ReqwestPlaylistHttp::new(),
-                token_provider,
+                api_endpoint,
             ),
             ripper_deps,
             mirror_policy,

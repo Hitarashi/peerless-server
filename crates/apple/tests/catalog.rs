@@ -4,6 +4,7 @@
 use std::{collections::HashMap, sync::Mutex, time::Duration};
 
 use apple::catalog::{Catalog, CatalogError, Transport, TransportError};
+use engine::settings::LyricspornApiEndpoint;
 
 /// Serves canned JSON by URL substring match; records every served URL.
 struct FakeTransport {
@@ -42,6 +43,14 @@ impl FakeTransport {
     }
 }
 
+fn configured_catalog(transport: FakeTransport) -> Catalog<FakeTransport> {
+    Catalog::with_endpoint(transport, test_api_endpoint())
+}
+
+fn test_api_endpoint() -> LyricspornApiEndpoint {
+    LyricspornApiEndpoint::new(Some("https://catalog.example/api/v1"))
+}
+
 impl Transport for FakeTransport {
     async fn get(
         &self,
@@ -64,41 +73,42 @@ impl Transport for FakeTransport {
 }
 
 fn track_json() -> String {
-    r#"{
-        "results": [{
-            "wrapperType": "track",
-            "kind": "song",
-            "trackId": 1440841730,
-            "collectionId": 1440841723,
-            "artistId": 12345,
-            "trackName": "The Hills",
-            "collectionName": "Beauty Behind the Madness",
+    serde_json::json!({
+        "track": {
+            "id": "1440841730",
+            "type": "songs",
+            "albumId": "1440841723",
+            "artistId": "12345",
+            "name": "The Hills",
+            "albumName": "Beauty Behind the Madness",
             "artistName": "The Weeknd",
-            "collectionArtistName": "The Weeknd",
-            "composerName": "Abel Tesfaye",
-            "primaryGenreName": "R&B/Soul",
+            "albumArtistName": "The Weeknd",
+            "composer": "Abel Tesfaye",
+            "genres": ["R&B/Soul"],
             "releaseDate": "2015-05-27T07:00:00Z",
             "trackNumber": 7,
             "trackCount": 14,
             "discNumber": 1,
             "discCount": 1,
-            "trackTimeMillis": 241758,
-            "trackExplicitness": "explicit",
+            "durationMs": 241758,
+            "contentRating": "explicit",
             "isrc": "USUG11500631",
             "recordLabel": "Republic Records",
             "copyright": "2015 The Weeknd XO, Inc.",
             "upc": "602547151602",
-            "artworkUrl100": "https://is1-ssl.mzstatic.com/image/thumb/Music/v4/99/9b/abc/xyz/100x100bb.jpg"
-        }]
-    }"#
-    .to_owned()
+            "artwork": {
+                "url": "https://is1-ssl.mzstatic.com/image/thumb/Music/v4/99/9b/abc/xyz/{w}x{h}bb.{f}"
+            }
+        }
+    })
+    .to_string()
 }
 
 #[tokio::test]
 async fn track_mapping_matches_expected_fields() {
     let mut fake = FakeTransport::new();
-    fake.on("id=1440841730", &track_json());
-    let catalog = Catalog::new(fake);
+    fake.on("tracks/1440841730?", &track_json());
+    let catalog = configured_catalog(fake);
     let meta = catalog
         .fetch_track_meta("1440841730", "us")
         .await
@@ -126,18 +136,15 @@ async fn track_mapping_matches_expected_fields() {
     assert_eq!(meta.content_advisory.as_deref(), Some("explicit"));
     assert_eq!(
         meta.artwork_url,
-        "https://is1-ssl.mzstatic.com/image/thumb/Music/v4/99/9b/abc/xyz/3000x3000bb.jpg"
+        "https://is1-ssl.mzstatic.com/image/thumb/Music/v4/99/9b/abc/xyz/1000x1000bb.jpg"
     );
 }
 
 #[tokio::test]
 async fn track_missing_fields_map_to_defaults() {
     let mut fake = FakeTransport::new();
-    fake.on(
-        "id=1",
-        r#"{"results": [{"wrapperType": "track", "trackId": 1, "trackTimeMillis": 999}]}"#,
-    );
-    let catalog = Catalog::new(fake);
+    fake.on("tracks/1?", r#"{"track":{"id":"1","durationMs":999}}"#);
+    let catalog = configured_catalog(fake);
     let meta = catalog.fetch_track_meta("1", "us").await.expect("track");
     assert_eq!(meta.title, "");
     assert_eq!(meta.genre, None);
@@ -150,15 +157,15 @@ async fn track_missing_fields_map_to_defaults() {
 #[tokio::test]
 async fn track_not_found_returns_expected_message() {
     let mut fake = FakeTransport::new();
-    fake.on("id=999", r#"{"results": []}"#);
-    let catalog = Catalog::new(fake);
+    fake.fail_with("tracks/999?", 404);
+    let catalog = configured_catalog(fake);
     let err = catalog
         .fetch_track_meta("999", "us")
         .await
         .expect_err("should fail");
     match err {
         CatalogError::Message(msg) => {
-            assert_eq!(msg, "iTunes found no song matching track ID 999")
+            assert_eq!(msg, "Lyricsporn track metadata was not found")
         }
         other => panic!("expected Message, got {other:?}"),
     }
@@ -167,16 +174,15 @@ async fn track_not_found_returns_expected_message() {
 #[tokio::test]
 async fn track_http_error_uses_expected_message() {
     let mut fake = FakeTransport::new();
-    fake.fail_with("id=1", 503);
-    let catalog = Catalog::new(fake);
+    fake.fail_with("storefront=us", 503);
+    let catalog = configured_catalog(fake);
     let err = catalog
         .fetch_track_meta("1", "us")
         .await
         .expect_err("should fail");
-    // The track HTTP message omits the "track" context word.
     match err {
         CatalogError::Message(msg) => {
-            assert_eq!(msg, "iTunes lookup failed (HTTP 503)")
+            assert_eq!(msg, "Lyricsporn track metadata request failed (HTTP 503)")
         }
         other => panic!("expected Message, got {other:?}"),
     }
@@ -185,8 +191,8 @@ async fn track_http_error_uses_expected_message() {
 #[tokio::test]
 async fn cache_hit_serves_one_network_call() {
     let mut fake = FakeTransport::new();
-    fake.on("id=1440841730", &track_json());
-    let catalog = Catalog::new(fake);
+    fake.on("tracks/1440841730?", &track_json());
+    let catalog = configured_catalog(fake);
     let first = catalog
         .fetch_track_meta("1440841730", "us")
         .await
@@ -207,9 +213,9 @@ async fn cache_hit_serves_one_network_call() {
 async fn us_fallback_caches_under_original_key() {
     let mut fake = FakeTransport::new();
     // jp fails, us succeeds.
-    fake.fail_with("country=jp", 404);
-    fake.on("country=us", &track_json());
-    let catalog = Catalog::new(fake);
+    fake.fail_with("storefront=jp", 404);
+    fake.on("storefront=us", &track_json());
+    let catalog = configured_catalog(fake);
     let meta = catalog
         .fetch_track_meta("1440841730", "jp")
         .await
@@ -225,7 +231,7 @@ async fn us_fallback_caches_under_original_key() {
         .transport()
         .served()
         .into_iter()
-        .filter(|u| u.contains("country=us"))
+        .filter(|u| u.contains("storefront=us"))
         .count();
     assert_eq!(us_served, 1, "second call must hit the jp cache key");
 }
@@ -233,10 +239,10 @@ async fn us_fallback_caches_under_original_key() {
 #[tokio::test]
 async fn regional_chain_order() {
     let mut fake = FakeTransport::new();
-    fake.fail_with("country=jp", 404);
-    fake.fail_with("country=us", 404);
-    fake.on("country=gb", &track_json());
-    let catalog = Catalog::new(fake);
+    fake.fail_with("storefront=jp", 404);
+    fake.fail_with("storefront=us", 404);
+    fake.on("storefront=gb", &track_json());
+    let catalog = configured_catalog(fake);
     let meta = catalog
         .fetch_track_meta("1440841730", "jp")
         .await
@@ -246,7 +252,14 @@ async fn regional_chain_order() {
     let served = catalog.transport().served();
     let order: Vec<&str> = served
         .iter()
-        .map(|u| u.split("country=").nth(1).unwrap_or("?"))
+        .map(|u| {
+            u.split("storefront=")
+                .nth(1)
+                .unwrap_or("?")
+                .split('&')
+                .next()
+                .unwrap_or("?")
+        })
         .collect();
     assert_eq!(order, vec!["jp", "us", "gb"]);
 }
@@ -254,12 +267,12 @@ async fn regional_chain_order() {
 #[tokio::test]
 async fn all_fail_rethrows_original_error() {
     let mut fake = FakeTransport::new();
-    fake.fail_with("country=jp", 404);
-    fake.fail_with("country=us", 503);
+    fake.fail_with("storefront=jp", 404);
+    fake.fail_with("storefront=us", 503);
     for sf in ["gb", "in", "ca", "de", "fr", "au"] {
-        fake.fail_with(&format!("country={sf}"), 404);
+        fake.fail_with(&format!("storefront={sf}"), 404);
     }
-    let catalog = Catalog::new(fake);
+    let catalog = configured_catalog(fake);
     let err = catalog
         .fetch_track_meta("1440841730", "jp")
         .await
@@ -267,7 +280,7 @@ async fn all_fail_rethrows_original_error() {
     // ORIGINAL error was the jp 404, not the later us 503.
     match err {
         CatalogError::Message(msg) => {
-            assert_eq!(msg, "iTunes lookup failed (HTTP 404)")
+            assert_eq!(msg, "Lyricsporn track metadata was not found")
         }
         other => panic!("expected Message, got {other:?}"),
     }
@@ -277,39 +290,33 @@ async fn all_fail_rethrows_original_error() {
 
 #[tokio::test]
 async fn album_mapping_and_meta_from_collection() {
-    let json = r#"{
-        "results": [
-            {
-                "wrapperType": "collection",
-                "collectionId": 1440841723,
-                "collectionName": "Beauty Behind the Madness",
-                "artistName": "The Weeknd",
-                "collectionExplicitness": "explicit",
-                "releaseDate": "2015-08-28T07:00:00Z",
-                "artworkUrl100": "https://x/100x100bb.jpg"
-            },
-            {
-                "wrapperType": "track",
-                "kind": "song",
-                "trackId": 1,
-                "trackName": "T1",
-                "collectionName": "Beauty Behind the Madness",
-                "artistName": "The Weeknd",
-                "trackTimeMillis": 100000
-            },
-            {
-                "wrapperType": "track",
-                "kind": "song",
-                "trackId": 2,
-                "trackName": "T2",
-                "artistName": "The Weeknd",
-                "trackTimeMillis": 200000
-            }
-        ]
-    }"#;
+    let album = serde_json::json!({
+        "data": {
+            "id": "1440841723",
+            "type": "albums",
+            "name": "Beauty Behind the Madness",
+            "artistName": "The Weeknd",
+            "artistUrl": "https://music.apple.com/us/artist/the-weeknd/12345",
+            "contentRating": "explicit",
+            "releaseDate": "2015-08-28T07:00:00Z",
+            "trackCount": 2,
+            "artwork": {"url": "https://x/{w}x{h}bb.{f}"}
+        }
+    })
+    .to_string();
+    let tracks = serde_json::json!({
+        "type": "songs",
+        "items": [
+            {"id":"1","type":"songs","name":"T1","artistName":"The Weeknd","durationMs":100000},
+            {"id":"2","type":"songs","name":"T2","artistName":"The Weeknd","durationMs":200000}
+        ],
+        "page": {"offset":0,"limit":100,"total":2,"next":null}
+    })
+    .to_string();
     let mut fake = FakeTransport::new();
-    fake.on("id=1440841723", json);
-    let catalog = Catalog::new(fake);
+    fake.on("albums/1440841723?", &album);
+    fake.on("albums/1440841723/collections/tracks", &tracks);
+    let catalog = configured_catalog(fake);
     let res = catalog
         .fetch_album_tracks("1440841723", "us")
         .await
@@ -319,7 +326,8 @@ async fn album_mapping_and_meta_from_collection() {
     assert_eq!(res.album.release_date, "2015-08-28");
     assert_eq!(res.album.duration_secs, 0);
     assert!(res.album.explicit);
-    assert_eq!(res.album.artwork_url, "https://x/3000x3000bb.jpg");
+    assert_eq!(res.album.artwork_url, "https://x/1000x1000bb.jpg");
+    assert_eq!(res.album.artist_id.as_deref(), Some("12345"));
     assert_eq!(res.tracks.len(), 2);
     assert_eq!(res.tracks[0].title, "T1");
 }
@@ -327,133 +335,92 @@ async fn album_mapping_and_meta_from_collection() {
 #[tokio::test]
 async fn album_without_tracks_is_not_found() {
     let mut fake = FakeTransport::new();
+    fake.on("albums/55?", r#"{"data":{"id":"55","name":"Empty"}}"#);
     fake.on(
-        "id=55",
-        r#"{"results": [{"wrapperType":"collection","collectionId":55}]}"#,
+        "albums/55/collections/tracks",
+        r#"{"type":"songs","items":[],"page":{"offset":0,"limit":100,"total":0,"next":null}}"#,
     );
-    let catalog = Catalog::new(fake);
+    let catalog = configured_catalog(fake);
     let err = catalog
         .fetch_album_tracks("55", "us")
         .await
         .expect_err("no tracks");
     match err {
         CatalogError::Message(msg) => {
-            assert_eq!(msg, "iTunes found no tracks for collection 55")
+            assert_eq!(msg, "Lyricsporn found no tracks for album 55")
         }
         other => panic!("expected Message, got {other:?}"),
     }
 }
 
 #[tokio::test]
-async fn artist_chunking_dedup_and_name_fallback() {
-    // 30 collections → batches of 25 + 5. Track 999 appears in every batch
-    // and must dedup to one entry.
-    let discog = {
-        let mut results = vec![serde_json::json!({
-            "wrapperType": "artist",
-            "artistId": 4797563,
-            "artistName": "The Weeknd"
-        })];
-        for i in 0..30 {
-            results.push(serde_json::json!({
-                "wrapperType": "collection",
-                "collectionId": 1000 + i
-            }));
-        }
-        serde_json::json!({ "results": results }).to_string()
-    };
-    let mut batch = Vec::new();
-    for id in 0..30 {
-        batch.push(serde_json::json!({
-            "wrapperType": "track",
-            "kind": "song",
-            "trackId": if id == 0 { 999 } else { 2000 + id },
-            "trackName": format!("Song {id}"),
-            "artistName": "The Weeknd",
-            "trackTimeMillis": 60000
-        }));
-    }
-    let batch_json = serde_json::json!({ "results": batch }).to_string();
-
+async fn artist_album_tracks_deduplicate_and_map_name() {
     let mut fake = FakeTransport::new();
-    fake.on("entity=album", &discog);
-    fake.on("entity=song", &batch_json);
-    let catalog = Catalog::new(fake);
+    fake.on(
+        "artists/4797563?",
+        r#"{"data":{"id":"4797563","name":"The Weeknd"}}"#,
+    );
+    fake.on(
+        "artists/4797563/collections/albums",
+        r#"{"type":"albums","items":[{"id":"1000","name":"Album 1","artistName":"The Weeknd"},{"id":"1001","name":"Album 2","artistName":"The Weeknd"}],"page":{"offset":0,"limit":100,"total":2,"next":null}}"#,
+    );
+    fake.on(
+        "albums/1000/collections/tracks",
+        r#"{"type":"songs","items":[{"id":"999","name":"Song 1","artistName":"The Weeknd","durationMs":60000}],"page":{"offset":0,"limit":100,"total":1,"next":null}}"#,
+    );
+    fake.on(
+        "albums/1001/collections/tracks",
+        r#"{"type":"songs","items":[{"id":"999","name":"Song 2","artistName":"The Weeknd","durationMs":60000}],"page":{"offset":0,"limit":100,"total":1,"next":null}}"#,
+    );
+    let catalog = configured_catalog(fake);
 
     let res = catalog
         .fetch_artist_tracks("4797563", "us")
         .await
         .expect("artist");
     assert_eq!(res.artist_name, "The Weeknd");
-    // Unique ids: 999 plus 2001..=2029 = 30 (the per-batch duplicate 999 dedups).
-    assert_eq!(res.tracks.len(), 30);
-    let unique: std::collections::HashSet<&str> =
-        res.tracks.iter().map(|t| t.id.as_str()).collect();
-    assert_eq!(unique.len(), 30, "no duplicate track ids");
-    // Two batch URLs (25 + 5 chunking).
-    let batches: Vec<_> = catalog
-        .transport()
-        .served()
-        .into_iter()
-        .filter(|u| u.contains("entity=song"))
-        .collect();
-    assert_eq!(batches.len(), 2, "30 collections chunk into 2 batches");
-    let id_count = |url: &str| {
-        url.split("id=")
-            .nth(1)
-            .unwrap()
-            .split('&')
-            .next()
-            .unwrap()
-            .split(',')
-            .count()
-    };
-    assert_eq!(id_count(&batches[0]), 25);
-    assert_eq!(id_count(&batches[1]), 5);
+    assert_eq!(res.tracks.len(), 1, "duplicate track IDs are removed");
+    assert_eq!(res.tracks[0].id, "999");
+    assert_eq!(res.tracks[0].title, "Song 1");
 }
 
 #[tokio::test]
-async fn artist_name_falls_back_to_first_track() {
-    // No artist wrapper anywhere; name must come from the first track.
-    let discog = serde_json::json!({
-        "results": [
-            {"wrapperType": "collection", "collectionId": 100},
-            {"wrapperType": "track", "trackId": 42, "trackName": "S", "artistName": "Fallback Artist", "trackTimeMillis": 1000}
-        ]
-    })
-    .to_string();
+async fn artist_without_albums_returns_not_found() {
     let mut fake = FakeTransport::new();
-    fake.on("entity=album", &discog);
-    // Batch lookup serves the same two results.
-    fake.on("entity=song", &discog);
-    let catalog = Catalog::new(fake);
-    let res = catalog
+    fake.on(
+        "artists/123?",
+        r#"{"data":{"id":"123","name":"No Albums"}}"#,
+    );
+    fake.on(
+        "artists/123/collections/albums",
+        r#"{"type":"albums","items":[],"page":{"offset":0,"limit":100,"total":0,"next":null}}"#,
+    );
+    let catalog = configured_catalog(fake);
+    let err = catalog
         .fetch_artist_tracks("123", "us")
         .await
-        .expect("artist");
-    assert_eq!(res.artist_name, "Fallback Artist");
-    assert_eq!(res.tracks.len(), 1);
+        .expect_err("empty artist");
+    assert!(err.to_string().contains("no tracks for artist 123"));
 }
 
 #[tokio::test]
-async fn artist_song_fallback_when_no_collections() {
-    // Discography returns no collections → entity=song fallback path.
-    let discog = serde_json::json!({
-        "results": [
-            {"wrapperType": "artist", "artistId": 7, "artistName": "Solo"},
-            {"wrapperType": "track", "trackId": 77, "trackName": "Only Song", "artistName": "Solo", "trackTimeMillis": 1000}
-        ]
-    })
-    .to_string();
+async fn artist_skips_an_unavailable_album_when_another_has_tracks() {
     let mut fake = FakeTransport::new();
-    // entity=album request gets the artist+track payload too (no collections).
-    fake.on("entity=album", &discog);
-    fake.on("entity=song", &discog);
-    let catalog = Catalog::new(fake);
+    fake.on("artists/7?", r#"{"data":{"id":"7","name":"Solo"}}"#);
+    fake.on(
+        "artists/7/collections/albums",
+        r#"{"type":"albums","items":[{"id":"bad","name":"Unavailable"},{"id":"good","name":"Available","artistName":"Solo"}],"page":{"offset":0,"limit":100,"total":2,"next":null}}"#,
+    );
+    fake.fail_with("albums/bad/collections/tracks", 503);
+    fake.on(
+        "albums/good/collections/tracks",
+        r#"{"type":"songs","items":[{"id":"77","name":"Only Song","artistName":"Solo","durationMs":1000}],"page":{"offset":0,"limit":100,"total":1,"next":null}}"#,
+    );
+    let catalog = configured_catalog(fake);
     let res = catalog
         .fetch_artist_tracks("7", "us")
         .await
-        .expect("artist via song fallback");
+        .expect("artist with one available album");
     assert_eq!(res.artist_name, "Solo");
     assert_eq!(res.tracks.len(), 1);
     assert_eq!(res.tracks[0].title, "Only Song");
@@ -462,13 +429,13 @@ async fn artist_song_fallback_when_no_collections() {
 #[tokio::test]
 async fn search_never_errors_and_falls_back() {
     let mut fake = FakeTransport::new();
-    fake.fail_with("country=jp", 500); // primary fails → []
-    fake.on("country=us", r#"{"results": []}"#); // us fallback: empty
+    fake.fail_with("storefront=jp", 500); // primary fails → []
+    fake.on("storefront=us", r#"{"results":{"songs":{"items":[]}}}"#);
     fake.on(
-        "country=gb",
-        r#"{"results": [{"wrapperType":"track","kind":"song","trackId":5,"trackName":"Found","artistName":"A","trackTimeMillis":1000}]}"#,
+        "storefront=gb",
+        r#"{"results":{"songs":{"items":[{"id":"5","type":"songs","name":"Found","artistName":"A","durationMs":1000}]}}}"#,
     );
-    let catalog = Catalog::new(fake);
+    let catalog = configured_catalog(fake);
     let results = catalog
         .search_catalog("query", 5, "jp")
         .await
@@ -485,12 +452,12 @@ async fn search_never_errors_and_falls_back() {
 #[tokio::test]
 async fn search_empty_results_fall_through_to_regional() {
     let mut fake = FakeTransport::new();
-    fake.on("country=us", r#"{"results": []}"#);
+    fake.on("storefront=us", r#"{"results":{"songs":{"items":[]}}}"#);
     fake.on(
-        "country=de",
-        r#"{"results": [{"wrapperType":"track","kind":"song","trackId":9,"trackName":"De Hit","artistName":"B","trackTimeMillis":1000}]}"#,
+        "storefront=de",
+        r#"{"results":{"songs":{"items":[{"id":"9","type":"songs","name":"De Hit","artistName":"B","durationMs":1000}]}}}"#,
     );
-    let catalog = Catalog::new(fake);
+    let catalog = configured_catalog(fake);
     let results = catalog
         .search_catalog("term", 5, "us")
         .await
@@ -500,66 +467,11 @@ async fn search_empty_results_fall_through_to_regional() {
 }
 
 #[tokio::test]
-async fn charts_mapping_with_option_fields() {
-    let json = r#"{
-        "feed": {
-            "results": [
-                {
-                    "id": "1440904761",
-                    "name": "After Hours",
-                    "artistName": "The Weeknd",
-                    "url": "https://music.apple.com/us/album/after-hours/1440904761",
-                    "artworkUrl100": "https://x/100x100bb.jpg",
-                    "releaseDate": "2020-03-20",
-                    "genres": [{"name": "Pop"}, {"name": "R&B/Soul"}]
-                },
-                {
-                    "id": "1",
-                    "name": "No Artwork",
-                    "artistName": "B",
-                    "url": "https://music.apple.com/us/album/x/1"
-                }
-            ]
-        }
-    }"#;
-    let mut fake = FakeTransport::new();
-    fake.on("most-played", json);
-    let catalog = Catalog::new(fake);
-    let albums = catalog.fetch_charts_albums("us", 50).await.expect("charts");
-    assert_eq!(albums.len(), 2);
-    assert_eq!(albums[0].title, "After Hours");
-    assert_eq!(albums[0].genre.as_deref(), Some("Pop"));
-    assert_eq!(
-        albums[0].artwork_url.as_deref(),
-        Some("https://x/3000x3000bb.jpg")
-    );
-    assert_eq!(albums[1].artwork_url, None);
-    assert_eq!(albums[1].genre, None);
-    assert_eq!(albums[1].release_date, None);
-}
-
-#[tokio::test]
-async fn charts_http_error_message() {
-    let mut fake = FakeTransport::new();
-    fake.fail_with("most-played", 500);
-    let catalog = Catalog::new(fake);
-    let err = catalog
-        .fetch_charts_albums("us", 50)
-        .await
-        .expect_err("charts http failure");
-    match err {
-        CatalogError::Message(msg) => {
-            assert_eq!(msg, "Failed to fetch Apple Music charts (HTTP 500)")
-        }
-        other => panic!("expected Message, got {other:?}"),
-    }
-}
-
-#[tokio::test]
 async fn cache_ttl_expiry_refetches() {
     let mut fake = FakeTransport::new();
-    fake.on("id=1440841730", &track_json());
-    let catalog = Catalog::with_limits(fake, 10, Duration::from_millis(50));
+    fake.on("tracks/1440841730?", &track_json());
+    let catalog =
+        Catalog::with_limits_and_endpoint(fake, 10, Duration::from_millis(50), test_api_endpoint());
     let _ = catalog
         .fetch_track_meta("1440841730", "us")
         .await
@@ -580,8 +492,8 @@ async fn cache_ttl_expiry_refetches() {
 #[tokio::test]
 async fn clear_cache_forces_refetch() {
     let mut fake = FakeTransport::new();
-    fake.on("id=1440841730", &track_json());
-    let catalog = Catalog::new(fake);
+    fake.on("tracks/1440841730?", &track_json());
+    let catalog = configured_catalog(fake);
     let _ = catalog
         .fetch_track_meta("1440841730", "us")
         .await
@@ -596,35 +508,12 @@ async fn clear_cache_forces_refetch() {
 
 #[tokio::test]
 async fn album_includes_music_videos_as_tracks() {
-    let json = r#"{
-        "results": [
-            {
-                "wrapperType": "collection",
-                "collectionId": 1753101056,
-                "collectionName": "Four Me (Apple Music Edition) - EP",
-                "artistName": "Karan Aujla"
-            },
-            {
-                "wrapperType": "track",
-                "kind": "song",
-                "trackId": 1753101068,
-                "trackName": "IDK HOW",
-                "artistName": "Karan Aujla",
-                "trackTimeMillis": 180000
-            },
-            {
-                "wrapperType": "track",
-                "kind": "music-video",
-                "trackId": 1753101549,
-                "trackName": "Up Next: Karan Aujla (Exclusive)",
-                "artistName": "Karan Aujla",
-                "trackTimeMillis": 289000
-            }
-        ]
-    }"#;
+    let album = r#"{"data":{"id":"1753101056","name":"Four Me (Apple Music Edition) - EP","artistName":"Karan Aujla"}}"#;
+    let tracks = r#"{"type":"songs","items":[{"id":"1753101068","type":"songs","name":"IDK HOW","artistName":"Karan Aujla","durationMs":180000},{"id":"1753101549","type":"music-videos","name":"Up Next: Karan Aujla (Exclusive)","artistName":"Karan Aujla","durationMs":289000}],"page":{"offset":0,"limit":100,"total":2,"next":null}}"#;
     let mut fake = FakeTransport::new();
-    fake.on("id=1753101056", json);
-    let catalog = Catalog::new(fake);
+    fake.on("albums/1753101056?", album);
+    fake.on("albums/1753101056/collections/tracks", tracks);
+    let catalog = configured_catalog(fake);
     let res = catalog
         .fetch_album_tracks("1753101056", "us")
         .await
@@ -638,21 +527,10 @@ async fn album_includes_music_videos_as_tracks() {
 
 #[tokio::test]
 async fn fetch_track_supports_music_videos() {
-    let json = r#"{
-        "results": [
-            {
-                "wrapperType": "track",
-                "kind": "music-video",
-                "trackId": 1753101549,
-                "trackName": "Up Next: Karan Aujla (Exclusive)",
-                "artistName": "Karan Aujla",
-                "trackTimeMillis": 289000
-            }
-        ]
-    }"#;
+    let json = r#"{"track":{"id":"1753101549","type":"music-videos","name":"Up Next: Karan Aujla (Exclusive)","artistName":"Karan Aujla","durationMs":289000}}"#;
     let mut fake = FakeTransport::new();
-    fake.on("id=1753101549", json);
-    let catalog = Catalog::new(fake);
+    fake.on("tracks/1753101549?", json);
+    let catalog = configured_catalog(fake);
     let meta = catalog
         .fetch_track_meta("1753101549", "us")
         .await
@@ -662,32 +540,17 @@ async fn fetch_track_supports_music_videos() {
 }
 
 #[tokio::test]
-async fn fetch_track_rejects_feature_movies() {
-    let json = r#"{
-        "results": [
-            {
-                "wrapperType": "track",
-                "kind": "feature-movie",
-                "trackId": 999999999,
-                "trackName": "Some Movie",
-                "artistName": "Some Director",
-                "trackTimeMillis": 7200000
-            }
-        ]
-    }"#;
+async fn fetch_track_rejects_response_without_track_data() {
     let mut fake = FakeTransport::new();
-    fake.on("id=999999999", json);
-    let catalog = Catalog::new(fake);
+    fake.on("tracks/999999999?", r#"{"data":{"id":"999999999"}}"#);
+    let catalog = configured_catalog(fake);
     let err = catalog
         .fetch_track_meta("999999999", "us")
         .await
-        .expect_err("feature movie should be rejected");
+        .expect_err("response without a track should be rejected");
     match err {
         CatalogError::Message(msg) => {
-            assert_eq!(
-                msg,
-                "iTunes item 999999999 is a feature movie; only audio tracks are supported"
-            );
+            assert_eq!(msg, "Lyricsporn returned no metadata for track 999999999");
         }
         other => panic!("expected CatalogError::Message, got {other:?}"),
     }

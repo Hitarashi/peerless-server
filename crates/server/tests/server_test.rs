@@ -258,13 +258,11 @@ async fn test_docs_and_unauthorized_endpoints() {
     // 11. The ripped catalog and its assets are private. Every one of these
     //     endpoints must refuse an anonymous caller instead of serving data.
     let secured_endpoints = [
-        "/api/v1/search?q=taylor",
         "/api/v1/tracks/2147483000",
         "/api/v1/albums",
         "/api/v1/albums/test_album",
         "/api/v1/artists/taylor/tracks",
         "/api/v1/assets/tracks/2147483000/artwork",
-        "/api/v1/assets/providers/apple/tracks/1440857781/artwork",
         "/api/v1/assets/artists/artwork?name=taylor",
     ];
     for uri in secured_endpoints {
@@ -351,13 +349,11 @@ async fn test_catalog_and_assets_require_authenticated_session() {
     // unparseable, so the authenticated leg stays off the network and only has
     // to prove the auth check itself was satisfied.
     let secured_endpoints = [
-        "/api/v1/search?q=taylor",
         "/api/v1/tracks/2147483000",
         "/api/v1/albums",
         "/api/v1/albums/test_album",
         "/api/v1/artists/taylor/tracks",
         "/api/v1/assets/tracks/2147483000/artwork",
-        "/api/v1/assets/providers/unknown_provider/tracks/1440857781/artwork",
         "/api/v1/assets/artists/artwork?name=taylor",
     ];
     for uri in secured_endpoints {
@@ -415,6 +411,38 @@ async fn test_auth_lifecycle() {
 
     let session_mgr = Arc::new(db::SessionManager::new(pool.clone(), admin_id));
     let tracks_repo = Arc::new(db::TracksRepository::new(pool.clone()));
+    let playback_track_key = format!("auth_lifecycle_{admin_id}");
+    tracks_repo
+        .save_track(&engine::orchestrator::deps::SaveTrackInput {
+            track_key: music::TrackKey::new(music::Provider::Apple, playback_track_key.clone()),
+            codec: music::Codec::Alac,
+            message_id: 987_654_321,
+            file_id: "auth_lifecycle_file".to_owned(),
+            file_unique_id: "auth_lifecycle_unique".to_owned(),
+            title: "Auth lifecycle test track".to_owned(),
+            artist: "Test Artist".to_owned(),
+            album: "Test Album".to_owned(),
+            duration: 180,
+            bit_depth: 24,
+            sample_rate: 44_100,
+            genre: "Test".to_owned(),
+            release_date: "2026-01-01".to_owned(),
+            track_number: 1,
+            track_count: 1,
+            isrc: None,
+            recording_mbid: None,
+        })
+        .await
+        .unwrap();
+    let playback_track_id = tracks_repo
+        .find_all_by_provider_track_id(music::Provider::Apple, &playback_track_key)
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("auth lifecycle track is stored")
+        .id;
+    let playback_uri = format!("/api/v1/tracks/{playback_track_id}/playback");
     let settings_store = Arc::new(db::SettingsStore::new(pool.clone()));
     let orchestrator = Arc::new(engine::orchestrator::RipOrchestrator::default());
 
@@ -486,7 +514,7 @@ async fn test_auth_lifecycle() {
     // 2c. Test authorized GET /api/v1/tracks/1/playback - streaming needs BOTH a Last.fm and a
     // ListenBrainz account, so a user with neither connection is forbidden and told about both.
     let req = Request::builder()
-        .uri("/api/v1/tracks/1/playback")
+        .uri(&playback_uri)
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap();
@@ -511,7 +539,7 @@ async fn test_auth_lifecycle() {
 
     // Only Last.fm connected: still forbidden, and the message names ListenBrainz alone
     let req = Request::builder()
-        .uri("/api/v1/tracks/1/playback")
+        .uri(&playback_uri)
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap();
@@ -548,7 +576,7 @@ async fn test_auth_lifecycle() {
 
     // Only ListenBrainz connected: still forbidden, and the message names Last.fm alone
     let req = Request::builder()
-        .uri("/api/v1/tracks/1/playback")
+        .uri(&playback_uri)
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap();
@@ -574,7 +602,7 @@ async fn test_auth_lifecycle() {
         .unwrap();
 
     let req = Request::builder()
-        .uri("/api/v1/tracks/1/playback")
+        .uri(&playback_uri)
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap();
@@ -637,7 +665,7 @@ async fn test_auth_lifecycle() {
 
     // Playback is forbidden again after disconnect, naming the now-missing Last.fm account
     let req = Request::builder()
-        .uri("/api/v1/tracks/1/playback")
+        .uri(&playback_uri)
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap();

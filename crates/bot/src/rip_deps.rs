@@ -17,7 +17,6 @@ use engine::{
     settings::BotSettings,
     types::{AlbumTracks, ArtistTracks, TrackKey, TrackRipResult},
 };
-use lyrics::LyricsRegistry;
 use music::PlaylistData;
 
 use crate::{providers::ProviderRegistry, telegram_sink::FerogramTelegramSink};
@@ -106,7 +105,7 @@ pub struct RipDeps {
     albums: db::AlbumsRepository,
     tracks: db::TracksRepository,
     requests: db::RequestLogRepository,
-    settings: db::SettingsStore,
+    settings: Arc<db::SettingsStore>,
     providers: ProviderRegistry,
     recording_mbid_resolver: crate::musicbrainz::RecordingMbidResolver,
     /// Shared with `ripper_deps` so health probes observe the same circuit
@@ -121,7 +120,7 @@ impl RipDeps {
         dump_peer: ferogram::PeerRef,
         tracks: db::TracksRepository,
         requests: db::RequestLogRepository,
-        settings: db::SettingsStore,
+        settings: Arc<db::SettingsStore>,
         database: db::DbPool,
     ) -> Result<Self, DeliveryError> {
         settings
@@ -129,27 +128,22 @@ impl RipDeps {
             .await
             .map_err(|error| DeliveryError::Unavailable(format!("load settings: {error}")))?;
 
-        let apple = apple::AppleProduction::new(apple::AppleProductionConfig::default());
+        let lyricsporn_api_endpoint = settings.lyricsporn_api_endpoint();
+        let apple = apple::AppleProduction::with_api_endpoint(
+            apple::AppleProductionConfig::default(),
+            lyricsporn_api_endpoint.clone(),
+        );
         let probe_policy = apple.mirror_policy().shared();
         let (retry_base_ms, max_retries) = retry_values();
         let ripper_config = RipperConfig {
             base_delay_ms: retry_base_ms,
             max_retries,
-            lyrics_registry: Arc::new(LyricsRegistry::all_sources()),
+            lyricsporn_api_endpoint,
             ..Default::default()
         };
 
         let albums = db::AlbumsRepository::new(database);
         let sink = FerogramTelegramSink::new(client, dump_peer).await?;
-
-        let qobuz = qobuz::QobuzProduction::from_env();
-        if qobuz.is_some() {
-            tracing::info!("Qobuz provider initialized successfully");
-        } else {
-            tracing::info!(
-                "Qobuz provider not configured (missing QOBUZ_BACKEND_URL or credentials)"
-            );
-        }
 
         let default_storefront =
             engine::settings::resolve_default_storefront(&settings.get_settings()).to_owned();
@@ -160,7 +154,7 @@ impl RipDeps {
             tracks,
             requests,
             settings,
-            providers: ProviderRegistry::new(apple, qobuz, ripper_config, default_storefront),
+            providers: ProviderRegistry::new(apple, ripper_config, default_storefront),
             recording_mbid_resolver: crate::musicbrainz::RecordingMbidResolver::default(),
             mirror_policy: probe_policy,
         })
@@ -217,12 +211,6 @@ impl RipDeps {
 
     pub fn playlist(&self) -> &apple::PlaylistClient<apple::ReqwestPlaylistHttp> {
         self.providers.playlist()
-    }
-
-    /// The Qobuz adapter, when the operator configured one. Used by the few
-    /// handlers that need a Qobuz capability the orchestrator does not expose.
-    pub fn qobuz(&self) -> Option<&qobuz::QobuzProduction> {
-        self.providers.qobuz()
     }
 }
 

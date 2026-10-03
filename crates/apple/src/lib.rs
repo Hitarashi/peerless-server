@@ -10,7 +10,6 @@ mod mirror_http;
 pub mod mirror_policy;
 pub mod parser;
 pub mod playlist;
-pub mod token;
 pub mod wrapper;
 
 pub use acquisition::{
@@ -19,8 +18,7 @@ pub use acquisition::{
     map_acquisition_outcome,
 };
 pub use catalog::{
-    AlbumSearchResult, Catalog, CatalogError, ChartAlbum, ReqwestTransport, SharedCatalog,
-    Transport, TransportError,
+    Catalog, CatalogError, ReqwestTransport, SharedCatalog, Transport, TransportError,
 };
 pub use mirror_http::{MirrorHttp, MirrorHttpError, ReqwestMirrorHttp};
 pub use mirror_policy::{
@@ -32,10 +30,8 @@ pub use music::{
 };
 pub use parser::{extract_batch_items, parse_alac_input, parse_single_item};
 pub use playlist::{
-    APPLE_USER_AGENT, PlaylistClient, PlaylistError, PlaylistHttp, PlaylistHttpError,
-    ReqwestPlaylistHttp,
+    PlaylistClient, PlaylistError, PlaylistHttp, PlaylistHttpError, ReqwestPlaylistHttp,
 };
-pub use token::DeveloperTokenProvider;
 pub use wrapper::{
     AlacStreamInfo, MediaPlaylistInfo, WrapperEngine, WrapperError, WrapperLiteClient,
     WrapperTrackOutcome, WrapperUnavailableReason, parse_master_playlist, parse_media_playlist,

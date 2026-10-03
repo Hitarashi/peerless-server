@@ -30,7 +30,7 @@ impl RequestLogRepository {
             .values(NewRequest {
                 telegram_id: data.telegram_id,
                 chat_id: data.chat_id,
-                provider: data.track_key.provider,
+                provider: data.track_key.provider.clone(),
                 track_id: &data.track_key.track_id,
                 is_cache_hit: data.is_cache_hit,
                 duration_ms,

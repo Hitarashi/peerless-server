@@ -1,11 +1,7 @@
 //! `/settings` — admin settings UI .
 //!
-//! Two surfaces:
-//! - `/settings` renders the inline keyboard panel; subcommands
-//!   (`/settings mode|album|...|storefronts|limit`) mutate a single key and
-//!   answer with the exact confirmation text.
-//! - `settings:*` callbacks drive the panel (toggle/cycle/pick) and the
-//!   storefront sub-menu, always re-rendering the panel after a change.
+//! `/settings` renders the inline keyboard panel; subcommands mutate a single
+//! setting and `settings:*` callbacks update the panel after each change.
 //!
 //! Authorization is admin-only on both surfaces, re-checked in every
 //! callback (owner id from `BotState::auth`).
@@ -21,12 +17,9 @@ use ferogram::{
 
 use crate::{
     BotState,
-    html::parse_dynamic_html,
+    html::{escape, parse_dynamic_html},
     interaction::{SettingFeature, SettingsAction},
 };
-
-/// Storefronts offered in the auto-dump picker.
-pub const POPULAR_STOREFRONTS: [&str; 8] = ["us", "gb", "jp", "in", "ca", "au", "de", "fr"];
 
 /// Collection-size limit presets.
 const LIMIT_PRESETS: [u32; 4] = [25, 50, 100, 0];
@@ -69,16 +62,10 @@ fn settings_keyboard(settings: &engine::settings::BotSettings) -> ferogram::tl::
             mode_button_label(settings.ripping_mode),
             b"settings:mode",
         )])
-        .row([
-            Button::callback(
-                toggle_label("Apple", settings.apple_rip_enabled),
-                b"settings:apple",
-            ),
-            Button::callback(
-                toggle_label("Qobuz", settings.qobuz_rip_enabled),
-                b"settings:qobuz",
-            ),
-        ])
+        .row([Button::callback(
+            toggle_label("Apple", settings.apple_rip_enabled),
+            b"settings:apple",
+        )])
         .row([
             Button::callback(
                 toggle_label("Albums", settings.album_rip_enabled),
@@ -102,52 +89,10 @@ fn settings_keyboard(settings: &engine::settings::BotSettings) -> ferogram::tl::
                 toggle_label("Multi-Link", settings.multi_link_rip_enabled),
                 b"settings:multilink",
             ),
-        ])
-        .row([
-            Button::callback(
-                toggle_label("Auto-Dump", settings.auto_dump_enabled),
-                b"settings:autodump",
-            ),
-            Button::callback(
-                format!("Storefronts ({})", settings.auto_dump_storefronts.len()),
-                b"settings:sf_menu",
-            ),
         ]);
     kb = kb.row(limit_buttons);
     kb.row([
         Button::callback("Refresh", b"settings:refresh"),
-        Button::callback("Close", b"settings:close"),
-    ])
-    .into_markup()
-}
-
-/// Build the storefront picker inline keyboard.
-fn storefronts_keyboard(
-    settings: &engine::settings::BotSettings,
-) -> ferogram::tl::enums::ReplyMarkup {
-    let active: std::collections::HashSet<String> = settings
-        .auto_dump_storefronts
-        .iter()
-        .map(|sf| sf.to_lowercase())
-        .collect();
-    let mut kb = InlineKeyboard::new();
-    for chunk in POPULAR_STOREFRONTS.chunks(4) {
-        let row = chunk
-            .iter()
-            .map(|&sf| {
-                let active = active.contains(sf.to_lowercase().as_str());
-                let label = if active {
-                    format!("Selected · {}", sf.to_uppercase())
-                } else {
-                    sf.to_uppercase()
-                };
-                Button::callback(label, format!("settings:sf:toggle:{sf}").as_bytes())
-            })
-            .collect::<Vec<_>>();
-        kb = kb.row(row);
-    }
-    kb.row([
-        Button::callback("Back to settings", b"settings:refresh"),
         Button::callback("Close", b"settings:close"),
     ])
     .into_markup()
@@ -170,42 +115,32 @@ pub fn render_settings_text(settings: &engine::settings::BotSettings) -> String 
     } else {
         format!("{} tracks", settings.max_collection_tracks)
     };
-    let sf_list = settings
-        .auto_dump_storefronts
-        .iter()
-        .map(|sf| sf.to_uppercase())
-        .collect::<Vec<_>>()
-        .join(", ");
-
+    let lyricsporn_url = settings
+        .lyricsporn_api_url
+        .as_deref()
+        .map(escape)
+        .unwrap_or_else(|| "Not configured".to_owned());
     format!(
         "<b>Bot settings and operation controls</b><br/><br/>\
 • <b>Engine Mode:</b> {}<br/>\
 • <b>Apple Music Ripping:</b> {}<br/>\
-• <b>Qobuz Ripping:</b> {}<br/>\
 • <b>Album Ripping:</b> {}<br/>\
 • <b>Playlist Ripping:</b> {}<br/>\
 • <b>Artist Ripping:</b> {}<br/>\
 • <b>.TXT File Ripping:</b> {}<br/>\
 • <b>Multi-Link Ripping:</b> {}<br/>\
-• <b>Auto-Dump New Music:</b> {}<br/>\
-• <b>Auto-Dump Storefronts:</b> <code>{sf_list}</code><br/>\
 • <b>Max Collection Limit:</b> <code>{limit_text}</code><br/>\
+• <b>Lyricsporn API URL:</b> <code>{lyricsporn_url}</code><br/>\
 • <b>Stream Public URL:</b> <code>{}</code><br/>\
 • <b>Stream Server Port:</b> <code>{}</code><br/><br/>\
-<blockquote><i>Use the buttons below to toggle settings. Owner requests bypass these limits.</i></blockquote>",
+<blockquote><i>Use the buttons below to toggle settings. Set or clear the API URL with <code>/settings lyricsporn_url &lt;URL|clear&gt;</code>. Owner requests bypass ripping limits.</i></blockquote>",
         mode_description(settings.ripping_mode),
         flag(settings.apple_rip_enabled),
-        flag(settings.qobuz_rip_enabled),
         flag(settings.album_rip_enabled),
         flag(settings.playlist_rip_enabled),
         flag(settings.artist_rip_enabled),
         flag(settings.txt_rip_enabled),
         flag(settings.multi_link_rip_enabled),
-        if settings.auto_dump_enabled {
-            "Enabled (daily)"
-        } else {
-            "Disabled"
-        },
         settings
             .stream_public_url
             .as_deref()
@@ -216,22 +151,6 @@ pub fn render_settings_text(settings: &engine::settings::BotSettings) -> String 
 
 fn flag(enabled: bool) -> &'static str {
     if enabled { "Enabled" } else { "Disabled" }
-}
-
-/// Render the storefronts panel text.
-pub fn render_storefronts_text(settings: &engine::settings::BotSettings) -> String {
-    let sf_list = settings
-        .auto_dump_storefronts
-        .iter()
-        .map(|sf| sf.to_uppercase())
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!(
-        "<b>Auto-dump storefront configuration</b><br/><br/>\
-• <b>Active Storefronts:</b> <code>{sf_list}</code><br/><br/>\
-Tap a country below to toggle it on or off for the daily new music auto-dump.<br/>\
-<i>You can also use:</i> <code>/settings storefronts add &lt;code&gt;</code>"
-    )
 }
 
 /// Edit the settings panel message in place (ignore NOT_MODIFIED),
@@ -260,17 +179,6 @@ pub(crate) async fn render_settings_message(
     }
 }
 
-/// Edit the storefronts panel message in place.
-pub(crate) async fn render_storefronts_message(state: &BotState, peer: &PeerRef, message_id: i32) {
-    let settings = state.rip_deps.settings_snapshot();
-    let input = InputMessage::html(parse_dynamic_html(&render_storefronts_text(&settings)))
-        .reply_markup(storefronts_keyboard(&settings));
-    let _ = state
-        .client
-        .edit_message(peer.clone(), message_id, input)
-        .await;
-}
-
 /// `/settings [subcommand]` — registerSettingsCommands
 /// admin gate, subcommand mutations, else render.
 pub async fn command(state: Arc<BotState>, msg: ferogram::update::IncomingMessage) {
@@ -289,9 +197,9 @@ pub async fn command(state: Arc<BotState>, msg: ferogram::update::IncomingMessag
 
     if parts.len() >= 3 {
         let sub = parts[1].to_lowercase();
-        let raw_value = parts[2].to_lowercase();
+        let raw_value = parts[2..].join(" ");
 
-        if let Some(reply) = subcommand_reply(Arc::clone(&state), &sub, &raw_value, &parts).await {
+        if let Some(reply) = subcommand_reply(Arc::clone(&state), &sub, &raw_value).await {
             let _ = msg
                 .reply(InputMessage::html(parse_dynamic_html(&reply)))
                 .await;
@@ -304,18 +212,14 @@ pub async fn command(state: Arc<BotState>, msg: ferogram::update::IncomingMessag
 
 /// The `/settings <sub> <value>...` mutation arms. Returns the exact
 /// answer text on success (Some), or None to fall through to the panel.
-async fn subcommand_reply(
-    state: Arc<BotState>,
-    sub: &str,
-    raw_value: &str,
-    parts: &[&str],
-) -> Option<String> {
+async fn subcommand_reply(state: Arc<BotState>, sub: &str, raw_value: &str) -> Option<String> {
     let settings_store = state.rip_deps.settings();
+    let normalized_value = raw_value.to_ascii_lowercase();
 
     match sub {
         "mode" => {
-            let mode = match raw_value {
-                "live" | "cache_only" | "paused" => raw_value,
+            let mode = match normalized_value.as_str() {
+                "live" | "cache_only" | "paused" => normalized_value.as_str(),
                 _ => {
                     return Some(
                         "Usage: <code>/settings mode &lt;live|cache_only|paused&gt;</code>"
@@ -331,7 +235,7 @@ async fn subcommand_reply(
             Some(format!("Engine mode set to: <b>{mode}</b>"))
         }
         "apple" | "apple_music" => {
-            let val = matches!(raw_value, "on" | "true" | "1");
+            let val = matches!(normalized_value.as_str(), "on" | "true" | "1");
             settings_store
                 .set_setting("apple_rip_enabled", serde_json::json!(val))
                 .await;
@@ -340,18 +244,8 @@ async fn subcommand_reply(
                 if val { "ON" } else { "OFF" }
             ))
         }
-        "qobuz" => {
-            let val = matches!(raw_value, "on" | "true" | "1");
-            settings_store
-                .set_setting("qobuz_rip_enabled", serde_json::json!(val))
-                .await;
-            Some(format!(
-                "Qobuz ripping set to: <b>{}</b>",
-                if val { "ON" } else { "OFF" }
-            ))
-        }
         "album" | "playlist" | "artist" | "txt" | "batch_txt" | "multilink" | "multi_link" => {
-            let val = matches!(raw_value, "on" | "true" | "1");
+            let val = matches!(normalized_value.as_str(), "on" | "true" | "1");
             let (key, label) = match sub {
                 "album" => ("album_rip_enabled", "Album ripping"),
                 "playlist" => ("playlist_rip_enabled", "Playlist ripping"),
@@ -366,56 +260,6 @@ async fn subcommand_reply(
                 "{label} set to: <b>{}</b>",
                 if val { "ON" } else { "OFF" }
             ))
-        }
-        "autodump" | "auto_dump" => {
-            let val = matches!(raw_value, "on" | "true" | "1");
-            settings_store
-                .set_setting("auto_dump_enabled", serde_json::json!(val))
-                .await;
-            Some(format!(
-                "Auto-dump new music set to: <b>{}</b>",
-                if val { "ON" } else { "OFF" }
-            ))
-        }
-        "storefronts" | "storefront" | "sf" => {
-            let action = raw_value;
-            let target_sf = parts.get(3).map(|s| s.to_lowercase());
-            match (action, target_sf) {
-                ("add", Some(target_sf)) => {
-                    let list = settings_store.add_auto_dump_storefront(&target_sf).await;
-                    Some(format!(
-                        "Added <b>{}</b>. Storefronts: <code>{}</code>",
-                        target_sf.to_uppercase(),
-                        upper_join(&list)
-                    ))
-                }
-                ("remove" | "rm" | "del", Some(target_sf)) => {
-                    let list = settings_store.remove_auto_dump_storefront(&target_sf).await;
-                    Some(format!(
-                        "Removed <b>{}</b>. Storefronts: <code>{}</code>",
-                        target_sf.to_uppercase(),
-                        upper_join(&list)
-                    ))
-                }
-                ("set", _) => {
-                    let targets = parts[3..]
-                        .iter()
-                        .flat_map(|part| part.split(','))
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .map(str::to_owned)
-                        .collect::<Vec<_>>();
-                    let list = settings_store.set_auto_dump_storefronts(&targets).await;
-                    Some(format!(
-                        "Storefronts set to: <code>{}</code>",
-                        upper_join(&list)
-                    ))
-                }
-                _ => Some(
-                    "Usage: <code>/settings storefronts &lt;add|rm|set&gt; &lt;code&gt;</code>"
-                        .to_owned(),
-                ),
-            }
         }
         "limit" => {
             let num: i64 = match raw_value.parse() {
@@ -444,13 +288,55 @@ async fn subcommand_reply(
                 )
             }
         }
+        "lyricsporn_api_url" | "lyricsporn_url" | "lyricsporn" => {
+            let url = if matches!(
+                normalized_value.as_str(),
+                "clear" | "none" | "remove" | "reset" | "default"
+            ) {
+                None
+            } else if let Some(url) = engine::settings::normalize_lyricsporn_api_url(raw_value) {
+                Some(url)
+            } else {
+                return Some(
+                    "Usage: <code>/settings lyricsporn_url &lt;http(s)://host/api/v1 | clear&gt;</code>"
+                        .to_owned(),
+                );
+            };
+            let updated = settings_store
+                .set_setting(
+                    "lyricsporn_api_url",
+                    url.as_ref()
+                        .map(|url| serde_json::json!(url))
+                        .unwrap_or(serde_json::Value::Null),
+                )
+                .await;
+            if updated.lyricsporn_api_url == url {
+                match updated.lyricsporn_api_url.as_deref() {
+                    Some(url) => Some(format!(
+                        "Lyricsporn API URL set to: <code>{}</code>",
+                        escape(url)
+                    )),
+                    None => Some(
+                        "Lyricsporn API URL cleared; catalog, lyrics, and artwork lookups are disabled."
+                            .to_owned(),
+                    ),
+                }
+            } else {
+                Some("Could not save the Lyricsporn API URL".to_owned())
+            }
+        }
         "stream_url" | "stream" | "url" => {
-            if matches!(raw_value, "clear" | "none" | "remove" | "reset") {
+            if matches!(
+                normalized_value.as_str(),
+                "clear" | "none" | "remove" | "reset"
+            ) {
                 settings_store
                     .set_setting("stream_public_url", serde_json::Value::Null)
                     .await;
                 Some("Stream public URL cleared".to_owned())
-            } else if raw_value.starts_with("http://") || raw_value.starts_with("https://") {
+            } else if normalized_value.starts_with("http://")
+                || normalized_value.starts_with("https://")
+            {
                 let clean = raw_value.trim_end_matches('/');
                 settings_store
                     .set_setting("stream_public_url", serde_json::json!(clean))
@@ -475,13 +361,6 @@ async fn subcommand_reply(
         }
         _ => None,
     }
-}
-
-fn upper_join(list: &[String]) -> String {
-    list.iter()
-        .map(|sf| sf.to_uppercase())
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 /// `settings:*` callback handler.
@@ -515,12 +394,6 @@ pub async fn callback(state: Arc<BotState>, query: CallbackQuery, action: Settin
                 render_settings_message(&state, &peer, Some(id), None).await;
             }
         }
-        SettingsAction::Storefronts => {
-            let _ = query.answer().send(&state.client).await;
-            if let (Some(peer), Some(id)) = (peer, message_id) {
-                render_storefronts_message(&state, &peer, id).await;
-            }
-        }
         SettingsAction::Mode => {
             let new_mode = state.rip_deps.settings().cycle_ripping_mode().await;
             let label = match new_mode {
@@ -537,7 +410,6 @@ pub async fn callback(state: Arc<BotState>, query: CallbackQuery, action: Settin
             let settings_store = state.rip_deps.settings();
             let (enabled, label) = match feature {
                 SettingFeature::Apple => (settings_store.toggle_apple().await, "Apple Music"),
-                SettingFeature::Qobuz => (settings_store.toggle_qobuz().await, "Qobuz"),
                 SettingFeature::Album => (settings_store.toggle_album().await, "Album ripping"),
                 SettingFeature::Playlist => {
                     (settings_store.toggle_playlist().await, "Playlist ripping")
@@ -548,7 +420,6 @@ pub async fn callback(state: Arc<BotState>, query: CallbackQuery, action: Settin
                     settings_store.toggle_multi_link_rip().await,
                     "Multi-link ripping",
                 ),
-                SettingFeature::AutoDump => (settings_store.toggle_auto_dump().await, "Auto-dump"),
             };
             let _ = query
                 .answer()
@@ -579,35 +450,6 @@ pub async fn callback(state: Arc<BotState>, query: CallbackQuery, action: Settin
                 .await;
             if let (Some(peer), Some(id)) = (peer, message_id) {
                 render_settings_message(&state, &peer, Some(id), None).await;
-            }
-        }
-        SettingsAction::ToggleStorefront(sf) => {
-            let current = state.rip_deps.settings_snapshot().auto_dump_storefronts;
-            if current.iter().any(|value| value.eq_ignore_ascii_case(&sf)) {
-                state
-                    .rip_deps
-                    .settings()
-                    .remove_auto_dump_storefront(&sf)
-                    .await;
-                let _ = query
-                    .answer()
-                    .text(format!("Removed {}", sf.to_uppercase()))
-                    .send(&state.client)
-                    .await;
-            } else {
-                state
-                    .rip_deps
-                    .settings()
-                    .add_auto_dump_storefront(&sf)
-                    .await;
-                let _ = query
-                    .answer()
-                    .text(format!("Added {}", sf.to_uppercase()))
-                    .send(&state.client)
-                    .await;
-            }
-            if let (Some(peer), Some(id)) = (peer, message_id) {
-                render_storefronts_message(&state, &peer, id).await;
             }
         }
     }

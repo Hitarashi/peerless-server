@@ -4,7 +4,10 @@
 //! lives in the db crate; this module carries the domain types,
 //! defaults, and permission logic.
 
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::{Arc, RwLock},
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -14,10 +17,6 @@ fn default_true() -> bool {
 
 fn default_50() -> u32 {
     50
-}
-
-fn default_storefronts() -> Vec<String> {
-    vec!["us".to_string()]
 }
 
 /// The storefront every Apple Music catalog call falls back to when the caller
@@ -30,6 +29,53 @@ fn default_storefront() -> String {
 
 fn default_stream_server_port() -> u16 {
     4444
+}
+
+/// Validate and normalize a configured Lyricsporn API base URL.
+pub fn normalize_lyricsporn_api_url(value: &str) -> Option<String> {
+    let trimmed = value.trim().trim_end_matches('/');
+    let parsed = reqwest::Url::parse(trimmed).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return None;
+    }
+    Some(trimmed.to_owned())
+}
+
+/// Shared live endpoint handle used by catalog, playlist, artwork, and lyrics
+/// requests. Updating the saved bot setting updates in-flight services too.
+#[derive(Clone, Debug, Default)]
+pub struct LyricspornApiEndpoint(Arc<RwLock<Option<String>>>);
+
+impl LyricspornApiEndpoint {
+    pub fn new(value: Option<&str>) -> Self {
+        let endpoint = Self::default();
+        endpoint.set(value);
+        endpoint
+    }
+
+    pub fn get(&self) -> Option<String> {
+        self.0.read().expect("Lyricsporn URL lock poisoned").clone()
+    }
+
+    /// Set a valid URL, or clear the endpoint. Invalid URLs leave the current
+    /// value unchanged.
+    pub fn set(&self, value: Option<&str>) -> bool {
+        let value = match value {
+            Some(value) => match normalize_lyricsporn_api_url(value) {
+                Some(value) => Some(value),
+                None => return false,
+            },
+            None => None,
+        };
+        *self.0.write().expect("Lyricsporn URL lock poisoned") = value;
+        true
+    }
 }
 
 /// Whether the bot rips live, serves cache only, or is paused.
@@ -81,22 +127,18 @@ pub struct BotSettings {
     #[serde(default = "default_50")]
     pub max_collection_tracks: u32,
     #[serde(default = "default_true")]
-    pub auto_dump_enabled: bool,
-    #[serde(default = "default_storefronts")]
-    pub auto_dump_storefronts: Vec<String>,
-    #[serde(default = "default_true")]
     pub apple_rip_enabled: bool,
-    #[serde(default = "default_true")]
-    pub qobuz_rip_enabled: bool,
     #[serde(default)]
     pub stream_public_url: Option<String>,
     #[serde(default = "default_stream_server_port")]
     pub stream_server_port: u16,
     /// Storefront used for Apple Music catalog lookups when the caller did not
-    /// supply one. Distinct from `auto_dump_storefronts`, which is the list of
-    /// storefronts auto-dump sweeps.
+    /// supply one.
     #[serde(default = "default_storefront")]
     pub default_storefront: String,
+    /// Optional base URL used for Apple catalog, artwork, and lyrics calls.
+    #[serde(default)]
+    pub lyricsporn_api_url: Option<String>,
     #[serde(flatten, default)]
     pub extra: HashMap<String, serde_json::Value>,
 }
@@ -111,13 +153,11 @@ impl Default for BotSettings {
             txt_rip_enabled: true,
             multi_link_rip_enabled: true,
             max_collection_tracks: 50,
-            auto_dump_enabled: true,
-            auto_dump_storefronts: vec!["us".to_string()],
             apple_rip_enabled: true,
-            qobuz_rip_enabled: true,
             stream_public_url: None,
             stream_server_port: 4444,
             default_storefront: default_storefront(),
+            lyricsporn_api_url: None,
             extra: HashMap::new(),
         }
     }
@@ -133,22 +173,15 @@ impl BotSettings {
     }
 
     /// Check if live ripping is enabled for the specified provider.
-    pub fn can_rip_provider(&self, provider: music::Provider, is_admin: bool) -> bool {
-        if is_admin {
-            return true;
+    pub fn can_rip_provider(&self, provider: &music::Provider, is_admin: bool) -> bool {
+        if !provider.is_apple() {
+            return false;
         }
-        match provider {
-            music::Provider::Apple => self.apple_rip_enabled,
-            music::Provider::Qobuz => self.qobuz_rip_enabled,
-        }
+        is_admin || self.apple_rip_enabled
     }
 
     pub fn can_rip_apple(&self, is_admin: bool) -> bool {
-        self.can_rip_provider(music::Provider::Apple, is_admin)
-    }
-
-    pub fn can_rip_qobuz(&self, is_admin: bool) -> bool {
-        self.can_rip_provider(music::Provider::Qobuz, is_admin)
+        self.can_rip_provider(&music::Provider::Apple, is_admin)
     }
 
     /// Admins can always serve cache; users need mode `!= 'paused'`.
@@ -189,8 +222,7 @@ impl BotSettings {
     }
 }
 
-/// `DEFAULT_SETTINGS` with its `autoDumpStorefronts: ['us']` — the const
-/// cannot hold a `Vec<String>`, so callers use this constructor.
+/// Construct the default runtime settings.
 pub fn default_settings() -> BotSettings {
     BotSettings::default()
 }
@@ -224,20 +256,16 @@ mod tests {
         assert!(d.txt_rip_enabled);
         assert!(d.multi_link_rip_enabled);
         assert_eq!(d.max_collection_tracks, 50);
-        assert!(d.auto_dump_enabled);
-        assert_eq!(d.auto_dump_storefronts, vec!["us".to_string()]);
         assert!(d.apple_rip_enabled);
-        assert!(d.qobuz_rip_enabled);
         assert_eq!(d.stream_public_url, None);
         assert_eq!(d.stream_server_port, 4444);
         assert_eq!(d.default_storefront, "in");
     }
 
     #[test]
-    fn default_storefront_is_independent_of_auto_dump_storefronts() {
+    fn default_storefront_uses_apple_catalog_fallback() {
         let d = default_settings();
         assert_eq!(d.default_storefront, "in");
-        assert_eq!(d.auto_dump_storefronts, vec!["us".to_string()]);
     }
 
     #[test]
@@ -313,16 +341,15 @@ mod tests {
     }
 
     #[test]
-    fn can_rip_provider_admin_bypass() {
+    fn can_rip_only_apple_even_for_admins() {
         let mut s = default_settings();
         s.apple_rip_enabled = false;
-        s.qobuz_rip_enabled = false;
 
         assert!(!s.can_rip_apple(false));
-        assert!(!s.can_rip_qobuz(false));
-        // Admins bypass
         assert!(s.can_rip_apple(true));
-        assert!(s.can_rip_qobuz(true));
+        let legacy_provider = "legacy-store".parse().unwrap();
+        assert!(!s.can_rip_provider(&legacy_provider, false));
+        assert!(!s.can_rip_provider(&legacy_provider, true));
     }
 
     #[test]

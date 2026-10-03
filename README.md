@@ -12,7 +12,7 @@
 mirrors with native client applications (such as [Peerless KMP](https://github.com/Hitarashi/Peerless)):
 
 1. **Telegram MTProto Ripping & Archiving Bot**: Downloads, tags, and stores Apple Music (including ALAC and Dolby Atmos
-   EC-3) and Qobuz (FLAC) tracks in a private Telegram dump channel, retaining ISRC metadata when available.
+   EC-3) tracks in a private Telegram dump channel, retaining ISRC metadata when available.
 2. **Axum HTTP Lossless Streaming Server (`/api/v1`)**: Supports HTTP `206 Partial Content` byte-range audio requests
    from Telegram MTProto chunks, using auxiliary worker pools and in-memory LRU chunk caching, with playback
    synchronization over WebSockets.
@@ -40,7 +40,6 @@ mirrors with native client applications (such as [Peerless KMP](https://github.c
 │  │ Axum Web Server & Playback Sync Hub                │  │
 │  │ - /api/v1/stream (HMAC signed tickets)             │  │
 │  │ - /api/v1/ws/sync (Playback & Task Sync WebSockets) │  │
-│  │ - /api/v1/search (ISRC canonical results)           │  │
 │  │ - /api/v1/integrations/lastfm (Encrypted AES-GCM)  │  │
 │  │ - /api/v1/docs (OpenAPI 3.1 Scalar UI)              │  │
 │  └─────────────────────────┬──────────────────────────┘  │
@@ -61,11 +60,10 @@ mirrors with native client applications (such as [Peerless KMP](https://github.c
   and scrubs.
 - **Spotify Connect-Style WebSockets (`/api/v1/ws/sync`)**: Full-duplex synchronization hub fanning out
   track state, progress, and remote playback commands across connected clients.
-- **Multi-Provider Synced Lyrics Engine (`crates/lyrics`)**: Aggregates word-by-word and line-synced lyrics from Apple
-  Music TTML (`amll-ttml-db`), BetterLyrics, Paxsenix, Unison, NetEase, QQ Music, Kugou, Musixmatch, Spotify, YouTube
-  Music, Binimum, and LRCLIB.
-- **ISRC-Based Canonical Linkage**: Groups cached Apple Music and Qobuz tracks, and live Apple Music results, when ISRCs
-  or matching track metadata are available.
+- **Synced Lyrics**: Fetches lyrics once from the Lyricsporn Apple track endpoint during a rip, alongside the audio
+  download, then embeds the returned word-synced, line-synced, or plain lyrics in the tagged file.
+- **Lyricsporn Catalog Metadata**: Resolves Apple Music tracks, albums, artists, playlists, and search results through
+  Lyricsporn while audio continues through the wrapper and mirror paths.
 - **Telegram-Gated Authentication & Onboarding**: Single-use OTP code (`/stream`) exchanged for an opaque 256-bit
   sliding refresh token. Base64 connection payloads allow 1-tap client onboarding.
 - **Interactive OpenAPI 3.1 & Scalar Documentation**: Explore endpoints at `/api/v1/docs`; OpenAPI documents are also
@@ -78,10 +76,9 @@ mirrors with native client applications (such as [Peerless KMP](https://github.c
 | Crate    | Responsibility                                                                          |
 |:---------|:----------------------------------------------------------------------------------------|
 | `music`  | Provider-neutral music domain types.                                                    |
-| `lyrics` | Lyrics lookup, ranking, and rendering across providers.                                 |
 | `engine` | Rip orchestration, track ripping, ZIP assembly, streaming, and tagging/filename policy. |
-| `apple`  | Apple Music catalog, playlist, wrapper, and audio acquisition.                          |
-| `qobuz`  | Qobuz catalog, hosted/native adapters, and audio acquisition.                           |
+| `apple`  | Lyricsporn catalog and playlist metadata; Apple wrapper, mirror, and audio acquisition.  |
+| `qobuz`  | Standalone adapter crate retained in the workspace; the bot and server do not enable it. |
 | `db`     | PostgreSQL models, migrations, persistence, and repositories.                           |
 | `media`  | Audio inspection, tagging, and spectrogram rendering.                                   |
 | `stream` | Telegram MTProto worker pool, chunk cache, and byte-range stream engine.                |
@@ -101,13 +98,12 @@ mirrors with native client applications (such as [Peerless KMP](https://github.c
 | **Streaming**    | `GET`      | `/api/v1/tracks/{id}/playback`                                  | Acquire short-lived signed stream ticket                     |
 |                  | `GET/HEAD` | `/api/v1/stream?ticket=...`                                     | HTTP byte-range streaming (206 for Range requests)           |
 |                  | `GET`      | `/api/v1/ws/sync`                                               | Playback sync; create, cancel, and observe rip tasks         |
-| **Catalog**      | `GET`      | `/api/v1/search?q=...`                                          | Hybrid search (cached PostgreSQL + live catalog)             |
 |                  | `GET`      | `/api/v1/tracks/{id}`                                           | Complete track metadata and audio specifications             |
 |                  | `GET`      | `/api/v1/albums`                                                | Paginated list of cached albums                              |
 |                  | `GET`      | `/api/v1/albums/{album_ref}`                                    | Album tracks by title, provider id, or track id              |
 |                  | `GET`      | `/api/v1/artists/{name}/tracks`                                 | All cached tracks by an artist                               |
-| **Assets**       | `GET`      | `/api/v1/assets/tracks/{id}/artwork`                            | Provider artwork URL as JSON                                 |
-|                  | `GET`      | `/api/v1/assets/providers/{provider}/tracks/{track_id}/artwork` | Provider artwork URL as JSON                                 |
+| **Assets**       | `GET`      | `/api/v1/assets/tracks/{id}/artwork`                            | Apple Music artwork URL as JSON                               |
+|                  | `GET`      | `/api/v1/assets/artists/artwork?name=...`                       | Artist artwork URL as JSON                                   |
 | **Integrations** | `POST`     | `/api/v1/integrations/lastfm/login`                             | Connect Last.fm account (AES-256-GCM encrypted)              |
 |                  | `GET`      | `/api/v1/integrations/lastfm/status`                            | Get Last.fm connection status                                |
 |                  | `DELETE`   | `/api/v1/integrations/lastfm`                                   | Disconnect Last.fm account                                   |
@@ -120,7 +116,7 @@ mirrors with native client applications (such as [Peerless KMP](https://github.c
 |                  | `GET`      | `/api/v1/docs-ws.json`                                          | AsyncAPI document for the playback WebSocket                 |
 | **Other**        | `GET`      | /open                                                           | Open the client connection gateway                           |
 | **Health**       | `GET`      | `/api/v1/health`                                                | Liveness check; 503 when database or stream workers are down |
-|                  | `GET`      | `/api/v1/status`                                                | DB, workers, cache, Apple, Qobuz state; always HTTP 200      |
+|                  | `GET`      | `/api/v1/status`                                                | DB, workers, cache, and Apple wrapper state; always HTTP 200 |
 
 ### Authentication
 
@@ -129,14 +125,9 @@ The catalog and asset routes are **not** open. Every row above except the public
 `POST /api/v1/auth/exchange` (and slid forward by `POST /api/v1/auth/refresh`). A missing or invalid header is rejected
 with `401`.
 
-```bash
-curl https://server.example/api/v1/search?q=blue%20monday \
-  -H 'Authorization: Bearer <token>'
-```
-
-Authenticated routes: the whole **Catalog** group (`/api/v1/search`, `/api/v1/tracks/{id}`, `/api/v1/albums`,
-`/api/v1/albums/{album_ref}`, `/api/v1/artists/{name}/tracks`), every **Assets** route (track artwork, provider track
-artwork, and artist artwork), `/api/v1/tracks/{id}/playback`, all **Integrations** routes, and the
+Authenticated routes: the whole **Catalog** group (`/api/v1/tracks/{id}`, `/api/v1/albums`,
+`/api/v1/albums/{album_ref}`, `/api/v1/artists/{name}/tracks`), every **Assets** route (track and artist artwork),
+`/api/v1/tracks/{id}/playback`, all **Integrations** routes, and the
 `/api/v1/auth/me`, `/api/v1/auth/me/avatar`, and `/api/v1/auth/logout` routes (logout also accepts the token in its JSON
 body).
 
@@ -283,26 +274,11 @@ ALAC_MAX_RETRIES=
 # Optional: rip/upload retry base delay in milliseconds (default: 2000).
 ALAC_RETRY_BASE_MS=
 
-# Optional: URL of the hosted Qobuz backend; setting it enables that backend.
-QOBUZ_BACKEND_URL=
-# Optional: authentication key for the hosted Qobuz backend.
-QOBUZ_BACKEND_KEY=
-# Optional: user authorization token for the native Qobuz adapter.
-QOBUZ_USER_AUTH_TOKEN=
-# Optional: application ID for the native Qobuz adapter.
-QOBUZ_APP_ID=
-# Optional: application secret used with the native Qobuz application ID.
-QOBUZ_APP_SECRET=
-
 # Optional: Last.fm API key; required with LASTFM_SHARED_SECRET to connect Last.fm accounts.
 LASTFM_API_KEY=
 # Optional: Last.fm shared secret; required with LASTFM_API_KEY to connect Last.fm accounts.
 LASTFM_SHARED_SECRET=
 
-# Optional: Spotify access token used by the Spotify lyrics provider.
-SPOTIFY_ACCESS_TOKEN=
-# Optional: Spotify client token used with SPOTIFY_ACCESS_TOKEN for lyrics lookups.
-SPOTIFY_CLIENT_TOKEN=
 ```
 
 ---
@@ -346,13 +322,16 @@ docker run -d --name peerless \
 |:------------------|:------------------------------------------------------------------------------------|
 | `/stream`         | Generate a single-use OTP and Base64 Connection Payload for the Peerless client app |
 | `/get <link>`     | Download and archive track or album; multi-track albums delivered as ZIPs           |
-| `/search <query>` | Interactive search with inline buttons across cached and live catalogs              |
+| `/search <query>` | Interactive search with inline buttons across cached tracks and Lyricsporn results   |
 | `/info <link>`    | Display track metadata, audio codec, and cache availability                         |
 | `/status`         | Active ripping downloads with live cancellation controls                            |
 | `/spec`           | Generate an audiophile FFT spectrogram from replied audio                           |
-| `/settings`       | Operational toggles and dynamic stream URL configuration                            |
+| `/settings`       | Operational toggles, Lyricsporn API URL, and stream URL configuration               |
 | `/index`          | Reconcile dump channel messages, captions, and ISRCs with PostgreSQL                |
 | `/export`         | Export compressed PostgreSQL backup archive                                         |
+
+Set the Lyricsporn API base URL with `/settings lyricsporn_url <URL>`; use
+`/settings lyricsporn_url clear` to disable API-backed catalog, lyrics, and artwork lookups.
 
 ---
 

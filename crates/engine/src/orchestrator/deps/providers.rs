@@ -11,7 +11,7 @@ use crate::{
 ///
 /// Which adapter runs is decided by [`Provider`]; a region only tells a
 /// *regional* catalog which market to address. Adapters with no notion of a
-/// market (Qobuz) ignore it entirely. `None`/empty means "use the adapter's
+/// market-aware adapters ignore it entirely. `None`/empty means "use the adapter's
 /// own configured default", so a caller never has to invent a region.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Storefront<'a>(Option<&'a str>);

@@ -14,7 +14,6 @@ pub enum TelegramAction {
     },
     Settings(SettingsAction),
     Report(ReportAction),
-    Discovery(DiscoveryAction),
     DeliverCached {
         track_id: String,
     },
@@ -45,23 +44,19 @@ pub enum TelegramAction {
 pub enum SettingsAction {
     Close,
     Refresh,
-    Storefronts,
     Mode,
     Toggle(SettingFeature),
     Limit(u32),
-    ToggleStorefront(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingFeature {
     Apple,
-    Qobuz,
     Album,
     Playlist,
     Artist,
     Txt,
     MultiLink,
-    AutoDump,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,24 +85,6 @@ pub enum ReportReason {
     Incomplete,
     Metadata,
     Other,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DiscoveryAction {
-    Close,
-    Menu,
-    Discover {
-        source: String,
-        storefront: String,
-    },
-    Reroll {
-        source: String,
-        storefront: String,
-    },
-    Dump {
-        album_id: String,
-        storefront: String,
-    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,18 +126,7 @@ pub struct CallbackOutcome {
 const MAX_PAYLOAD: usize = 256;
 
 impl TelegramAction {
-    /// Decodes a callback payload using the compiled-in fallback storefront.
-    ///
-    /// Call sites that have access to settings should prefer
-    /// [`TelegramAction::decode_with_default`] so discovery actions follow the
-    /// configured default instead of a hardcoded country.
     pub fn decode(data: &str) -> Result<Self, DecodeError> {
-        Self::decode_with_default(data, engine::settings::FALLBACK_STOREFRONT)
-    }
-
-    /// Decodes a callback payload, applying `default_storefront` to discovery
-    /// payloads that omit an explicit storefront.
-    pub fn decode_with_default(data: &str, default_storefront: &str) -> Result<Self, DecodeError> {
         if data.is_empty() {
             return Err(DecodeError::Empty);
         }
@@ -200,7 +166,6 @@ impl TelegramAction {
             }
             "settings" => decode_settings(rest).map(Self::Settings),
             "report" => decode_report(rest).map(Self::Report),
-            "random" => decode_discovery(rest, default_storefront).map(Self::Discovery),
             "delete_confirm" => one(rest)
                 .and_then(|token| {
                     valid_token(&token)
@@ -246,7 +211,6 @@ impl TelegramAction {
             Self::Cancel { job_id } => format!("cancel:{job_id}"),
             Self::Settings(action) => encode_settings(action),
             Self::Report(action) => encode_report(action),
-            Self::Discovery(action) => encode_discovery(action),
             Self::DeliverCached { track_id } => format!("cached:{track_id}"),
             Self::Get { track_id } => format!("get:{track_id}"),
             Self::SearchClose => "search_close".to_owned(),
@@ -273,23 +237,17 @@ fn decode_settings(parts: Vec<&str>) -> Result<SettingsAction, DecodeError> {
     match parts.as_slice() {
         ["close"] => Ok(SettingsAction::Close),
         ["refresh"] => Ok(SettingsAction::Refresh),
-        ["sf_menu"] => Ok(SettingsAction::Storefronts),
         ["mode"] => Ok(SettingsAction::Mode),
         ["apple"] => Ok(SettingsAction::Toggle(SettingFeature::Apple)),
-        ["qobuz"] => Ok(SettingsAction::Toggle(SettingFeature::Qobuz)),
         ["album"] => Ok(SettingsAction::Toggle(SettingFeature::Album)),
         ["playlist"] => Ok(SettingsAction::Toggle(SettingFeature::Playlist)),
         ["artist"] => Ok(SettingsAction::Toggle(SettingFeature::Artist)),
         ["txt"] => Ok(SettingsAction::Toggle(SettingFeature::Txt)),
         ["multilink"] => Ok(SettingsAction::Toggle(SettingFeature::MultiLink)),
-        ["autodump"] => Ok(SettingsAction::Toggle(SettingFeature::AutoDump)),
         ["limit", value] => value
             .parse::<u32>()
             .map(SettingsAction::Limit)
             .map_err(|_| DecodeError::Malformed),
-        ["sf", "toggle", value] if valid_storefront(value) => {
-            Ok(SettingsAction::ToggleStorefront(value.to_ascii_lowercase()))
-        }
         _ => Err(DecodeError::Unknown),
     }
 }
@@ -314,43 +272,6 @@ fn decode_report(parts: Vec<&str>) -> Result<ReportAction, DecodeError> {
             Ok(ReportAction::Rerip {
                 track_id: (*track_id).to_owned(),
                 report_id: (*report_id).to_owned(),
-            })
-        }
-        _ => Err(DecodeError::Unknown),
-    }
-}
-
-fn decode_discovery(
-    parts: Vec<&str>,
-    default_storefront: &str,
-) -> Result<DiscoveryAction, DecodeError> {
-    match parts.as_slice() {
-        ["close"] => Ok(DiscoveryAction::Close),
-        ["menu"] => Ok(DiscoveryAction::Menu),
-        ["src", source] if valid_source(source) => Ok(DiscoveryAction::Discover {
-            source: (*source).to_owned(),
-            storefront: default_storefront.to_owned(),
-        }),
-        ["src", source, storefront] if valid_source(source) && valid_storefront(storefront) => {
-            Ok(DiscoveryAction::Discover {
-                source: (*source).to_owned(),
-                storefront: (*storefront).to_ascii_lowercase(),
-            })
-        }
-        ["reroll", source, storefront] if valid_source(source) && valid_storefront(storefront) => {
-            Ok(DiscoveryAction::Reroll {
-                source: (*source).to_owned(),
-                storefront: (*storefront).to_ascii_lowercase(),
-            })
-        }
-        ["reroll", source] if valid_source(source) => Ok(DiscoveryAction::Reroll {
-            source: (*source).to_owned(),
-            storefront: default_storefront.to_owned(),
-        }),
-        ["dump", album_id, storefront] if valid_id(album_id) && valid_storefront(storefront) => {
-            Ok(DiscoveryAction::Dump {
-                album_id: (*album_id).to_owned(),
-                storefront: (*storefront).to_ascii_lowercase(),
             })
         }
         _ => Err(DecodeError::Unknown),
@@ -383,55 +304,23 @@ fn valid_token(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
 }
 
-fn valid_storefront(value: &str) -> bool {
-    value.len() == 2 && value.bytes().all(|byte| byte.is_ascii_alphabetic())
-}
-
-fn valid_source(value: &str) -> bool {
-    matches!(
-        value,
-        "charts"
-            | "wild"
-            | "rock"
-            | "hiphop"
-            | "pop"
-            | "electronic"
-            | "jazz"
-            | "indie"
-            | "rap"
-            | "edm"
-            | "southasia"
-            | "subcontinent"
-            | "desi"
-            | "india"
-            | "pakistan"
-            | "bangladesh"
-            | "nepal"
-            | "bhutan"
-    )
-}
-
 fn encode_settings(action: &SettingsAction) -> String {
     match action {
         SettingsAction::Close => "settings:close".to_owned(),
         SettingsAction::Refresh => "settings:refresh".to_owned(),
-        SettingsAction::Storefronts => "settings:sf_menu".to_owned(),
         SettingsAction::Mode => "settings:mode".to_owned(),
         SettingsAction::Toggle(feature) => format!(
             "settings:{}",
             match feature {
                 SettingFeature::Apple => "apple",
-                SettingFeature::Qobuz => "qobuz",
                 SettingFeature::Album => "album",
                 SettingFeature::Playlist => "playlist",
                 SettingFeature::Artist => "artist",
                 SettingFeature::Txt => "txt",
                 SettingFeature::MultiLink => "multilink",
-                SettingFeature::AutoDump => "autodump",
             }
         ),
         SettingsAction::Limit(limit) => format!("settings:limit:{limit}"),
-        SettingsAction::ToggleStorefront(sf) => format!("settings:sf:toggle:{sf}"),
     }
 }
 
@@ -463,25 +352,6 @@ fn encode_report(action: &ReportAction) -> String {
     }
 }
 
-fn encode_discovery(action: &DiscoveryAction) -> String {
-    match action {
-        DiscoveryAction::Close => "random:close".to_owned(),
-        DiscoveryAction::Menu => "random:menu".to_owned(),
-        DiscoveryAction::Discover { source, storefront } => {
-            format!("random:src:{source}:{storefront}")
-        }
-        DiscoveryAction::Reroll { source, storefront } => {
-            format!("random:reroll:{source}:{storefront}")
-        }
-        DiscoveryAction::Dump {
-            album_id,
-            storefront,
-        } => {
-            format!("random:dump:{album_id}:{storefront}")
-        }
-    }
-}
-
 fn parse_page(value: &str) -> Result<usize, DecodeError> {
     value
         .parse::<usize>()
@@ -503,17 +373,9 @@ mod tests {
             TelegramAction::Cancel {
                 job_id: "job-1".into(),
             },
-            TelegramAction::Settings(SettingsAction::ToggleStorefront("in".into())),
+            TelegramAction::Settings(SettingsAction::Toggle(SettingFeature::Apple)),
             TelegramAction::Report(ReportAction::Dismiss {
                 report_id: "7".into(),
-            }),
-            TelegramAction::Discovery(DiscoveryAction::Reroll {
-                source: "charts".into(),
-                storefront: "us".into(),
-            }),
-            TelegramAction::Discovery(DiscoveryAction::Discover {
-                source: "southasia".into(),
-                storefront: "in".into(),
             }),
             TelegramAction::DeliverCached {
                 track_id: "1".into(),
@@ -544,32 +406,6 @@ mod tests {
     }
 
     #[test]
-    fn discovery_payload_without_storefront_uses_default() {
-        assert_eq!(
-            TelegramAction::decode_with_default("random:src:charts", "in"),
-            Ok(TelegramAction::Discovery(DiscoveryAction::Discover {
-                source: "charts".into(),
-                storefront: "in".into(),
-            }))
-        );
-        assert_eq!(
-            TelegramAction::decode_with_default("random:reroll:charts", "gb"),
-            Ok(TelegramAction::Discovery(DiscoveryAction::Reroll {
-                source: "charts".into(),
-                storefront: "gb".into(),
-            }))
-        );
-        // An explicit storefront always wins over the configured default.
-        assert_eq!(
-            TelegramAction::decode_with_default("random:src:charts:jp", "in"),
-            Ok(TelegramAction::Discovery(DiscoveryAction::Discover {
-                source: "charts".into(),
-                storefront: "jp".into(),
-            }))
-        );
-    }
-
-    #[test]
     fn invalid_callbacks_are_rejected() {
         assert_eq!(
             TelegramAction::decode("unknown:thing"),
@@ -585,9 +421,7 @@ mod tests {
         );
         for payload in [
             "settings:limit:-1",
-            "settings:sf:toggle:usa",
             "report:sub:123:unknown",
-            "random:src:charts:usa",
             "report:act:del:123",
             "delete_confirm:",
             "import_cancel:token with spaces",

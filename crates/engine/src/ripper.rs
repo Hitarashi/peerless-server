@@ -2,7 +2,6 @@
 //! retries, cancellation, and source-failure circuit reporting.
 
 use std::{
-    collections::BTreeMap,
     fmt,
     future::Future,
     path::{Path, PathBuf},
@@ -11,7 +10,6 @@ use std::{
 };
 
 use futures_util::{FutureExt, StreamExt};
-use lyrics::{LyricsHttp, LyricsLookup, LyricsRegistry};
 use music::{CodecPreference, Provider};
 use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
@@ -173,7 +171,7 @@ pub struct RipperConfig {
     pub default_output_dir: PathBuf,
     pub max_retries: u32,
     pub base_delay_ms: u64,
-    pub lyrics_registry: Arc<LyricsRegistry>,
+    pub lyricsporn_api_endpoint: crate::settings::LyricspornApiEndpoint,
     pub lyrics_client: reqwest::Client,
     pub lyrics_timeout: Duration,
     pub artwork_client: reqwest::Client,
@@ -187,6 +185,10 @@ impl fmt::Debug for RipperConfig {
             .field("default_output_dir", &self.default_output_dir)
             .field("max_retries", &self.max_retries)
             .field("base_delay_ms", &self.base_delay_ms)
+            .field(
+                "lyricsporn_api_endpoint",
+                &self.lyricsporn_api_endpoint.get(),
+            )
             .field("lyrics_timeout", &self.lyrics_timeout)
             .field("artwork_timeout", &self.artwork_timeout)
             .finish_non_exhaustive()
@@ -202,7 +204,7 @@ impl Default for RipperConfig {
                 .join("downloads"),
             max_retries: 3,
             base_delay_ms: 2000,
-            lyrics_registry: Arc::new(LyricsRegistry::default()),
+            lyricsporn_api_endpoint: crate::settings::LyricspornApiEndpoint::default(),
             lyrics_client: reqwest::Client::new(),
             lyrics_timeout: Duration::from_secs(5),
             artwork_client: reqwest::Client::new(),
@@ -230,38 +232,102 @@ pub trait RipStage: Send + Sync {
     fn track_tags(&self, meta: &TrackMeta) -> media::TrackTags;
 }
 
-struct ReqwestLyricsHttp {
-    client: reqwest::Client,
-    timeout: Duration,
-}
-
-impl LyricsHttp for ReqwestLyricsHttp {
-    fn get_json<'a>(&'a self, url: &'a str) -> lyrics::LyricsFuture<'a, Option<String>> {
-        Box::pin(async move {
-            let response = self
-                .client
-                .get(url)
-                .header("User-Agent", "AlacBot/1.0")
-                .timeout(self.timeout)
-                .send()
-                .await
-                .ok()?;
-            if !response.status().is_success() {
-                return None;
-            }
-            response.text().await.ok()
-        })
-    }
-}
-
 async fn fetch_lyrics(
     client: reqwest::Client,
     timeout: Duration,
-    registry: Arc<LyricsRegistry>,
-    lookup: LyricsLookup,
+    api_endpoint: crate::settings::LyricspornApiEndpoint,
+    provider: Provider,
+    track_id: &str,
 ) -> Option<String> {
-    let http = ReqwestLyricsHttp { client, timeout };
-    lyrics::lookup(&http, registry.as_ref(), &lookup).await
+    if provider != Provider::Apple
+        || track_id.is_empty()
+        || track_id.len() > 20
+        || !track_id.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+
+    let api_url = api_endpoint.get()?;
+    let url = format!("{api_url}/tracks/{track_id}?include=lyrics&formats=json%2Celrc");
+    let response = client
+        .get(url)
+        .header("User-Agent", "AlacBot/1.0")
+        .timeout(timeout)
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+
+    let body = response.text().await.ok()?;
+    let response: serde_json::Value = serde_json::from_str(&body).ok()?;
+    let formats = response.pointer("/lyrics/formats")?;
+
+    if let Some(content) = formats
+        .get("elrc")
+        .filter(|result| {
+            result
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|status| status == "available")
+        })
+        .and_then(|result| result.get("content"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|content| !content.is_empty())
+    {
+        return Some(content.to_owned());
+    }
+
+    let normalized = formats
+        .get("json")
+        .filter(|result| {
+            result
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|status| status == "available")
+        })?
+        .get("content")?;
+    if normalized.get("syncLevel")?.as_str() == Some("plain") {
+        return normalized
+            .get("plainText")?
+            .as_str()
+            .map(str::trim)
+            .filter(|content| !content.is_empty())
+            .map(str::to_owned);
+    }
+
+    let lines = normalized.get("lines")?.as_array()?;
+    let rendered = lines
+        .iter()
+        .filter_map(|line| {
+            let text = line.get("text")?.as_str()?.trim();
+            if text.is_empty() {
+                return None;
+            }
+            let start_ms = line.get("startMs")?.as_f64()?;
+            if !start_ms.is_finite() || start_ms < 0.0 {
+                return None;
+            }
+            let centiseconds = start_ms.round() as u64 / 10;
+            let minutes = centiseconds / 6000;
+            let seconds = centiseconds / 100 % 60;
+            let fraction = centiseconds % 100;
+            Some(format!("[{minutes:02}:{seconds:02}.{fraction:02}]{text}"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !rendered.is_empty() {
+        return Some(rendered);
+    }
+
+    normalized
+        .get("plainText")?
+        .as_str()
+        .map(str::trim)
+        .filter(|content| !content.is_empty())
+        .map(str::to_owned)
 }
 
 async fn fetch_artwork_with_client(
@@ -517,22 +583,16 @@ impl AlacTrackRipper {
                 },
             );
 
-            // Concurrent prefetch: lyrics + artwork run while the audio streams.
-            let lyrics_lookup = LyricsLookup {
-                title: meta.title.clone(),
-                artists: vec![meta.artist.clone()],
-                album: Some(meta.album.clone()).filter(|a| !a.is_empty()),
-                duration: Some(meta.duration_secs).filter(|d| *d != 0),
-                provider_ids: BTreeMap::from([(provider.as_str().to_owned(), track_id.to_owned())]),
-            };
+            // Fetch Apple-ID lyrics while the audio stream downloads.
             let lyrics_task = {
-                let lookup = lyrics_lookup.clone();
                 let track_id = track_id.to_owned();
                 let client = self.config.lyrics_client.clone();
                 let timeout = self.config.lyrics_timeout;
-                let registry = Arc::clone(&self.config.lyrics_registry);
+                let api_endpoint = self.config.lyricsporn_api_endpoint.clone();
                 async move {
-                    match fetch_lyrics(client, timeout, registry, lookup).await {
+                    match fetch_lyrics(client, timeout, api_endpoint, provider.clone(), &track_id)
+                        .await
+                    {
                         Some(l) => {
                             debug!(track_id, found = true, "Lyrics prefetch completed");
                             Some(l)

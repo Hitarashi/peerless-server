@@ -153,7 +153,6 @@ async fn create_task(
 
     let provider = match request.provider.to_lowercase().as_str() {
         "apple" => music::Provider::Apple,
-        "qobuz" => music::Provider::Qobuz,
         _ => {
             return Err(map_server_error(
                 Some(request_id),
@@ -186,7 +185,7 @@ async fn create_task(
     // was requested, any cached codec for this provider/track satisfies the request.
     let cached_tracks = match state
         .tracks_repo
-        .find_all_by_provider_track_id(provider, &request.track_id)
+        .find_all_by_provider_track_id(provider.clone(), &request.track_id)
         .await
     {
         Ok(tracks) => tracks,
@@ -215,14 +214,9 @@ async fn create_task(
         // Reserved before the engine rip task exists; the bridge fills it in.
         rip_task_id: String::new(),
         owner_id: identity.telegram_id,
-        provider,
+        provider: provider.clone(),
         track_id: request.track_id.clone(),
-        codec: codec
-            .map(|codec| codec.as_str().to_owned())
-            .or_else(|| match provider {
-                music::Provider::Apple => None,
-                music::Provider::Qobuz => Some("flac".to_string()),
-            }),
+        codec: codec.map(|codec| codec.as_str().to_owned()),
         title: request.title,
         artist: request.artist,
         album: request.album,

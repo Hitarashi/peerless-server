@@ -34,11 +34,6 @@ pub trait Transport: Send + Sync {
     ) -> impl Future<Output = Result<String, TransportError>> + Send;
 }
 
-/// User-agent for every iTunes endpoint.
-pub const ITUNES_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/145.0.0.0";
-/// Different, simpler UA the charts RSS endpoint gets.
-pub const CHARTS_USER_AGENT: &str = "Mozilla/5.0";
-
 /// Production adapter over `reqwest`.
 #[derive(Clone, Default)]
 pub struct ReqwestTransport {

@@ -3,7 +3,6 @@
 
 pub mod filename;
 pub mod limits;
-pub use lyrics;
 pub mod orchestrator;
 pub mod progress;
 pub mod queue;

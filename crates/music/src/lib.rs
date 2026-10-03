@@ -30,22 +30,28 @@ pub fn normalize_recording_mbid(value: &str) -> Option<String> {
     Some(value.to_ascii_lowercase())
 }
 
-/// A catalog/cache provider supported by the bot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// A catalog/cache provider identifier.
+///
+/// Apple is the only provider handled by the bot. Other identifiers stay
+/// opaque so legacy database rows can be read and backed up unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "diesel", derive(diesel::AsExpression, diesel::FromSqlRow))]
 #[cfg_attr(feature = "diesel", diesel(sql_type = diesel::sql_types::VarChar))]
-#[serde(rename_all = "lowercase")]
 pub enum Provider {
     Apple,
-    Qobuz,
+    Other(String),
 }
 
 impl Provider {
-    pub const fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> &str {
         match self {
             Self::Apple => "apple",
-            Self::Qobuz => "qobuz",
+            Self::Other(value) => value,
         }
+    }
+
+    pub fn is_apple(&self) -> bool {
+        matches!(self, Self::Apple)
     }
 }
 
@@ -59,11 +65,35 @@ impl std::str::FromStr for Provider {
     type Err = String;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "apple" => Ok(Self::Apple),
-            "qobuz" => Ok(Self::Qobuz),
-            other => Err(format!("unknown provider: {other}")),
+        let value = value.trim();
+        if value.is_empty() {
+            return Err("provider identifier cannot be empty".to_owned());
         }
+        if value.eq_ignore_ascii_case("apple") {
+            Ok(Self::Apple)
+        } else {
+            Ok(Self::Other(value.to_owned()))
+        }
+    }
+}
+
+impl Serialize for Provider {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for Provider {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
     }
 }
 
@@ -116,16 +146,6 @@ pub enum CodecPreference {
 }
 
 impl CodecPreference {
-    pub const fn qobuz_format_id(self) -> u32 {
-        match self {
-            Self::HighestQuality | Self::HiRes192 => 27,
-            Self::HiRes96 => 7,
-            Self::LosslessCd => 6,
-            Self::Mp3_320 => 5,
-            Self::Atmos => 27,
-        }
-    }
-
     pub fn parse(s: &str) -> Option<Self> {
         let clean = s.trim().trim_start_matches('-').to_ascii_lowercase();
         match clean.as_str() {
@@ -347,14 +367,6 @@ impl TrackKey {
     pub fn apple_codec(track_id: impl Into<String>, codec: Codec) -> Self {
         Self::new(Provider::Apple, track_id).with_codec(codec)
     }
-
-    pub fn qobuz(track_id: impl Into<String>) -> Self {
-        Self::new(Provider::Qobuz, track_id)
-    }
-
-    pub fn qobuz_codec(track_id: impl Into<String>, codec: Codec) -> Self {
-        Self::new(Provider::Qobuz, track_id).with_codec(codec)
-    }
 }
 
 /// The kind of music target a parsed link/id refers to.
@@ -483,12 +495,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn provider_wire_format_supports_apple_and_qobuz() {
+    fn provider_wire_format_preserves_apple_and_opaque_ids() {
         assert_eq!(Provider::Apple.as_str(), "apple");
         assert_eq!("apple".parse::<Provider>(), Ok(Provider::Apple));
-        assert_eq!(Provider::Qobuz.as_str(), "qobuz");
-        assert_eq!("qobuz".parse::<Provider>(), Ok(Provider::Qobuz));
-        assert!("other".parse::<Provider>().is_err());
+        let provider = "Legacy-Store".parse::<Provider>().unwrap();
+        assert_eq!(provider.as_str(), "Legacy-Store");
+        assert_eq!(
+            serde_json::to_string(&provider).unwrap(),
+            "\"Legacy-Store\""
+        );
+        assert_eq!("Legacy-Store".parse::<Provider>(), Ok(provider));
+        assert!("  ".parse::<Provider>().is_err());
     }
 
     #[test]
@@ -496,10 +513,6 @@ mod tests {
         let key = TrackKey::apple("123");
         assert_eq!(key.codec, None);
         assert_eq!(key.clone().with_codec(Codec::Alac).track_id, "123");
-
-        let qkey = TrackKey::qobuz("456");
-        assert_eq!(qkey.provider, Provider::Qobuz);
-        assert_eq!(qkey.with_codec(Codec::Flac).track_id, "456");
     }
 
     #[test]
@@ -542,12 +555,7 @@ mod tests {
     }
 
     #[test]
-    fn codec_preference_options_and_qobuz_format_ids() {
-        assert_eq!(CodecPreference::HighestQuality.qobuz_format_id(), 27);
-        assert_eq!(CodecPreference::HiRes192.qobuz_format_id(), 27);
-        assert_eq!(CodecPreference::HiRes96.qobuz_format_id(), 7);
-        assert_eq!(CodecPreference::LosslessCd.qobuz_format_id(), 6);
-        assert_eq!(CodecPreference::Mp3_320.qobuz_format_id(), 5);
+    fn codec_preference_options() {
         assert_eq!(
             CodecPreference::parse("hires"),
             Some(CodecPreference::HiRes192)

@@ -81,7 +81,7 @@ pub struct RipTaskOptions {
     pub parsed_items: Vec<ParsedTargetItem>,
     pub reply_to_message_id: Option<i64>,
     pub is_admin: bool,
-    /// Preferred audio codec/quality preference (e.g. for Qobuz).
+    /// Preferred audio codec/quality preference for the selected adapter.
     pub codec_preference: Option<CodecPreference>,
     /// Renditions to acquire for this request. Primary is always required;
     /// Atmos, when selected, is optional.

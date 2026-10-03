@@ -12,6 +12,17 @@ use tokio_util::sync::CancellationToken;
 
 use crate::gateway::{QobuzError, QobuzGateway, QobuzStreamInfo, quality_ladder};
 
+const SOURCE_PROVIDER: &str = "Qobuz";
+
+fn qobuz_format_id(preference: CodecPreference) -> u32 {
+    match preference {
+        CodecPreference::HighestQuality | CodecPreference::HiRes192 | CodecPreference::Atmos => 27,
+        CodecPreference::HiRes96 => 7,
+        CodecPreference::LosslessCd => 6,
+        CodecPreference::Mp3_320 => 5,
+    }
+}
+
 #[derive(Clone)]
 pub struct QobuzAcquisition {
     primary: Arc<dyn QobuzGateway>,
@@ -40,9 +51,16 @@ impl QobuzAcquisition {
     }
 
     fn backend_source(&self) -> SourceId {
-        SourceId::QobuzBackend {
+        SourceId::ProviderBackend {
+            provider: SOURCE_PROVIDER.to_owned(),
             url: self.primary_url.clone(),
         }
+    }
+}
+
+fn native_source() -> SourceId {
+    SourceId::NativeProvider {
+        provider: SOURCE_PROVIDER.to_owned(),
     }
 }
 
@@ -124,7 +142,7 @@ async fn fetch_meta_with_fallback(
                                 gw_name,
                                 track_id,
                                 fallback_err,
-                                &SourceId::QobuzNative,
+                                &native_source(),
                             ))
                         } else {
                             Err(RipError::TrackUnavailable {
@@ -170,7 +188,7 @@ async fn resolve_best_available(
                 let source = if from_primary {
                     backend_source.clone()
                 } else {
-                    SourceId::QobuzNative
+                    native_source()
                 };
                 tracing::debug!(
                     "Qobuz stream resolved for track {track_id} via {gw_name} at format {}",
@@ -200,7 +218,7 @@ async fn resolve_best_available(
             let source = if from_primary {
                 backend_source.clone()
             } else {
-                SourceId::QobuzNative
+                native_source()
             };
             tracing::debug!(
                 "Qobuz stream resolved for track {track_id} via {gw_name} fail-open at format {}",
@@ -275,7 +293,7 @@ impl RipStage for QobuzAcquisition {
             &self.fallback,
             &backend_source,
             track_id,
-            codec_preference.qobuz_format_id(),
+            qobuz_format_id(codec_preference),
             &signal,
         )
         .await
@@ -482,7 +500,8 @@ mod tests {
     }
 
     fn backend_source() -> SourceId {
-        SourceId::QobuzBackend {
+        SourceId::ProviderBackend {
+            provider: SOURCE_PROVIDER.to_owned(),
             url: "https://test.invalid".to_owned(),
         }
     }
@@ -543,7 +562,7 @@ mod tests {
                 .await
                 .expect("fallback should resolve");
         assert_eq!(info.format_id, 6);
-        assert_eq!(resolved_source, SourceId::QobuzNative);
+        assert_eq!(resolved_source, native_source());
     }
 
     #[tokio::test]

@@ -266,8 +266,7 @@ pub fn create_router(state: Arc<ServerState>) -> Router {
             get(streaming::stream_handler).head(streaming::stream_handler),
         )
         .route("/api/v1/ws/sync", get(playback_sync::ws_handler))
-        // Catalog & Search
-        .route("/api/v1/search", get(catalog::search_catalog))
+        // Catalog
         .route("/api/v1/tracks/{id}", get(catalog::get_track))
         .route("/api/v1/albums", get(catalog::list_albums))
         .route("/api/v1/albums/{album_ref}", get(catalog::get_album_tracks))
@@ -279,10 +278,6 @@ pub fn create_router(state: Arc<ServerState>) -> Router {
         .route(
             "/api/v1/assets/tracks/{id}/artwork",
             get(assets::get_artwork),
-        )
-        .route(
-            "/api/v1/assets/providers/{provider}/tracks/{track_id}/artwork",
-            get(assets::get_provider_artwork),
         )
         .route(
             "/api/v1/assets/artists/artwork",

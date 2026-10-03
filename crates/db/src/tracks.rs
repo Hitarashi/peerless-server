@@ -17,7 +17,8 @@ use crate::{DbError, DbPool, Track, models::NewTrack, schema::tracks};
 
 fn cached_track(track: Track) -> CachedTrack {
     CachedTrack {
-        track_key: TrackKey::new(track.provider, track.track_id.clone()).with_codec(track.codec),
+        track_key: TrackKey::new(track.provider.clone(), track.track_id.clone())
+            .with_codec(track.codec),
         codec: track.codec,
         message_id: i64::from(track.message_id),
         file_id: track.file_id,
@@ -56,7 +57,7 @@ impl TracksRepository {
     ) -> Result<HashMap<TrackKey, CachedTrack>, DbError> {
         let unique_keys: Vec<TrackKey> = track_keys
             .iter()
-            .filter(|key| !key.track_id.is_empty())
+            .filter(|key| key.provider == Provider::Apple && !key.track_id.is_empty())
             .cloned()
             .collect::<HashSet<_>>()
             .into_iter()
@@ -70,14 +71,14 @@ impl TracksRepository {
             if let Some(codec) = key.codec {
                 query = query.or_filter(
                     tracks::provider
-                        .eq(key.provider)
+                        .eq(key.provider.clone())
                         .and(tracks::track_id.eq(&key.track_id))
                         .and(tracks::codec.eq(codec)),
                 );
             } else {
                 query = query.or_filter(
                     tracks::provider
-                        .eq(key.provider)
+                        .eq(key.provider.clone())
                         .and(tracks::track_id.eq(&key.track_id)),
                 );
             }
@@ -92,8 +93,10 @@ impl TracksRepository {
             if unique_keys.contains(&cached.track_key) {
                 map.insert(cached.track_key.clone(), cached.clone());
             }
-            let base_key =
-                TrackKey::new(cached.track_key.provider, cached.track_key.track_id.clone());
+            let base_key = TrackKey::new(
+                cached.track_key.provider.clone(),
+                cached.track_key.track_id.clone(),
+            );
             if unique_keys.contains(&base_key) {
                 let prefer_cached = map
                     .get(&base_key)
@@ -113,6 +116,7 @@ impl TracksRepository {
     ) -> Result<Option<Track>, DbError> {
         let mut connection = self.pool.connection().await?;
         Ok(tracks::table
+            .filter(tracks::provider.eq(Provider::Apple))
             .filter(tracks::file_unique_id.eq(file_unique_id))
             .select(Track::as_select())
             .first::<Track>(&mut *connection)
@@ -124,6 +128,7 @@ impl TracksRepository {
         let mut connection = self.pool.connection().await?;
         Ok(tracks::table
             .filter(tracks::id.eq(id))
+            .filter(tracks::provider.eq(Provider::Apple))
             .select(Track::as_select())
             .first::<Track>(&mut *connection)
             .await
@@ -135,6 +140,9 @@ impl TracksRepository {
         provider: Provider,
         track_id: &str,
     ) -> Result<Option<Track>, DbError> {
+        if provider != Provider::Apple {
+            return Ok(None);
+        }
         let mut connection = self.pool.connection().await?;
         Ok(tracks::table
             .filter(
@@ -152,6 +160,7 @@ impl TracksRepository {
     pub async fn find_tracks_by_isrc(&self, isrc: &str) -> Result<Vec<Track>, DbError> {
         let mut connection = self.pool.connection().await?;
         Ok(tracks::table
+            .filter(tracks::provider.eq(Provider::Apple))
             .filter(tracks::isrc.eq(isrc))
             .order(tracks::id.asc())
             .select(Track::as_select())
@@ -169,6 +178,7 @@ impl TracksRepository {
         };
         let mut connection = self.pool.connection().await?;
         Ok(tracks::table
+            .filter(tracks::provider.eq(Provider::Apple))
             .filter(tracks::recording_mbid.eq(recording_mbid))
             .order(tracks::id.desc())
             .limit(limit)
@@ -180,6 +190,7 @@ impl TracksRepository {
     pub async fn find_latest_track(&self) -> Result<Option<Track>, DbError> {
         let mut connection = self.pool.connection().await?;
         Ok(tracks::table
+            .filter(tracks::provider.eq(Provider::Apple))
             .order(tracks::created_at.desc())
             .select(Track::as_select())
             .first::<Track>(&mut *connection)
@@ -192,6 +203,11 @@ impl TracksRepository {
         I: Borrow<SaveTrackInput>,
     {
         let input = input.borrow();
+        if input.track_key.provider != Provider::Apple {
+            return Err(DbError::Validation(
+                "only Apple Music tracks can be saved".to_owned(),
+            ));
+        }
         let message_id = i32::try_from(input.message_id)
             .map_err(|error| DbError::Row(format!("message_id out of range: {error}")))?;
         let duration = i32::try_from(input.duration)
@@ -206,7 +222,7 @@ impl TracksRepository {
             .map_err(|error| DbError::Row(format!("track_count out of range: {error}")))?;
         let mut connection = self.pool.connection().await?;
         let new_track = NewTrack {
-            provider: input.track_key.provider,
+            provider: input.track_key.provider.clone(),
             track_id: &input.track_key.track_id,
             codec: input.codec,
             message_id,
@@ -256,7 +272,7 @@ impl TracksRepository {
             .execute(&mut *connection)
             .await?;
         tracks::table
-            .filter(tracks::provider.eq(input.track_key.provider))
+            .filter(tracks::provider.eq(input.track_key.provider.clone()))
             .filter(tracks::track_id.eq(&input.track_key.track_id))
             .filter(tracks::codec.eq(input.codec))
             .select(Track::as_select())
@@ -266,9 +282,12 @@ impl TracksRepository {
     }
 
     pub async fn delete_track(&self, track_key: &TrackKey) -> Result<bool, DbError> {
+        if track_key.provider != Provider::Apple {
+            return Ok(false);
+        }
         let mut connection = self.pool.connection().await?;
         let mut query = diesel::delete(tracks::table)
-            .filter(tracks::provider.eq(track_key.provider))
+            .filter(tracks::provider.eq(track_key.provider.clone()))
             .filter(tracks::track_id.eq(&track_key.track_id))
             .into_boxed();
         if let Some(codec) = track_key.codec {
@@ -287,6 +306,7 @@ impl TracksRepository {
         let mut connection = self.pool.connection().await?;
         if trimmed.is_empty() {
             return Ok(tracks::table
+                .filter(tracks::provider.eq(Provider::Apple))
                 .order(tracks::id.desc())
                 .limit(limit as i64)
                 .select(Track::as_select())
@@ -294,7 +314,7 @@ impl TracksRepository {
                 .await?);
         }
         let pattern = format!("%{trimmed}%");
-        Ok(sql_query("SELECT * FROM tracks WHERE (provider = 'apple' AND track_id = $1) OR title ILIKE $2 OR artist ILIKE $2 OR album ILIKE $2 OR word_similarity($1, title || ' ' || artist || ' ' || album) >= 0.35 ORDER BY CASE WHEN provider = 'apple' AND track_id = $1 THEN 0 WHEN title ILIKE $1 THEN 1 WHEN title ILIKE $3 THEN 2 WHEN artist ILIKE $1 THEN 3 WHEN artist ILIKE $3 THEN 4 WHEN album ILIKE $1 THEN 5 WHEN album ILIKE $3 THEN 6 WHEN title ILIKE $2 THEN 7 WHEN artist ILIKE $2 THEN 8 WHEN album ILIKE $2 THEN 9 ELSE 10 END, GREATEST(similarity($1, title), similarity($1, artist), similarity($1, album)) DESC, word_similarity($1, title || ' ' || artist || ' ' || album) DESC, id ASC LIMIT $4")
+        Ok(sql_query("SELECT * FROM tracks WHERE provider = 'apple' AND (track_id = $1 OR title ILIKE $2 OR artist ILIKE $2 OR album ILIKE $2 OR word_similarity($1, title || ' ' || artist || ' ' || album) >= 0.35) ORDER BY CASE WHEN track_id = $1 THEN 0 WHEN title ILIKE $1 THEN 1 WHEN title ILIKE $3 THEN 2 WHEN artist ILIKE $1 THEN 3 WHEN artist ILIKE $3 THEN 4 WHEN album ILIKE $1 THEN 5 WHEN album ILIKE $3 THEN 6 WHEN title ILIKE $2 THEN 7 WHEN artist ILIKE $2 THEN 8 WHEN album ILIKE $2 THEN 9 ELSE 10 END, GREATEST(similarity($1, title), similarity($1, artist), similarity($1, album)) DESC, word_similarity($1, title || ' ' || artist || ' ' || album) DESC, id ASC LIMIT $4")
             .bind::<Text, _>(trimmed)
             .bind::<Text, _>(&pattern)
             .bind::<Text, _>(&format!("{trimmed}%"))
@@ -306,6 +326,7 @@ impl TracksRepository {
     pub async fn get_all_track_ids(&self) -> Result<Vec<TrackKey>, DbError> {
         let mut connection = self.pool.connection().await?;
         let rows = tracks::table
+            .filter(tracks::provider.eq(Provider::Apple))
             .select((tracks::provider, tracks::track_id, tracks::codec))
             .load::<(Provider, String, Codec)>(&mut *connection)
             .await?;
@@ -321,10 +342,13 @@ impl TracksRepository {
     ) -> Result<u64, DbError> {
         let mut connection = self.pool.connection().await?;
         let valid: HashSet<_> = valid_track_keys.iter().cloned().collect();
+        // Dump indexing only reconciles Apple Music documents. Restrict this
+        // cleanup to Apple rows so historical provider rows stay untouched.
         connection
             .build_transaction()
             .run(async |transaction| -> Result<u64, diesel::result::Error> {
                 let rows = tracks::table
+                    .filter(tracks::provider.eq(Provider::Apple))
                     .select((
                         tracks::id,
                         tracks::provider,
@@ -359,6 +383,7 @@ impl TracksRepository {
     ) -> Result<Vec<AlbumArtist>, DbError> {
         let mut connection = self.pool.connection().await?;
         let rows = tracks::table
+            .filter(tracks::provider.eq(Provider::Apple))
             .select((tracks::album, tracks::artist))
             .distinct()
             .order(tracks::album.asc())
@@ -375,6 +400,7 @@ impl TracksRepository {
     pub async fn find_tracks_by_album(&self, album_name: &str) -> Result<Vec<Track>, DbError> {
         let mut connection = self.pool.connection().await?;
         Ok(tracks::table
+            .filter(tracks::provider.eq(Provider::Apple))
             .filter(tracks::album.eq(album_name))
             .order(tracks::track_number.asc())
             .select(Track::as_select())
@@ -389,6 +415,7 @@ impl TracksRepository {
     ) -> Result<Vec<Track>, DbError> {
         let mut connection = self.pool.connection().await?;
         Ok(tracks::table
+            .filter(tracks::provider.eq(Provider::Apple))
             .filter(tracks::artist.ilike(format!("%{artist_name}%")))
             .order(tracks::id.desc())
             .limit(limit)
@@ -411,6 +438,7 @@ impl TracksRepository {
     ) -> Result<Vec<(i32, Provider, String)>, DbError> {
         let mut connection = self.pool.connection().await?;
         Ok(tracks::table
+            .filter(tracks::provider.eq(Provider::Apple))
             .filter(tracks::isrc.is_null())
             .filter(tracks::id.gt(after_id))
             .order(tracks::id.asc())
@@ -423,6 +451,7 @@ impl TracksRepository {
     pub async fn count_tracks_without_recording_mbid(&self) -> Result<i64, DbError> {
         let mut connection = self.pool.connection().await?;
         Ok(tracks::table
+            .filter(tracks::provider.eq(Provider::Apple))
             .filter(tracks::recording_mbid.is_null())
             .count()
             .get_result(&mut *connection)
@@ -432,6 +461,7 @@ impl TracksRepository {
     pub async fn count_tracks_without_recording_mbid_with_isrc(&self) -> Result<i64, DbError> {
         let mut connection = self.pool.connection().await?;
         Ok(tracks::table
+            .filter(tracks::provider.eq(Provider::Apple))
             .filter(tracks::recording_mbid.is_null())
             .filter(tracks::isrc.is_not_null())
             .count()
@@ -446,6 +476,7 @@ impl TracksRepository {
     ) -> Result<Vec<Track>, DbError> {
         let mut connection = self.pool.connection().await?;
         Ok(tracks::table
+            .filter(tracks::provider.eq(Provider::Apple))
             .filter(tracks::recording_mbid.is_null())
             .filter(tracks::isrc.is_not_null())
             .filter(tracks::id.gt(after_id))
@@ -468,6 +499,7 @@ impl TracksRepository {
         let updated = diesel::update(
             tracks::table
                 .filter(tracks::id.eq(id))
+                .filter(tracks::provider.eq(Provider::Apple))
                 .filter(tracks::recording_mbid.is_null()),
         )
         .set((
@@ -481,10 +513,14 @@ impl TracksRepository {
 
     pub async fn update_isrc(&self, id: i32, isrc: &str) -> Result<usize, DbError> {
         let mut connection = self.pool.connection().await?;
-        let updated = diesel::update(tracks::table.filter(tracks::id.eq(id)))
-            .set(tracks::isrc.eq(isrc))
-            .execute(&mut *connection)
-            .await?;
+        let updated = diesel::update(
+            tracks::table
+                .filter(tracks::id.eq(id))
+                .filter(tracks::provider.eq(Provider::Apple)),
+        )
+        .set(tracks::isrc.eq(isrc))
+        .execute(&mut *connection)
+        .await?;
         Ok(updated)
     }
 
@@ -494,6 +530,9 @@ impl TracksRepository {
         track_id: &str,
         isrc: &str,
     ) -> Result<usize, DbError> {
+        if provider != Provider::Apple {
+            return Ok(0);
+        }
         let mut connection = self.pool.connection().await?;
         let updated = diesel::update(
             tracks::table
@@ -509,13 +548,17 @@ impl TracksRepository {
 
     pub async fn update_track_count(&self, id: i32, track_count: i32) -> Result<usize, DbError> {
         let mut connection = self.pool.connection().await?;
-        let updated = diesel::update(tracks::table.filter(tracks::id.eq(id)))
-            .set((
-                tracks::track_count.eq(track_count),
-                tracks::updated_at.eq(diesel::dsl::now),
-            ))
-            .execute(&mut *connection)
-            .await?;
+        let updated = diesel::update(
+            tracks::table
+                .filter(tracks::id.eq(id))
+                .filter(tracks::provider.eq(Provider::Apple)),
+        )
+        .set((
+            tracks::track_count.eq(track_count),
+            tracks::updated_at.eq(diesel::dsl::now),
+        ))
+        .execute(&mut *connection)
+        .await?;
         Ok(updated)
     }
 
@@ -524,6 +567,9 @@ impl TracksRepository {
         provider: Provider,
         track_id: &str,
     ) -> Result<Vec<Track>, DbError> {
+        if provider != Provider::Apple {
+            return Ok(Vec::new());
+        }
         let mut connection = self.pool.connection().await?;
         Ok(tracks::table
             .filter(
@@ -543,6 +589,9 @@ impl TracksRepository {
         after_id: i32,
         limit: i64,
     ) -> Result<Vec<Track>, DbError> {
+        if provider != Provider::Apple {
+            return Ok(Vec::new());
+        }
         let mut connection = self.pool.connection().await?;
         Ok(tracks::table
             .filter(tracks::provider.eq(provider))

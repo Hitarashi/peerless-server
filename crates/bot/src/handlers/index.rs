@@ -229,12 +229,19 @@ async fn index_dump_channel(
                     skipped += 1;
                     continue;
                 };
+                if meta.track_key.provider != music::Provider::Apple {
+                    skipped += 1;
+                    continue;
+                }
                 let caption_isrc = meta.isrc.clone();
                 let caption_recording_mbid = meta.recording_mbid.clone();
                 let existing_track = state
                     .rip_deps
                     .tracks()
-                    .get_track_by_provider(meta.track_key.provider, &meta.track_key.track_id)
+                    .get_track_by_provider(
+                        meta.track_key.provider.clone(),
+                        &meta.track_key.track_id,
+                    )
                     .await
                     .map_err(|error| error.to_string())?;
                 if meta.isrc.is_none() {
@@ -251,43 +258,22 @@ async fn index_dump_channel(
                     let settings = state.rip_deps.settings().get_settings();
                     let default_storefront =
                         engine::settings::resolve_default_storefront(&settings);
-                    let resolved_isrc = match meta.track_key.provider {
-                        music::Provider::Apple => {
-                            match state
+                    let resolved_isrc = match state
+                        .rip_deps
+                        .playlist()
+                        .fetch_song_isrc(&meta.track_key.track_id, default_storefront)
+                        .await
+                    {
+                        Ok(Some(isrc)) => Some(isrc),
+                        _ => {
+                            // Fallback to IN storefront for regional/Indian tracks
+                            state
                                 .rip_deps
                                 .playlist()
-                                .fetch_song_isrc(&meta.track_key.track_id, default_storefront)
+                                .fetch_song_isrc(&meta.track_key.track_id, "in")
                                 .await
-                            {
-                                Ok(Some(isrc)) => Some(isrc),
-                                _ => {
-                                    // Fallback to IN storefront for regional/Indian tracks
-                                    state
-                                        .rip_deps
-                                        .playlist()
-                                        .fetch_song_isrc(&meta.track_key.track_id, "in")
-                                        .await
-                                        .ok()
-                                        .flatten()
-                                }
-                            }
-                        }
-                        music::Provider::Qobuz => {
-                            if let Some(qobuz) = state.rip_deps.qobuz() {
-                                match qobuz
-                                    .catalog()
-                                    .fetch_track_meta(&meta.track_key.track_id)
-                                    .await
-                                {
-                                    Ok(track_meta) => track_meta.isrc,
-                                    Err(err) => {
-                                        tracing::warn!(track_id = %meta.track_key.track_id, "Failed to resolve Qobuz ISRC: {err}");
-                                        None
-                                    }
-                                }
-                            } else {
-                                None
-                            }
+                                .ok()
+                                .flatten()
                         }
                     };
 
@@ -394,6 +380,10 @@ async fn index_dump_channel(
             }
 
             if let Some(zip_meta) = parse_zip_dump_caption(message.text()) {
+                if zip_meta.provider != music::Provider::Apple {
+                    skipped += 1;
+                    continue;
+                }
                 let (file_id, file_unique_id) = file_ids(&document);
                 let file_name = document.file_name().unwrap_or(&zip_meta.album).to_owned();
                 let file_size = document.raw.size;

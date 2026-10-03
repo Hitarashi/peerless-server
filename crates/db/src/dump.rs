@@ -11,7 +11,7 @@ use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use engine::limits::MAX_DOCUMENT_BYTES;
 use flate2::{Compression, write::GzEncoder};
-use music::Provider;
+use music::{Codec, Provider};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -69,6 +69,8 @@ struct UserArchive {
 struct TrackArchive {
     provider: Provider,
     track_id: String,
+    #[serde(default)]
+    codec: Codec,
     message_id: i32,
     file_id: String,
     file_unique_id: String,
@@ -107,6 +109,8 @@ struct RequestArchive {
 struct AlbumArchive {
     provider: Provider,
     album_id: String,
+    #[serde(default)]
+    codec: Codec,
     part_index: i32,
     total_parts: i32,
     message_id: i32,
@@ -135,8 +139,6 @@ enum SettingsArchive {
         txt_rip_enabled: bool,
         multi_link_rip_enabled: bool,
         max_collection_tracks: i32,
-        auto_dump_enabled: bool,
-        auto_dump_storefronts: Vec<String>,
         updated_at: chrono::DateTime<chrono::Utc>,
     },
 }
@@ -156,6 +158,7 @@ impl From<Track> for TrackArchive {
         Self {
             provider: row.provider,
             track_id: row.track_id,
+            codec: row.codec,
             message_id: row.message_id,
             file_id: row.file_id,
             file_unique_id: row.file_unique_id,
@@ -197,6 +200,7 @@ impl From<Album> for AlbumArchive {
         Self {
             provider: row.provider,
             album_id: row.album_id,
+            codec: row.codec,
             part_index: row.part_index,
             total_parts: row.total_parts,
             message_id: row.message_id,
@@ -403,8 +407,6 @@ impl DbDumpService {
                         txt_rip_enabled,
                         multi_link_rip_enabled,
                         max_collection_tracks,
-                        auto_dump_enabled,
-                        auto_dump_storefronts,
                         updated_at,
                     } => {
                         let json_val = serde_json::json!({
@@ -415,8 +417,6 @@ impl DbDumpService {
                             "txt_rip_enabled": txt_rip_enabled,
                             "multi_link_rip_enabled": multi_link_rip_enabled,
                             "max_collection_tracks": max_collection_tracks,
-                            "auto_dump_enabled": auto_dump_enabled,
-                            "auto_dump_storefronts": auto_dump_storefronts,
                             "apple_rip_enabled": true,
                             "qobuz_rip_enabled": true,
                         });

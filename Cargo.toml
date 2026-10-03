@@ -2,7 +2,6 @@
 resolver = "2"
 members = [
     "crates/music",
-    "crates/lyrics",
     "crates/engine",
     "crates/apple",
     "crates/qobuz",
@@ -76,10 +75,6 @@ tower = "0.5"
 tower-http = { version = "0.7", features = ["trace"] }
 utoipa = { version = "6", features = ["axum_extras", "chrono", "yaml"] }
 hmac = "0.13"
-ytmusic = { git = "https://github.com/sonorahq/ytmusic-rs", rev = "e0a5174" }
-lyrics-helper = { version = "0.5", default-features = false }
-
-
 
 [workspace.lints.rust]
 dead_code = "deny"

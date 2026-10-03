@@ -8,7 +8,6 @@ license.workspace = true
 [dependencies]
 music = { path = "../music" }
 media = { path = "../media" }
-lyrics = { path = "../lyrics", default-features = false }
 bytes.workspace = true
 futures-util.workspace = true
 serde.workspace = true

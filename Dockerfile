@@ -35,12 +35,11 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # Build dependencies first for layer caching: manifests + lockfile only.
-# Cargo insists on a manifest for every workspace member, so all ten are
+# Cargo insists on a manifest for every workspace member, so all nine are
 # copied and stubbed (including the bot's bin target) and the dependency
 # graph compiles without the real sources.
 COPY Cargo.toml Cargo.lock ./
 COPY crates/music/Cargo.toml crates/music/Cargo.toml
-COPY crates/lyrics/Cargo.toml crates/lyrics/Cargo.toml
 COPY crates/engine/Cargo.toml crates/engine/Cargo.toml
 COPY crates/apple/Cargo.toml crates/apple/Cargo.toml
 COPY crates/qobuz/Cargo.toml crates/qobuz/Cargo.toml
@@ -51,11 +50,10 @@ COPY crates/server/Cargo.toml crates/server/Cargo.toml
 COPY crates/bot/Cargo.toml crates/bot/Cargo.toml
 RUN --mount=type=cache,id=peerless-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=peerless-cargo-git,target=/usr/local/cargo/git \
-    mkdir -p crates/music/src crates/lyrics/src crates/engine/src crates/apple/src \
+    mkdir -p crates/music/src crates/engine/src crates/apple/src \
              crates/qobuz/src crates/db/src crates/media/src crates/stream/src \
              crates/server/src crates/bot/src crates/bot/src/bin \
  && echo 'pub fn _stub() {}' > crates/music/src/lib.rs \
- && echo 'pub fn _stub() {}' > crates/lyrics/src/lib.rs \
  && echo 'pub fn _stub() {}' > crates/engine/src/lib.rs \
  && echo 'pub fn _stub() {}' > crates/apple/src/lib.rs \
  && echo 'pub fn _stub() {}' > crates/qobuz/src/lib.rs \
@@ -76,7 +74,7 @@ RUN --mount=type=cache,id=peerless-cargo-registry,target=/usr/local/cargo/regist
 COPY crates ./crates
 RUN --mount=type=cache,id=peerless-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=peerless-cargo-git,target=/usr/local/cargo/git \
-    touch crates/music/src/lib.rs crates/lyrics/src/lib.rs crates/engine/src/lib.rs \
+    touch crates/music/src/lib.rs crates/engine/src/lib.rs \
           crates/apple/src/lib.rs crates/qobuz/src/lib.rs crates/db/src/lib.rs \
           crates/media/src/lib.rs crates/stream/src/lib.rs crates/server/src/lib.rs \
           crates/bot/src/lib.rs crates/bot/src/main.rs \

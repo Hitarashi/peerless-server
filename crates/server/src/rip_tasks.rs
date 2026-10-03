@@ -4,7 +4,7 @@ use utoipa::ToSchema;
 /// Request payload to trigger an on-demand provider ripping job.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct RipTaskRequest {
-    /// Music provider name (`apple` or `qobuz`).
+    /// Music provider name. This server accepts Apple Music only.
     #[schema(example = "apple")]
     pub provider: String,
     /// Provider-native track identifier.

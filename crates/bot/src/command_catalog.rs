@@ -70,18 +70,6 @@ pub const COMMANDS: &[CommandDescriptor] = &[
         usage: "/settings",
     },
     CommandDescriptor {
-        name: "dump",
-        role: CommandRole::Admin,
-        summary: "Seed new Apple Music releases",
-        usage: "/dump [days]",
-    },
-    CommandDescriptor {
-        name: "random",
-        role: CommandRole::Admin,
-        summary: "Discover and seed a random album",
-        usage: "/random",
-    },
-    CommandDescriptor {
         name: "delete",
         role: CommandRole::Admin,
         summary: "Delete a cached track",
@@ -213,8 +201,8 @@ mod tests {
             names,
             vec![
                 "start", "get", "search", "status", "info", "spec", "report", "help", "settings",
-                "dump", "random", "delete", "auth", "revoke", "authlist", "stats", "clean", "ping",
-                "index", "export", "import",
+                "delete", "auth", "revoke", "authlist", "stats", "clean", "ping", "index",
+                "export", "import",
             ]
         );
     }

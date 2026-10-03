@@ -4,7 +4,7 @@
 //!
 //! * **Liveness** ([`collect_liveness`]) answers only "should this process be
 //!   restarted?". It probes the database and the stream worker pool -- both
-//!   cheap and in-process. The Apple wrapper and the Qobuz backend are
+//!   cheap and in-process. The Apple wrapper is
 //!   deliberately *excluded*: a dead wrapper breaks new rips, but restarting
 //!   the container does not fix it, and it would tear down streaming,
 //!   catalog, lyrics, and already-ripped playback that are still working.
@@ -33,9 +33,6 @@ pub const SUBSYSTEM_STREAM_WORKERS: &str = "stream_workers";
 pub const SUBSYSTEM_CACHE: &str = "cache";
 /// Subsystem identifier: the Apple ALAC wrapper used for new rips.
 pub const SUBSYSTEM_APPLE_WRAPPER: &str = "apple_wrapper";
-/// Subsystem identifier: the hosted Qobuz backend, when one is configured.
-pub const SUBSYSTEM_QOBUZ: &str = "qobuz";
-
 /// How long a collected probe result is reused before the next poll re-probes.
 const PROBE_TTL: Duration = Duration::from_secs(5);
 
@@ -44,8 +41,8 @@ const PROBE_TTL: Duration = Duration::from_secs(5);
 /// response.
 const DB_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Upper bound on an outbound HTTP probe of the Apple wrapper or the Qobuz
-/// backend. Only ever reached from `/api/v1/status`, never from liveness.
+/// Upper bound on an outbound HTTP probe of the Apple wrapper. Only ever
+/// reached from `/api/v1/status`, never from liveness.
 const HTTP_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Loopback address the Apple acquisition path falls back to when
@@ -126,8 +123,8 @@ pub struct LivenessReport {
     /// True when the process, the database, and the stream worker pool are
     /// all serving. This -- and only this -- decides the liveness status code.
     pub live: bool,
-    /// The two subsystems liveness depends on. The Apple wrapper and the
-    /// Qobuz backend are absent on purpose.
+    /// The two subsystems liveness depends on. The Apple wrapper is excluded
+    /// because a wrapper outage does not stop existing streams.
     pub subsystems: Vec<SubsystemReport>,
 }
 
@@ -136,7 +133,7 @@ pub struct LivenessReport {
 /// Backs `GET /api/v1/status`, which always answers 200: this is the endpoint
 /// an operator reads precisely *because* something is wrong.
 ///
-/// The five probes run concurrently, so a cold cache costs the slowest single
+/// The four probes run concurrently, so a cold cache costs the slowest single
 /// probe rather than their sum. Results are cached for [`PROBE_TTL`].
 pub async fn collect_status(state: &ServerState) -> StatusReport {
     let cached = STATUS_CACHE.get_with(STATUS_KEY, probe_all(state)).await;
@@ -156,14 +153,13 @@ pub async fn collect_liveness(state: &ServerState) -> LivenessReport {
 }
 
 async fn probe_all(state: &ServerState) -> Arc<StatusReport> {
-    let (database, workers, cache, apple, qobuz) = tokio::join!(
+    let (database, workers, cache, apple) = tokio::join!(
         probe_database(state),
         async { probe_stream_workers(state) },
         async { probe_cache(state) },
         probe_apple_wrapper(state),
-        probe_qobuz(state),
     );
-    let subsystems = vec![database, workers, cache, apple, qobuz];
+    let subsystems = vec![database, workers, cache, apple];
     let status = if subsystems
         .iter()
         .all(|subsystem| subsystem.state == SubsystemState::Ok)
@@ -305,24 +301,6 @@ fn apple_wrapper_url() -> Option<String> {
         Ok(value) => Some(value),
         Err(_) => Some(DEFAULT_APPLE_WRAPPER_URL.to_owned()),
     }
-}
-
-/// Probe the hosted Qobuz backend, but only when one is configured. The
-/// operator opts in by setting `QOBUZ_BACKEND_URL`; the native Qobuz path
-/// does not use a hosted backend at all.
-async fn probe_qobuz(state: &ServerState) -> SubsystemReport {
-    let Some(raw_url) = std::env::var("QOBUZ_BACKEND_URL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-    else {
-        return SubsystemReport {
-            name: SUBSYSTEM_QOBUZ,
-            state: SubsystemState::Degraded,
-            detail: "not configured (QOBUZ_BACKEND_URL is unset)".to_owned(),
-        };
-    };
-    let endpoint = raw_url.trim().trim_end_matches('/').to_owned();
-    probe_endpoint(state, SUBSYSTEM_QOBUZ, &endpoint, "QOBUZ_BACKEND_URL").await
 }
 
 /// Issue one cheap, short-timeout request and classify the answer.
@@ -475,7 +453,7 @@ mod tests {
         assert_eq!(
             endpoint_label(
                 "https://api.example.com/v1/track?key=secret",
-                "QOBUZ_BACKEND_URL"
+                "ALAC_WRAPPER_URL"
             ),
             "api.example.com:443"
         );

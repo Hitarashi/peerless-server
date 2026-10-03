@@ -16,8 +16,8 @@ use crate::{ServerState, error::ServerError, probe};
 /// The counters below are pure telemetry. They are useful while debugging a
 /// 503, but they never influence the status code themselves.
 ///
-/// For the wide, per-subsystem breakdown -- including the Apple wrapper and the
-/// Qobuz backend, neither of which can trigger a restart -- see
+/// For the wide, per-subsystem breakdown -- including the Apple wrapper, which
+/// cannot trigger a restart -- see
 /// [`status_report`] / `GET /api/v1/status`.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct HealthResponse {
@@ -79,7 +79,7 @@ pub struct StreamingMetrics {
 ///
 /// Returns 200 while the process can serve requests, and **503** once it
 /// cannot. Restarting only helps for a fault the process cannot recover from,
-/// so this deliberately ignores the Apple wrapper and the Qobuz backend: a dead
+/// so this deliberately ignores the Apple wrapper: a dead
 /// wrapper stops new rips but leaves streaming, catalog, lyrics, and
 /// already-ripped playback working, and a restart would not fix it anyway.
 #[utoipa::path(
@@ -87,7 +87,7 @@ pub struct StreamingMetrics {
     path = "/api/v1/health",
     tag = "system",
     summary = "Server Liveness Check",
-    description = "Liveness probe. Returns 200 while the process, the PostgreSQL pool, and the MTProto stream worker pool are all serving, and 503 when any of them is not. Also reports process-lifetime streaming counters, latency summaries, cache statistics, and uptime as informational telemetry. Does NOT consider the Apple wrapper or the Qobuz backend: a dead wrapper must not restart a container that is otherwise serving. For the full per-subsystem breakdown, use GET /api/v1/status.",
+    description = "Liveness probe. Returns 200 while the process, the PostgreSQL pool, and the MTProto stream worker pool are all serving, and 503 when any of them is not. Also reports process-lifetime streaming counters, latency summaries, cache statistics, and uptime as informational telemetry. Does NOT consider the Apple wrapper: a dead wrapper must not restart a container that is otherwise serving. For the full per-subsystem breakdown, use GET /api/v1/status.",
     responses(
         (status = 200, description = "Process is live and able to serve requests", body = HealthResponse),
         (status = 503, description = "A liveness-critical subsystem (database or stream workers) is down; the process should be restarted", body = HealthResponse)
@@ -167,7 +167,7 @@ pub async fn health_check(
     path = "/api/v1/status",
     tag = "system",
     summary = "Server Diagnostics",
-    description = "Wide per-subsystem diagnostics: PostgreSQL reachability, MTProto stream worker pool, in-memory chunk cache, the Apple ALAC wrapper, and the hosted Qobuz backend (the latter two only when configured). Always returns HTTP 200 so it remains readable during an outage. Unlike GET /api/v1/health, this endpoint's findings do not drive any restart decision.",
+    description = "Wide per-subsystem diagnostics: PostgreSQL reachability, MTProto stream worker pool, in-memory chunk cache, and the Apple ALAC wrapper (when configured). Always returns HTTP 200 so it remains readable during an outage. Unlike GET /api/v1/health, this endpoint's findings do not drive any restart decision.",
     responses(
         (status = 200, description = "Diagnostics collected. Inspect `status` and each subsystem entry: `healthy` means every probed subsystem is `ok`, `degraded` means at least one is not.", body = probe::StatusReport)
     )

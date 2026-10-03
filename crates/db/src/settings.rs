@@ -2,7 +2,9 @@ use std::sync::RwLock;
 
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
-use engine::settings::{BotSettings, RippingMode, default_settings};
+use engine::settings::{
+    BotSettings, LyricspornApiEndpoint, RippingMode, default_settings, normalize_lyricsporn_api_url,
+};
 use serde_json::{Value, json};
 
 use crate::{DbError, DbPool, models::SettingsRow, schema::settings};
@@ -13,6 +15,7 @@ use crate::{DbError, DbPool, models::SettingsRow, schema::settings};
 pub struct SettingsStore {
     pool: DbPool,
     cached_settings: RwLock<BotSettings>,
+    lyricsporn_api_endpoint: LyricspornApiEndpoint,
 }
 
 impl SettingsStore {
@@ -20,6 +23,7 @@ impl SettingsStore {
         Self {
             pool,
             cached_settings: RwLock::new(default_settings()),
+            lyricsporn_api_endpoint: LyricspornApiEndpoint::default(),
         }
     }
 
@@ -31,6 +35,8 @@ impl SettingsStore {
     /// stale in-memory snapshot is unsafe after a restore or a reconnect.
     pub async fn reload(&self) -> Result<(), DbError> {
         let result = self.load().await?;
+        self.lyricsporn_api_endpoint
+            .set(result.lyricsporn_api_url.as_deref());
         *self
             .cached_settings
             .write()
@@ -53,6 +59,11 @@ impl SettingsStore {
             .read()
             .expect("settings lock poisoned")
             .clone()
+    }
+
+    /// Shared live endpoint used by the bot's Apple metadata and rip clients.
+    pub fn lyricsporn_api_endpoint(&self) -> LyricspornApiEndpoint {
+        self.lyricsporn_api_endpoint.clone()
     }
 
     /// Set one externally named setting while persisting the complete typed
@@ -82,6 +93,8 @@ impl SettingsStore {
             .cached_settings
             .write()
             .expect("settings lock poisoned") = next.clone();
+        self.lyricsporn_api_endpoint
+            .set(next.lyricsporn_api_url.as_deref());
         next
     }
 
@@ -108,9 +121,6 @@ impl SettingsStore {
     pub async fn toggle_apple(&self) -> bool {
         self.toggle("apple_rip_enabled").await
     }
-    pub async fn toggle_qobuz(&self) -> bool {
-        self.toggle("qobuz_rip_enabled").await
-    }
     pub async fn toggle_album(&self) -> bool {
         self.toggle("album_rip_enabled").await
     }
@@ -126,31 +136,23 @@ impl SettingsStore {
     pub async fn toggle_multi_link_rip(&self) -> bool {
         self.toggle("multi_link_rip_enabled").await
     }
-    pub async fn toggle_auto_dump(&self) -> bool {
-        self.toggle("auto_dump_enabled").await
-    }
-
     async fn toggle(&self, key: &str) -> bool {
         let current = self.get_settings();
         let value = match key {
             "apple_rip_enabled" => !current.apple_rip_enabled,
-            "qobuz_rip_enabled" => !current.qobuz_rip_enabled,
             "album_rip_enabled" => !current.album_rip_enabled,
             "playlist_rip_enabled" => !current.playlist_rip_enabled,
             "artist_rip_enabled" => !current.artist_rip_enabled,
             "txt_rip_enabled" => !current.txt_rip_enabled,
-            "auto_dump_enabled" => !current.auto_dump_enabled,
             _ => !current.multi_link_rip_enabled,
         };
         let settings = self.set_setting(key, json!(value)).await;
         match key {
             "apple_rip_enabled" => settings.apple_rip_enabled,
-            "qobuz_rip_enabled" => settings.qobuz_rip_enabled,
             "album_rip_enabled" => settings.album_rip_enabled,
             "playlist_rip_enabled" => settings.playlist_rip_enabled,
             "artist_rip_enabled" => settings.artist_rip_enabled,
             "txt_rip_enabled" => settings.txt_rip_enabled,
-            "auto_dump_enabled" => settings.auto_dump_enabled,
             _ => settings.multi_link_rip_enabled,
         }
     }
@@ -162,50 +164,6 @@ impl SettingsStore {
         self.set_setting("max_collection_tracks", json!(value))
             .await
             .max_collection_tracks
-    }
-
-    pub async fn add_auto_dump_storefront(&self, storefront: &str) -> Vec<String> {
-        let clean = storefront.to_lowercase().trim().to_owned();
-        let mut values = self.get_settings().auto_dump_storefronts;
-        if clean.is_empty() || values.iter().any(|value| value == &clean) {
-            return values;
-        }
-        values.push(clean);
-        self.set_setting("auto_dump_storefronts", json!(values))
-            .await
-            .auto_dump_storefronts
-    }
-
-    pub async fn remove_auto_dump_storefront(&self, storefront: &str) -> Vec<String> {
-        let clean = storefront.to_lowercase().trim().to_owned();
-        let mut values = self
-            .get_settings()
-            .auto_dump_storefronts
-            .into_iter()
-            .filter(|value| value != &clean)
-            .collect::<Vec<_>>();
-        if values.is_empty() {
-            values.push("us".to_owned());
-        }
-        self.set_setting("auto_dump_storefronts", json!(values))
-            .await
-            .auto_dump_storefronts
-    }
-
-    pub async fn set_auto_dump_storefronts(&self, storefronts: &[String]) -> Vec<String> {
-        let mut values = Vec::new();
-        for storefront in storefronts {
-            let clean = storefront.to_lowercase().trim().to_owned();
-            if !clean.is_empty() && !values.contains(&clean) {
-                values.push(clean);
-            }
-        }
-        if values.is_empty() {
-            values.push("us".to_owned());
-        }
-        self.set_setting("auto_dump_storefronts", json!(values))
-            .await
-            .auto_dump_storefronts
     }
 }
 
@@ -228,6 +186,10 @@ fn from_row(row: SettingsRow) -> BotSettings {
     {
         settings.stream_server_port = port;
     }
+    settings.lyricsporn_api_url = settings
+        .lyricsporn_api_url
+        .as_deref()
+        .and_then(normalize_lyricsporn_api_url);
     settings
 }
 
@@ -235,20 +197,20 @@ fn canonical_key(key: &str) -> Option<&'static str> {
     match key {
         "ripping_mode" | "rippingMode" => Some("ripping_mode"),
         "apple_rip_enabled" | "appleRipEnabled" | "apple" => Some("apple_rip_enabled"),
-        "qobuz_rip_enabled" | "qobuzRipEnabled" | "qobuz" => Some("qobuz_rip_enabled"),
         "album_rip_enabled" | "albumRipEnabled" => Some("album_rip_enabled"),
         "playlist_rip_enabled" | "playlistRipEnabled" => Some("playlist_rip_enabled"),
         "artist_rip_enabled" | "artistRipEnabled" => Some("artist_rip_enabled"),
         "txt_rip_enabled" | "txtRipEnabled" => Some("txt_rip_enabled"),
         "multi_link_rip_enabled" | "multiLinkRipEnabled" => Some("multi_link_rip_enabled"),
         "max_collection_tracks" | "maxCollectionTracks" => Some("max_collection_tracks"),
-        "auto_dump_enabled" | "autoDumpEnabled" => Some("auto_dump_enabled"),
-        "auto_dump_storefronts" | "autoDumpStorefronts" => Some("auto_dump_storefronts"),
         "stream_public_url" | "streamPublicUrl" | "stream_url" | "streamUrl" => {
             Some("stream_public_url")
         }
         "stream_server_port" | "streamServerPort" | "stream_port" | "streamPort" => {
             Some("stream_server_port")
+        }
+        "lyricsporn_api_url" | "lyricspornApiUrl" | "lyricsporn_url" | "lyricspornUrl" => {
+            Some("lyricsporn_api_url")
         }
         _ => None,
     }
@@ -264,10 +226,6 @@ fn apply_value(settings: &mut BotSettings, key: &str, value: &Value) -> bool {
         "apple_rip_enabled" => value
             .as_bool()
             .map(|v| settings.apple_rip_enabled = v)
-            .is_some(),
-        "qobuz_rip_enabled" => value
-            .as_bool()
-            .map(|v| settings.qobuz_rip_enabled = v)
             .is_some(),
         "album_rip_enabled" => value
             .as_bool()
@@ -295,24 +253,6 @@ fn apply_value(settings: &mut BotSettings, key: &str, value: &Value) -> bool {
             .filter(|v| engine::limits::validate_collection_limit(*v))
             .map(|v| settings.max_collection_tracks = v)
             .is_some(),
-        "auto_dump_enabled" => value
-            .as_bool()
-            .map(|v| settings.auto_dump_enabled = v)
-            .is_some(),
-        "auto_dump_storefronts" => value
-            .as_array()
-            .map(|values| {
-                let cleaned = values
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(|v| v.to_lowercase().trim().to_owned())
-                    .filter(|v| !v.is_empty())
-                    .collect::<Vec<_>>();
-                if !cleaned.is_empty() {
-                    settings.auto_dump_storefronts = cleaned;
-                }
-            })
-            .is_some(),
         "stream_public_url" => {
             if value.is_null() {
                 settings.stream_public_url = None;
@@ -334,6 +274,17 @@ fn apply_value(settings: &mut BotSettings, key: &str, value: &Value) -> bool {
             .and_then(|v| u16::try_from(v).ok())
             .map(|v| settings.stream_server_port = v)
             .is_some(),
+        "lyricsporn_api_url" => {
+            if value.is_null() {
+                settings.lyricsporn_api_url = None;
+                true
+            } else if let Some(url) = value.as_str().and_then(normalize_lyricsporn_api_url) {
+                settings.lyricsporn_api_url = Some(url);
+                true
+            } else {
+                false
+            }
+        }
         _ => false,
     }
 }

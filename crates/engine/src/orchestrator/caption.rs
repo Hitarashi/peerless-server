@@ -262,10 +262,7 @@ pub fn format_album_details_caption(meta: &AlbumDetailsCaptionMetadata<'_>) -> S
 /// Long string values are shortened before serialization as needed to keep the
 /// JSON valid and within Telegram's 1,024 UTF-16 code unit caption limit.
 pub fn format_dump_caption(meta: &DumpCaptionMetadata<'_>) -> String {
-    let default_codec = match meta.track_key.provider {
-        Provider::Qobuz => "flac",
-        _ => "alac",
-    };
+    let default_codec = "alac";
 
     let canonical_codec = meta
         .codec
@@ -315,10 +312,7 @@ pub fn format_zip_dump_caption(
         return String::new();
     }
 
-    let default_codec = match meta.provider {
-        Provider::Qobuz => "flac",
-        _ => "alac",
-    };
+    let default_codec = "alac";
 
     let mut payload_json = serde_json::json!({
         "type": "album_zip",
@@ -403,10 +397,7 @@ pub fn parse_dump_caption(text: Option<&str>) -> Option<ParsedDumpMetadata> {
         return None;
     }
 
-    let default_codec = match provider {
-        Provider::Qobuz => Codec::Flac,
-        _ => Codec::Alac,
-    };
+    let default_codec = Codec::Alac;
 
     let codec = parsed
         .get("codec")
@@ -450,10 +441,7 @@ pub fn parse_zip_dump_caption(text: Option<&str>) -> Option<ParsedZipDumpMetadat
         return None;
     }
 
-    let default_codec = match provider {
-        Provider::Qobuz => Codec::Flac,
-        _ => Codec::Alac,
-    };
+    let default_codec = Codec::Alac;
 
     let codec = parsed
         .get("codec")
@@ -768,7 +756,7 @@ mod tests {
     #[test]
     fn format_dump_caption_flac() {
         let meta = DumpCaptionMetadata {
-            track_key: TrackKey::new(Provider::Qobuz, "264126443"),
+            track_key: TrackKey::new("legacy-store".parse().unwrap(), "264126443"),
             title: "HEARTBREAK CITY",
             artist: "UMAIR",
             album: "ROCKSTAR WITHOUT A GUITAR",

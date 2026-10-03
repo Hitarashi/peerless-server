@@ -3,13 +3,11 @@ mod authlist;
 mod backup;
 mod clean;
 mod delete;
-pub mod dump;
 pub(crate) mod get;
 mod help;
 mod index;
 mod info;
 mod ping;
-mod random;
 mod report;
 mod revoke;
 mod search;
@@ -137,19 +135,15 @@ pub fn register(dp: &mut Dispatcher, state: Arc<BotState>) {
     backup::register(dp, Arc::clone(&state));
     report::register(dp, Arc::clone(&state));
     search::register(dp, Arc::clone(&state));
-    random::register(dp, Arc::clone(&state));
-    dump::register(dp, Arc::clone(&state));
     stream::register(dp, Arc::clone(&state));
 
     let callback_state = Arc::clone(&state);
     dp.on_callback_query(filters::all::<CallbackQuery>(), move |query| {
         let state = Arc::clone(&callback_state);
         async move {
-            let settings = state.rip_deps.settings().get_settings();
-            let default_storefront = engine::settings::resolve_default_storefront(&settings);
-            let action = query.data().and_then(|data| {
-                TelegramAction::decode_with_default(data, default_storefront).ok()
-            });
+            let action = query
+                .data()
+                .and_then(|data| TelegramAction::decode(data).ok());
             match action {
                 Some(TelegramAction::Cancel { job_id }) => {
                     callbacks::dispatch_cancel(state, query, job_id).await
@@ -163,9 +157,6 @@ pub fn register(dp: &mut Dispatcher, state: Arc<BotState>) {
                 }
                 Some(TelegramAction::Report(action)) => {
                     report::callback(state, query, action).await
-                }
-                Some(TelegramAction::Discovery(action)) => {
-                    random::callback(state, query, action).await
                 }
                 Some(action @ TelegramAction::ConfirmDelete { .. })
                 | Some(action @ TelegramAction::CancelDelete { .. }) => {

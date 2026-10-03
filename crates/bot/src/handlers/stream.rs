@@ -139,10 +139,6 @@ pub async fn handle_admin_url_config(
         return false;
     }
 
-    if text.contains("music.apple.com") || text.contains("qobuz.com") {
-        return false;
-    }
-
     let is_url = text.starts_with("http://") || text.starts_with("https://");
     let is_reply = msg.reply_to_message_id().is_some();
 
@@ -163,6 +159,9 @@ pub async fn handle_admin_url_config(
 
     let clean = candidate.trim().trim_end_matches('/').to_string();
     if clean.is_empty() || (!clean.starts_with("http://") && !clean.starts_with("https://")) {
+        return false;
+    }
+    if looks_like_catalog_link(&clean) {
         return false;
     }
 
@@ -190,6 +189,27 @@ pub async fn handle_admin_url_config(
     true
 }
 
+fn looks_like_catalog_link(value: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(value) else {
+        return false;
+    };
+    url.path_segments().is_some_and(|mut segments| {
+        segments.any(|segment| {
+            matches!(
+                segment.to_ascii_lowercase().as_str(),
+                "album"
+                    | "albums"
+                    | "artist"
+                    | "artists"
+                    | "playlist"
+                    | "playlists"
+                    | "track"
+                    | "tracks"
+            )
+        })
+    })
+}
+
 pub fn register(dp: &mut Dispatcher, state: Arc<BotState>) {
     let stream_state = Arc::clone(&state);
     dp.on_message(filters::command("stream"), move |msg| {
@@ -205,8 +225,7 @@ pub fn register(dp: &mut Dispatcher, state: Arc<BotState>) {
             if let Some(t) = msg.text() {
                 let trimmed = t.trim();
                 !trimmed.starts_with('/')
-                    && !trimmed.contains("music.apple.com")
-                    && !trimmed.contains("qobuz.com")
+                    && !looks_like_catalog_link(trimmed)
                     && (trimmed.starts_with("http://")
                         || trimmed.starts_with("https://")
                         || msg.reply_to_message_id().is_some())
@@ -221,4 +240,20 @@ pub fn register(dp: &mut Dispatcher, state: Arc<BotState>) {
             }
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::looks_like_catalog_link;
+
+    #[test]
+    fn server_url_detection_ignores_catalog_paths() {
+        assert!(looks_like_catalog_link(
+            "https://music.example/us-en/album/release/123"
+        ));
+        assert!(looks_like_catalog_link("https://music.example/track/123"));
+        assert!(!looks_like_catalog_link(
+            "https://stream.example/api/v1/open"
+        ));
+    }
 }
