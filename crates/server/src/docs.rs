@@ -134,7 +134,6 @@ const SCALAR_HTML: &str = r#"<!doctype html>
     </style>
   </head>
   <body>
-    <p style="margin: 0.5rem 1rem;"><a href="/api/v1/docs-ws.json">Playback WebSocket AsyncAPI contract</a></p>
     <script
       id="api-reference"
       data-configuration='{
