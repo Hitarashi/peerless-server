@@ -166,32 +166,20 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
         }
     }
 
-    // Keep one status dashboard message per chat. New jobs are added to the
-    // shared snapshot by the engine's Created event; no per-job progress
-    // message is sent.
-    super::ensure_dashboard(
-        &state,
-        chat,
-        caller_id,
-        caller_is_admin,
-        super::chat_peer_ref(&msg),
-    )
-    .await;
-
     let rendition_policy = engine::orchestrator::types::RenditionPolicy::PrimaryWithOptionalAtmos;
 
-    // If any parsed item is an artist, expand each artist into its constituent
-    // albums and process them as individual album jobs so each album is packaged,
-    // cached, and delivered as its own ZIP archive.
+    // Batch inputs and artist links create one engine job per target. Artist
+    // links first expand into their albums, so each album remains its own job.
     let has_artist = parsed
         .items
         .iter()
         .any(|it| it.kind == engine::types::TargetKind::Artist);
+    let should_fan_out = parsed.document || parsed.items.len() > 1 || has_artist;
 
-    if has_artist {
+    if should_fan_out {
         let settings = state.rip_deps.settings().get_settings();
         let default_storefront = engine::settings::resolve_default_storefront(&settings);
-        let mut expanded_albums = Vec::new();
+        let mut expanded_items = Vec::new();
         for item in &parsed.items {
             if item.kind == engine::types::TargetKind::Artist {
                 let effective_sf = Some(
@@ -211,7 +199,7 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
                 {
                     Ok(album_ids) => {
                         for aid in album_ids {
-                            expanded_albums.push(engine::types::ParsedTargetItem {
+                            expanded_items.push(engine::types::ParsedTargetItem {
                                 id: aid,
                                 kind: engine::types::TargetKind::Album,
                                 storefront: effective_sf.map(str::to_owned),
@@ -225,12 +213,16 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
                     }
                 }
             } else {
-                expanded_albums.push(item.clone());
+                expanded_items.push(item.clone());
             }
         }
 
-        if expanded_albums.is_empty() {
-            reply(&msg, "No albums or tracks found to download.").await;
+        if expanded_items.is_empty() {
+            reply(
+                &msg,
+                "No tracks, albums, playlists, or artist albums found to download.",
+            )
+            .await;
             return;
         }
 
@@ -258,8 +250,8 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
 
         tokio::spawn(async move {
             let mut selected_tracks = 0usize;
-            let mut selected_album_jobs = Vec::with_capacity(expanded_albums.len());
-            for album_item in expanded_albums {
+            let mut selected_items = Vec::with_capacity(expanded_items.len());
+            for item in expanded_items {
                 if !owner_is_admin
                     && max_collection_limit > 0
                     && selected_tracks >= max_collection_limit as usize
@@ -268,23 +260,23 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
                         user_id = owner_id,
                         selected_tracks,
                         max_collection_limit,
-                        "discography reached collection limit, stopping"
+                        "batch reached collection limit, stopping"
                     );
                     break;
                 }
 
                 if !owner_is_admin && max_collection_limit > 0 {
-                    let storefront = album_item
+                    let storefront = item
                         .storefront
                         .as_deref()
                         .or(base_options.single_storefront.as_deref())
                         .unwrap_or(&default_storefront);
-                    let track_count = match album_item.kind {
+                    let track_count = match item.kind {
                         engine::types::TargetKind::Track => Ok(1),
                         engine::types::TargetKind::Album => rip_deps
                             .fetch_album_tracks(
                                 base_options.provider.clone(),
-                                &album_item.id,
+                                &item.id,
                                 storefront.into(),
                             )
                             .await
@@ -292,7 +284,7 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
                         engine::types::TargetKind::Playlist => rip_deps
                             .fetch_playlist_tracks(
                                 base_options.provider.clone(),
-                                &album_item.id,
+                                &item.id,
                                 storefront.into(),
                             )
                             .await
@@ -308,26 +300,26 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
                                 .saturating_add(count.min(max_collection_limit as usize));
                         }
                         Err(error) => tracing::warn!(
-                            item_id = %album_item.id,
+                            item_id = %item.id,
                             error = %error,
                             "could not estimate collection size before scheduling its job"
                         ),
                     }
                 }
-                selected_album_jobs.push(album_item);
+                selected_items.push(item);
             }
 
             let mut jobs = tokio::task::JoinSet::new();
-            for album_item in selected_album_jobs {
-                let item_id = album_item.id.clone();
-                let mut album_options = base_options.clone();
-                album_options.parsed_items = vec![album_item];
+            for item in selected_items {
+                let item_id = item.id.clone();
+                let mut item_options = base_options.clone();
+                item_options.parsed_items = vec![item];
                 let rip_orchestrator = Arc::clone(&rip_orchestrator);
                 let rip_deps = Arc::clone(&rip_deps);
                 let admission_group_id = admission_group_id.clone();
                 jobs.spawn(async move {
                     let result = rip_orchestrator
-                        .start_task_in_group(rip_deps, &album_options, admission_group_id)
+                        .start_task_in_group(rip_deps, &item_options, admission_group_id)
                         .await;
                     (item_id, result)
                 });
@@ -336,33 +328,33 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
             let mut total_tracks = 0usize;
             while let Some(result) = jobs.join_next().await {
                 match result {
-                    Ok((album_id, Ok(summary))) => {
+                    Ok((item_id, Ok(summary))) => {
                         total_tracks = total_tracks.saturating_add(summary.total_tracks);
                         tracing::info!(
                             user_id = owner_id,
-                            album_id,
+                            item_id,
                             tracks = summary.total_tracks,
-                            "artist album job completed"
+                            "batch item job completed"
                         );
                     }
-                    Ok((album_id, Err(engine::orchestrator::OrchestratorError::Cancelled))) => {
-                        tracing::info!(user_id = owner_id, album_id, "artist album job cancelled");
+                    Ok((item_id, Err(engine::orchestrator::OrchestratorError::Cancelled))) => {
+                        tracing::info!(user_id = owner_id, item_id, "batch item job cancelled");
                     }
-                    Ok((album_id, Err(error))) => {
+                    Ok((item_id, Err(error))) => {
                         tracing::warn!(
-                            album_id,
+                            item_id,
                             error = %error,
-                            "artist album job failed"
+                            "batch item job failed"
                         );
                     }
                     Err(error) => tracing::error!(
                         user_id = owner_id,
                         error = %error,
-                        "artist album task panicked"
+                        "batch item task panicked"
                     ),
                 }
             }
-            tracing::info!(user_id = owner_id, total_tracks, "artist batch completed");
+            tracing::info!(user_id = owner_id, total_tracks, "batch rip completed");
         });
         return;
     }

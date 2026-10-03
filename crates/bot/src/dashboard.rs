@@ -376,7 +376,7 @@ impl DashboardManager {
                 viewer_is_admin,
                 snapshot,
                 empty_rendered: empty,
-                next_refresh_at: None,
+                next_refresh_at: (!empty).then(|| tokio::time::Instant::now() + REFRESH_INTERVAL),
                 flood_until: None,
             },
         );
@@ -386,36 +386,8 @@ impl DashboardManager {
         Ok(new_id)
     }
 
-    /// Replace the dashboard message for a chat while preserving its
-    /// viewer/sink configuration. This is used when a new job is created so
-    /// the dashboard has a fresh message rather than silently editing the
-    /// previous snapshot in place.
-    pub async fn replace_entry_from(
-        &self,
-        chat: i64,
-        snapshot: DashboardSnapshot,
-    ) -> Result<(), EditError> {
-        let Some((viewer_id, viewer_is_admin, sink)) = ({
-            let entries = self.entries.lock().await;
-            entries.get(&chat).map(|entry| {
-                (
-                    entry.viewer_id,
-                    entry.viewer_is_admin,
-                    Arc::clone(&entry.sink),
-                )
-            })
-        }) else {
-            return Ok(());
-        };
-
-        self.open(chat, viewer_id, viewer_is_admin, sink, snapshot)
-            .await
-            .map(|_| ())
-    }
-
-    /// Latest engine snapshot for a chat's dashboard, re-scoped to that
-    /// dashboard's viewer. Used by the refresh callback so a stale dashboard
-    /// can resynchronize without the event bridge.
+    /// Immediately sync a dashboard to an engine snapshot, then coalesce
+    /// background progress edits for the standard refresh interval.
     pub async fn refresh_entry_from(&self, chat: i64, snapshot: DashboardSnapshot) {
         let work = {
             let mut entries = self.entries.lock().await;
@@ -429,7 +401,7 @@ impl DashboardManager {
                 {
                     return None;
                 }
-                entry.next_refresh_at = None;
+                entry.next_refresh_at = Some(tokio::time::Instant::now() + REFRESH_INTERVAL);
                 let (text, keyboard) = render(&entry.snapshot, entry.page);
                 Some((Arc::clone(&entry.sink), entry.id, text, keyboard))
             })

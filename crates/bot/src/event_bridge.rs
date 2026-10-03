@@ -7,7 +7,11 @@
 //! into a bounded mpsc channel; this module's spawned consumer does the
 //! async rendering: one shared status dashboard per chat.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use engine::orchestrator::types::{
     ActiveRipTask, FailedTrack, OrchestratorEvent, RipTaskProgress, RipTaskSummary,
@@ -146,9 +150,61 @@ pub fn registry() -> Arc<BridgeRegistry> {
 
 /// The consumer loop: one event at a time, network edits allowed.
 async fn consume(state: Arc<BotState>, mut rx: mpsc::Receiver<BridgeEvent>) {
+    const CREATED_EVENT_QUIET_PERIOD: Duration = Duration::from_millis(100);
+
     while let Some(event) = rx.recv().await {
-        if let Err(error) = handle_event(Arc::clone(&state), event).await {
-            tracing::warn!(%error, "status event handling failed");
+        match event {
+            BridgeEvent::Created { job } => {
+                let mut created_jobs = vec![job];
+                let mut deferred_events = Vec::new();
+                let mut deadline = tokio::time::Instant::now() + CREATED_EVENT_QUIET_PERIOD;
+                let mut channel_closed = false;
+                loop {
+                    match tokio::time::timeout_at(deadline, rx.recv()).await {
+                        Ok(Some(BridgeEvent::Created { job })) => {
+                            created_jobs.push(job);
+                            deadline = tokio::time::Instant::now() + CREATED_EVENT_QUIET_PERIOD;
+                        }
+                        Ok(Some(event)) => deferred_events.push(event),
+                        Ok(None) => {
+                            channel_closed = true;
+                            break;
+                        }
+                        Err(_) => break,
+                    }
+                }
+                for event in &deferred_events {
+                    remember_event_context(event);
+                }
+                refresh_dashboard_for_created_jobs(&state, created_jobs).await;
+                for event in deferred_events {
+                    if let Err(error) = handle_event(Arc::clone(&state), event).await {
+                        tracing::warn!(%error, "status event handling failed");
+                    }
+                }
+                if channel_closed {
+                    return;
+                }
+            }
+            event => {
+                if let Err(error) = handle_event(Arc::clone(&state), event).await {
+                    tracing::warn!(%error, "status event handling failed");
+                }
+            }
+        }
+    }
+}
+
+fn remember_event_context(event: &BridgeEvent) {
+    match event {
+        BridgeEvent::Created { job }
+        | BridgeEvent::Started { job }
+        | BridgeEvent::Completed { job, .. }
+        | BridgeEvent::Cancelled { job, .. }
+        | BridgeEvent::Failed { job, .. } => registry().remember(job),
+        BridgeEvent::Progress { job, progress } => {
+            registry().remember(job);
+            registry().remember_progress(progress);
         }
     }
 }
@@ -215,8 +271,7 @@ async fn handle_event(state: Arc<BotState>, event: BridgeEvent) -> Result<(), St
     let state_ref = state.as_ref();
     match event {
         BridgeEvent::Created { job } => {
-            registry().remember(&job);
-            refresh_dashboard_for_job(state_ref, &job).await;
+            refresh_dashboard_for_created_jobs(state_ref, vec![job]).await;
         }
         BridgeEvent::Progress { job, progress } => {
             registry().remember(&job);
@@ -254,46 +309,48 @@ async fn refresh_dashboard(state: &BotState, force: bool) {
     dashboard_manager().refresh(snapshot, force).await;
 }
 
-/// Ensure a dashboard exists for a job even when the command-side preflight
-/// could not open one (for example, a transient Telegram send failure). The
-/// Created event is emitted after the job is admitted, so this is the first
-/// reliable point at which we can recover without losing the status surface.
-async fn refresh_dashboard_for_job(state: &BotState, job: &ActiveRipTask) {
-    if job.chat_id <= 0 {
-        return;
-    }
-    let snapshot = current_snapshot(state).await;
-    let manager = dashboard_manager();
-    if manager.contains(job.chat_id).await {
-        if let Err(error) = manager.replace_entry_from(job.chat_id, snapshot).await {
-            tracing::warn!(
-                chat_id = job.chat_id,
-                job_id = %job.id,
-                error = ?error,
-                "failed to replace status dashboard for new job"
-            );
+/// Remember a burst of created jobs, then send or edit each affected chat's
+/// dashboard once with a snapshot that includes the whole burst.
+async fn refresh_dashboard_for_created_jobs(state: &BotState, jobs: Vec<Box<ActiveRipTask>>) {
+    let mut chats = HashMap::<i64, Box<ActiveRipTask>>::new();
+    for job in jobs {
+        registry().remember(&job);
+        if job.chat_id > 0 {
+            chats.entry(job.chat_id).or_insert(job);
         }
+    }
+    if chats.is_empty() {
         return;
     }
 
-    let sink =
-        crate::handlers::dashboard_sink(state.client.clone(), ferogram::PeerRef::from(job.chat_id));
-    if let Err(error) = manager
-        .open(
-            job.chat_id,
-            job.user_id,
-            state.auth.is_admin(job.user_id),
-            sink,
-            snapshot,
-        )
-        .await
-    {
-        tracing::warn!(
-            chat_id = job.chat_id,
-            job_id = %job.id,
-            error = ?error,
-            "failed to open status dashboard for new job"
-        );
+    let snapshot = current_snapshot(state).await;
+    let manager = dashboard_manager();
+    for (chat, job) in chats {
+        if manager.contains(chat).await {
+            manager.refresh_entry_from(chat, snapshot.clone()).await;
+        } else {
+            let sink = crate::handlers::dashboard_sink(
+                state.client.clone(),
+                ferogram::PeerRef::from(chat),
+            );
+            if let Err(error) = manager
+                .open(
+                    chat,
+                    job.user_id,
+                    state.auth.is_admin(job.user_id),
+                    sink,
+                    snapshot.clone(),
+                )
+                .await
+            {
+                tracing::warn!(
+                    chat_id = chat,
+                    job_id = %job.id,
+                    error = ?error,
+                    "failed to open status dashboard for created job batch"
+                );
+            }
+        }
     }
 }
 
