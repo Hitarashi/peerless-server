@@ -1,3 +1,4 @@
+pub mod caption;
 pub mod command_catalog;
 pub mod dashboard;
 pub mod dashboard_map;
@@ -6,6 +7,7 @@ pub mod handlers;
 pub mod html;
 pub mod interaction;
 pub mod mirror_health;
+mod pending;
 pub mod presentation;
 pub mod providers;
 pub mod rip_deps;

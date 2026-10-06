@@ -18,6 +18,54 @@ pub enum TaskPhase {
     WaitingDuplicate,
 }
 
+impl TaskPhase {
+    /// Phases where the task is actively driving the rip pipeline. Callers already
+    /// have a finer-grained [`TaskActivity`] (or lane) to show for these, so they do
+    /// not need a separate coarse status line.
+    pub fn is_working(self) -> bool {
+        matches!(
+            self,
+            Self::Resolving | Self::CheckingCache | Self::Processing
+        )
+    }
+
+    /// Queued and duplicate-blocked tasks never have download/upload lanes.
+    pub fn has_lane_activity(self) -> bool {
+        !matches!(self, Self::Queued | Self::WaitingDuplicate)
+    }
+
+    /// Display ordering group: work in flight first, then queued, then blocked.
+    pub fn display_rank(self) -> u8 {
+        match self {
+            Self::Queued => 1,
+            Self::WaitingDuplicate => 2,
+            _ => 0,
+        }
+    }
+
+    /// Coarse [`TaskActivity`] to display for a task that has not produced a
+    /// progress event yet.
+    pub fn fallback_activity(
+        self,
+        header: &str,
+        queue_position: Option<u64>,
+    ) -> Option<TaskActivity> {
+        match self {
+            Self::Resolving => Some(TaskActivity::Resolving),
+            Self::CheckingCache => Some(TaskActivity::CheckingCache {
+                item: header.to_owned(),
+            }),
+            Self::Queued => Some(TaskActivity::Queued {
+                position: queue_position
+                    .and_then(|position| u32::try_from(position).ok())
+                    .unwrap_or(1),
+            }),
+            Self::Delivering => Some(TaskActivity::CachedDelivered),
+            Self::Processing | Self::WaitingDuplicate => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalTaskState {
     Completed,
@@ -122,6 +170,18 @@ pub struct ByteProgress {
     pub total: Option<u64>,
 }
 
+impl ByteProgress {
+    pub fn new(completed: u64, total: Option<u64>) -> Self {
+        Self { completed, total }
+    }
+
+    /// Completion percentage, or `None` while the total size is still unknown.
+    pub fn percent(&self) -> Option<f32> {
+        let total = self.total.filter(|total| *total > 0)?;
+        Some((self.completed as f32 / total as f32) * 100.0)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackLabel {
     pub title: String,
@@ -192,10 +252,72 @@ pub enum RipActivity {
     },
 }
 
+impl RipActivity {
+    /// Wire stage name for this activity. This is the only place the externally
+    /// visible download-stage vocabulary is defined.
+    pub fn stage_name(&self) -> &'static str {
+        match self {
+            Self::ResolvingMetadata => "resolving_metadata",
+            Self::Connecting { .. } => "connecting",
+            Self::Downloading { .. } => "downloading",
+            Self::MaterializingCachedMedia { .. } => "materializing_cached_media",
+            Self::Decrypting { .. } => "decrypting",
+            Self::Tagging { .. } => "tagging",
+        }
+    }
+
+    /// Track this activity applies to, if it is track-scoped.
+    pub fn track(&self) -> Option<&TrackLabel> {
+        match self {
+            Self::ResolvingMetadata => None,
+            Self::Connecting { track }
+            | Self::Downloading { track, .. }
+            | Self::MaterializingCachedMedia { track, .. }
+            | Self::Decrypting { track }
+            | Self::Tagging { track } => Some(track),
+        }
+    }
+
+    /// Byte progress, for the stages that stream bytes.
+    pub fn byte_progress(&self) -> Option<&ByteProgress> {
+        match self {
+            Self::Downloading { progress, .. }
+            | Self::MaterializingCachedMedia { progress, .. } => Some(progress),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DownloadLane {
     Rip(RipActivity),
     CachedDelivery { track: TrackLabel },
+}
+
+impl DownloadLane {
+    /// Wire stage name for this lane. This is the only place the externally
+    /// visible download-stage vocabulary is defined.
+    pub fn stage_name(&self) -> &'static str {
+        match self {
+            Self::Rip(activity) => activity.stage_name(),
+            Self::CachedDelivery { .. } => "cached_delivery",
+        }
+    }
+
+    /// Track this lane applies to, or `None` while it is still resolving metadata.
+    pub fn track(&self) -> Option<&TrackLabel> {
+        match self {
+            Self::Rip(activity) => activity.track(),
+            Self::CachedDelivery { track } => Some(track),
+        }
+    }
+
+    pub fn byte_progress(&self) -> Option<&ByteProgress> {
+        match self {
+            Self::Rip(activity) => activity.byte_progress(),
+            Self::CachedDelivery { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -214,6 +336,41 @@ pub enum UploadLane {
     },
 }
 
+impl UploadLane {
+    pub const ARCHIVE_BUILD_STAGE: &'static str = "building_archive";
+    pub const ARCHIVE_UPLOAD_STAGE: &'static str = "uploading_archive";
+
+    pub fn byte_progress(&self) -> &ByteProgress {
+        match self {
+            Self::Track { progress, .. }
+            | Self::ArchiveBuild { progress, .. }
+            | Self::ArchiveUpload { progress, .. } => progress,
+        }
+    }
+
+    /// Album ZIP lanes move whole archives rather than single tracks.
+    pub fn is_archive(&self) -> bool {
+        matches!(self, Self::ArchiveBuild { .. } | Self::ArchiveUpload { .. })
+    }
+
+    /// Whether a serialized stage name denotes an album archive lane.
+    pub fn is_archive_stage(stage: &str) -> bool {
+        matches!(
+            stage,
+            Self::ARCHIVE_BUILD_STAGE | Self::ARCHIVE_UPLOAD_STAGE
+        )
+    }
+
+    /// Wire stage name for this lane.
+    pub fn stage_name(&self) -> &'static str {
+        match self {
+            Self::Track { .. } => "uploading_track",
+            Self::ArchiveBuild { .. } => Self::ARCHIVE_BUILD_STAGE,
+            Self::ArchiveUpload { .. } => Self::ARCHIVE_UPLOAD_STAGE,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskActivity {
     Resolving,
@@ -223,6 +380,22 @@ pub enum TaskActivity {
     CachedDelivered,
     ProcessingNext,
     WaitingDuplicate { inflight_job_id: String },
+}
+
+impl TaskActivity {
+    /// Wire stage name for this activity. This is the only place the externally
+    /// visible job-stage vocabulary is defined.
+    pub fn stage_name(&self) -> &'static str {
+        match self {
+            Self::Resolving => "resolving",
+            Self::CheckingCache { .. } => "checking_cache",
+            Self::Queued { .. } => "queued",
+            Self::SkippingUncached => "skipping_uncached",
+            Self::CachedDelivered => "cached_delivered",
+            Self::ProcessingNext => "processing_next",
+            Self::WaitingDuplicate { .. } => "waiting_duplicate",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -398,3 +571,148 @@ pub enum OrchestratorEvent<'a> {
 }
 
 pub type EventCallback = Arc<dyn Fn(&OrchestratorEvent<'_>) + Send + Sync>;
+
+#[cfg(test)]
+mod task_state_tests {
+    use super::*;
+
+    #[test]
+    fn phases_describe_working_lane_and_ordering_semantics() {
+        for phase in [
+            TaskPhase::Resolving,
+            TaskPhase::CheckingCache,
+            TaskPhase::Processing,
+        ] {
+            assert!(phase.is_working(), "{phase:?} hides the coarse status line");
+            assert!(phase.has_lane_activity());
+            assert_eq!(phase.display_rank(), 0);
+        }
+
+        assert!(!TaskPhase::Delivering.is_working());
+        assert!(TaskPhase::Delivering.has_lane_activity());
+        assert!(!TaskPhase::Queued.has_lane_activity());
+        assert!(!TaskPhase::WaitingDuplicate.has_lane_activity());
+        assert_eq!(TaskPhase::Queued.display_rank(), 1);
+        assert_eq!(TaskPhase::WaitingDuplicate.display_rank(), 2);
+    }
+
+    #[test]
+    fn phase_falls_back_to_the_activity_it_implies() {
+        assert_eq!(
+            TaskPhase::Resolving.fallback_activity("Album", None),
+            Some(TaskActivity::Resolving)
+        );
+        assert_eq!(
+            TaskPhase::CheckingCache.fallback_activity("Album", None),
+            Some(TaskActivity::CheckingCache {
+                item: "Album".to_owned()
+            })
+        );
+        assert_eq!(
+            TaskPhase::Queued.fallback_activity("Album", Some(3)),
+            Some(TaskActivity::Queued { position: 3 })
+        );
+        assert_eq!(
+            TaskPhase::Queued.fallback_activity("Album", None),
+            Some(TaskActivity::Queued { position: 1 })
+        );
+        assert_eq!(
+            TaskPhase::Delivering.fallback_activity("Album", None),
+            Some(TaskActivity::CachedDelivered)
+        );
+        assert_eq!(TaskPhase::Processing.fallback_activity("Album", None), None);
+        assert_eq!(
+            TaskPhase::WaitingDuplicate.fallback_activity("Album", None),
+            None
+        );
+    }
+
+    #[test]
+    fn byte_progress_percent_needs_a_known_total() {
+        assert_eq!(ByteProgress::new(1, Some(2)).percent(), Some(50.0));
+        assert_eq!(ByteProgress::new(512, None).percent(), None);
+        assert_eq!(ByteProgress::new(10, Some(0)).percent(), None);
+    }
+
+    #[test]
+    fn lanes_expose_their_track_bytes_and_archive_kind() {
+        let metadata = DownloadLane::Rip(RipActivity::ResolvingMetadata);
+        assert_eq!(metadata.stage_name(), "resolving_metadata");
+        assert!(metadata.track().is_none());
+        assert!(metadata.byte_progress().is_none());
+
+        let downloading = DownloadLane::Rip(RipActivity::Downloading {
+            track: TrackLabel::new("Song", "Artist"),
+            progress: ByteProgress::new(1, Some(2)),
+        });
+        assert_eq!(downloading.stage_name(), "downloading");
+        assert_eq!(
+            downloading.track().map(|track| track.title.as_str()),
+            Some("Song")
+        );
+        assert_eq!(
+            downloading.byte_progress().and_then(ByteProgress::percent),
+            Some(50.0)
+        );
+
+        let cached = DownloadLane::CachedDelivery {
+            track: TrackLabel::new("Song", "Artist"),
+        };
+        assert_eq!(cached.stage_name(), "cached_delivery");
+        assert!(cached.byte_progress().is_none());
+
+        let track_upload = UploadLane::Track {
+            track: TrackLabel::new("Song", "Artist"),
+            progress: ByteProgress::new(1, Some(2)),
+        };
+        assert_eq!(track_upload.stage_name(), "uploading_track");
+        assert!(!track_upload.is_archive());
+
+        for (lane, stage) in [
+            (
+                UploadLane::ArchiveBuild {
+                    archive: "Album.zip".to_owned(),
+                    progress: ByteProgress::new(0, None),
+                },
+                UploadLane::ARCHIVE_BUILD_STAGE,
+            ),
+            (
+                UploadLane::ArchiveUpload {
+                    archive: "Album.zip".to_owned(),
+                    progress: ByteProgress::new(1, Some(2)),
+                },
+                UploadLane::ARCHIVE_UPLOAD_STAGE,
+            ),
+        ] {
+            assert!(lane.is_archive());
+            assert_eq!(lane.stage_name(), stage);
+            assert!(UploadLane::is_archive_stage(stage));
+        }
+        assert!(!UploadLane::is_archive_stage("uploading_track"));
+    }
+
+    #[test]
+    fn activities_map_onto_their_wire_stage_names() {
+        for (activity, stage) in [
+            (TaskActivity::Resolving, "resolving"),
+            (
+                TaskActivity::CheckingCache {
+                    item: "Album".to_owned(),
+                },
+                "checking_cache",
+            ),
+            (TaskActivity::Queued { position: 2 }, "queued"),
+            (TaskActivity::SkippingUncached, "skipping_uncached"),
+            (TaskActivity::CachedDelivered, "cached_delivered"),
+            (TaskActivity::ProcessingNext, "processing_next"),
+            (
+                TaskActivity::WaitingDuplicate {
+                    inflight_job_id: "job-1".to_owned(),
+                },
+                "waiting_duplicate",
+            ),
+        ] {
+            assert_eq!(activity.stage_name(), stage);
+        }
+    }
+}

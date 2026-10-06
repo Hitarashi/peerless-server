@@ -9,6 +9,7 @@ use std::{
 use bytes::Bytes;
 pub use db::hash_token as hash_bot_token;
 use ferogram::{ErrorKind, InvocationErrorExt, PeerRef, tl};
+use peerless_core::retry::exponential_delay;
 use tokio::sync::{Mutex, Semaphore};
 
 use crate::{
@@ -20,6 +21,8 @@ use crate::{
 const MAX_FETCH_ATTEMPTS: usize = 4;
 pub(crate) const CHUNK_FETCH_DEADLINE: Duration = Duration::from_secs(25);
 const RPC_TIMEOUT: Duration = Duration::from_secs(12);
+/// Base of the doubling fetch backoff; growth is capped by [`MAX_RETRY_BACKOFF`].
+const FETCH_RETRY_BASE_MS: u64 = 200;
 const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(2);
 
 fn is_stale_file_reference_error(error: &ferogram::InvocationError) -> bool {
@@ -732,9 +735,8 @@ fn retry_summary(attempts: usize, last_error: Option<String>) -> String {
 }
 
 fn retry_backoff(attempt: usize) -> Duration {
-    let exponent = attempt.saturating_sub(1).min(4) as u32;
-    let base_ms = 200_u64.saturating_mul(1_u64 << exponent);
-    let capped_ms = base_ms.min(MAX_RETRY_BACKOFF.as_millis() as u64);
+    let backoff = exponential_delay(FETCH_RETRY_BASE_MS, attempt.saturating_sub(1) as u32);
+    let capped_ms = backoff.as_millis().min(MAX_RETRY_BACKOFF.as_millis()) as u64;
     let jitter_ms = rand::random::<u64>() % (capped_ms / 2 + 1);
     Duration::from_millis(capped_ms / 2 + jitter_ms)
 }

@@ -1,7 +1,12 @@
 use std::{ops::ControlFlow, time::Duration};
 
-use ferogram::{InvocationError, RetryContext, RetryPolicy};
+use ferogram::{InvocationError, RetryContext, RetryPolicy as FerogramRetryPolicy};
 
+/// Thin adapter over ferogram's retry hook, [`BoundedTelegramRetry`].
+///
+/// This deliberately does not reuse `peerless_core::retry::RetryPolicy`: the waits here
+/// are dictated by Telegram's `FLOOD_WAIT` payload and bounded by a total-wait budget,
+/// not derived from a base delay that doubles per attempt.
 #[derive(Debug, Clone, Copy)]
 pub struct BoundedTelegramRetry {
     pub flood_threshold: Duration,
@@ -21,7 +26,7 @@ impl Default for BoundedTelegramRetry {
     }
 }
 
-impl RetryPolicy for BoundedTelegramRetry {
+impl FerogramRetryPolicy for BoundedTelegramRetry {
     fn should_retry(&self, context: &RetryContext) -> ControlFlow<(), Duration> {
         let delay = match &context.error {
             InvocationError::Rpc(rpc)

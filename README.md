@@ -283,9 +283,9 @@ ALAC_API_KEY=
 ALAC_STREAM_RETRIES=
 # Optional: Apple acquisition retry base delay in milliseconds (default: 2000; capped at 30000).
 ALAC_STREAM_RETRY_BASE_MS=
-# Optional: maximum rip/upload retries (default: 3).
+# Optional: maximum rip/upload retries (default: 3; values above 10 fall back to the default).
 ALAC_MAX_RETRIES=
-# Optional: rip/upload retry base delay in milliseconds (default: 2000).
+# Optional: rip/upload retry base delay in milliseconds (default: 2000; values above 60000 fall back to the default).
 ALAC_RETRY_BASE_MS=
 
 # Optional: Last.fm API key; required with LASTFM_SHARED_SECRET to connect Last.fm accounts.

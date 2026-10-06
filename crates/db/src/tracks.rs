@@ -5,8 +5,8 @@ use std::{
 
 use diesel::{dsl::now, prelude::*};
 use diesel_async::RunQueryDsl;
-use engine::orchestrator::deps::{CachedTrack, SaveTrackInput};
 use music::Codec;
+use peerless_core::{CachedTrack, SaveTrackInput};
 
 use crate::{DbError, DbPool, Track, models::NewTrack, schema::tracks};
 

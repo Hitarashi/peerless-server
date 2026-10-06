@@ -1,6 +1,6 @@
-use bot::dashboard::{DashboardJob, DashboardSnapshot, JobPhase, cancelable_job_ids, render};
+use bot::dashboard::{DashboardJob, DashboardSnapshot, cancelable_job_ids, render};
 use engine::orchestrator::types::{
-    ByteProgress, DownloadLane, RipActivity, TrackLabel, UploadLane,
+    ByteProgress, DownloadLane, RipActivity, TaskPhase, TrackLabel, UploadLane,
 };
 
 fn track(title: &str, artist: &str) -> TrackLabel {
@@ -24,9 +24,9 @@ fn job(n: usize, allowed: bool) -> DashboardJob {
         requester_name: format!("Requester {n}"),
         header: format!("Album {n}"),
         phase: if n == 0 {
-            JobPhase::Processing
+            TaskPhase::Processing
         } else {
-            JobPhase::Queued
+            TaskPhase::Queued
         },
         queue_position: (n != 0).then_some(n as u64),
         cached: 2,

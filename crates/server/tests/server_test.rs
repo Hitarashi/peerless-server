@@ -813,7 +813,7 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
     let owner_token = get_token_for(owner_id).await;
     let other_token = get_token_for(other_id).await;
     let admin_token = get_token_for(admin_id).await;
-    let mut task_sync_events = state.task_sync_tx.subscribe();
+    let mut task_sync_events = state.subscribe_task_sync();
     let unique_suffix = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system clock is after the Unix epoch")
@@ -846,7 +846,7 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
     };
 
     let controller = {
-        let tasks = state.active_tasks.read();
+        let tasks = state.active_tasks().read();
         let meta = tasks.get(&task_id).expect("task must be in active_tasks");
         assert_eq!(meta.task_id, task_id);
         assert_eq!(meta.owner_id, owner_id);
@@ -875,7 +875,7 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
     .expect_err("non-owner cancel must be rejected");
     assert_eq!(error.request_id.as_deref(), Some("cancel-forbidden"));
     assert_eq!(error.code, RipTaskRpcErrorCode::NotAuthorized);
-    assert!(state.active_tasks.read().contains_key(&task_id));
+    assert!(state.active_tasks().read().contains_key(&task_id));
     assert!(!controller.is_cancelled());
     assert!(matches!(
         task_sync_events.try_recv(),
@@ -919,7 +919,7 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
             if dismissed_id == task_id
     ));
     assert!(controller.is_cancelled());
-    assert!(!state.active_tasks.read().contains_key(&task_id));
+    assert!(!state.active_tasks().read().contains_key(&task_id));
 
     let admin_task = handle_rpc_as(
         &session_mgr,
@@ -968,7 +968,7 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
         server::rip_tasks::TaskSyncEvent::Dismissed { task_id: dismissed_id }
             if dismissed_id == admin_task_id
     ));
-    assert!(!state.active_tasks.read().contains_key(&admin_task_id));
+    assert!(!state.active_tasks().read().contains_key(&admin_task_id));
 
     let dedup_track_id = format!("lifecycle_dedup_{unique_suffix}");
     let dedup_first = handle_rpc_as(
@@ -1043,7 +1043,7 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
     };
     assert_ne!(different_codec_task_id, dedup_task_id);
     assert_eq!(
-        state.active_tasks.read()[&different_codec_task_id]
+        state.active_tasks().read()[&different_codec_task_id]
             .codec
             .as_deref(),
         Some("aac")
@@ -1055,7 +1055,7 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
     ));
 
     state.complete_task(&dedup_task_id);
-    assert!(!state.active_tasks.read().contains_key(&dedup_task_id));
+    assert!(!state.active_tasks().read().contains_key(&dedup_task_id));
     assert!(matches!(
         task_sync_events.recv().await.unwrap(),
         server::rip_tasks::TaskSyncEvent::Dismissed { task_id: dismissed_id }
@@ -1064,7 +1064,7 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
     state.complete_task(&different_codec_task_id);
     assert!(
         !state
-            .active_tasks
+            .active_tasks()
             .read()
             .contains_key(&different_codec_task_id)
     );
@@ -1108,7 +1108,7 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
             result_track_id: Some(cached_track.id),
         }
     );
-    assert!(state.active_tasks.read().is_empty());
+    assert!(state.active_tasks().read().is_empty());
     assert!(matches!(
         task_sync_events.try_recv(),
         Err(tokio::sync::broadcast::error::TryRecvError::Empty)

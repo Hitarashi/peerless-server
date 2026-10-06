@@ -8,6 +8,7 @@ use std::{
 
 use futures_util::{FutureExt, StreamExt};
 use music::{CodecPreference, Provider};
+use peerless_core::retry::{exponential_delay, jitter_multiplier as retry_jitter_multiplier};
 use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
@@ -493,9 +494,9 @@ impl AlacTrackRipper {
                     }
                     attempt += 1;
 
-                    let raw_delay = self.config.base_delay_ms * 2u64.pow(attempt - 1);
-                    let jitter = 0.8 + jitter_fraction() * 0.4;
-                    let delay_ms = (raw_delay as f64 * jitter).round() as u64;
+                    let raw_delay = exponential_delay(self.config.base_delay_ms, attempt - 1);
+                    let jitter = retry_jitter_multiplier();
+                    let delay_ms = (raw_delay.as_millis() as f64 * jitter).round() as u64;
 
                     warn!(
                         track_id,
@@ -879,24 +880,6 @@ fn emit_progress(on_progress: Option<&RipProgressCallback>, activity: RipActivit
     if let Some(callback) = on_progress {
         callback(activity);
     }
-}
-
-fn jitter_fraction() -> f64 {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static STATE: AtomicU64 = AtomicU64::new(0);
-    let mut state = STATE.load(Ordering::Relaxed);
-    if state == 0 {
-        state = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0x9E3779B97F4A7C15)
-            | 1;
-    }
-    state ^= state << 13;
-    state ^= state >> 7;
-    state ^= state << 17;
-    STATE.store(state, Ordering::Relaxed);
-    (state >> 11) as f64 / (1u64 << 53) as f64
 }
 
 fn unique_temp_suffix() -> u64 {

@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 music = { path = "../music", features = ["diesel"] }
+peerless-core = { path = "../core" }
 diesel.workspace = true
 diesel-async.workspace = true
 diesel_migrations.workspace = true
@@ -15,7 +16,6 @@ tokio-postgres-rustls.workspace = true
 rustls.workspace = true
 rustls-platform-verifier.workspace = true
 futures-util.workspace = true
-engine = { path = "../engine" }
 chrono.workspace = true
 serde_json.workspace = true
 serde.workspace = true

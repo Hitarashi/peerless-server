@@ -43,6 +43,45 @@ impl ChatMessageRef {
     }
 }
 
+/// Caption inputs for a track-audio publication. The delivery sink renders the markup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrackCaption {
+    /// Machine-readable caption identifying the track.
+    Machine { track_id: String, codec: String },
+    /// Plain-text fallback, used when the machine caption is rejected as too long.
+    Plain(String),
+}
+
+/// Caption inputs for a ZIP publication. The delivery sink renders the markup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ZipCaption {
+    pub album_id: String,
+    pub codec: Option<String>,
+    pub part_index: i32,
+    pub total_parts: i32,
+    pub generation_hash: String,
+    pub is_complete: bool,
+}
+
+/// Caption inputs for an album-details photo. The delivery sink renders the markup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlbumDetailsCaption {
+    pub album: String,
+    pub artist: String,
+    pub album_url: Option<String>,
+    pub total_tracks: usize,
+    pub delivered_tracks: Option<usize>,
+    pub size_bytes: i64,
+    pub total_parts: usize,
+    pub release_year: String,
+    pub genre: Option<String>,
+    pub record_label: Option<String>,
+    pub is_partial: bool,
+    pub user_name: Option<String>,
+    pub user_id: i64,
+    pub codec: Option<String>,
+}
+
 #[derive(Clone)]
 pub enum DumpPublish {
     TrackAudio {
@@ -50,13 +89,13 @@ pub enum DumpPublish {
         title: String,
         performer: String,
         duration: i64,
-        caption_html: String,
+        caption: TrackCaption,
         on_upload_progress: Option<UploadProgressCallback>,
     },
     ZipDocument {
         file_path: String,
         thumb_path: Option<String>,
-        caption_html: String,
+        caption: ZipCaption,
         on_upload_progress: Option<UploadProgressCallback>,
     },
 }
@@ -69,7 +108,7 @@ impl fmt::Debug for DumpPublish {
                 title,
                 performer,
                 duration,
-                caption_html,
+                caption,
                 ..
             } => formatter
                 .debug_struct("TrackAudio")
@@ -77,18 +116,18 @@ impl fmt::Debug for DumpPublish {
                 .field("title", title)
                 .field("performer", performer)
                 .field("duration", duration)
-                .field("caption_html", caption_html)
+                .field("caption", caption)
                 .finish_non_exhaustive(),
             Self::ZipDocument {
                 file_path,
                 thumb_path,
-                caption_html,
+                caption,
                 ..
             } => formatter
                 .debug_struct("ZipDocument")
                 .field("file_path", file_path)
                 .field("thumb_path", thumb_path)
-                .field("caption_html", caption_html)
+                .field("caption", caption)
                 .finish_non_exhaustive(),
         }
     }
@@ -106,13 +145,13 @@ pub enum ChatDelivery {
         destination: ChatRef,
         file_path: String,
         thumb_path: Option<String>,
-        caption_html: String,
+        caption: ZipCaption,
         on_upload_progress: Option<UploadProgressCallback>,
     },
     Photo {
         destination: ChatRef,
         image_bytes: Vec<u8>,
-        caption_html: String,
+        caption: AlbumDetailsCaption,
     },
 }
 
@@ -135,24 +174,24 @@ impl fmt::Debug for ChatDelivery {
                 destination,
                 file_path,
                 thumb_path,
-                caption_html,
+                caption,
                 ..
             } => formatter
                 .debug_struct("ZipDocument")
                 .field("destination", destination)
                 .field("file_path", file_path)
                 .field("thumb_path", thumb_path)
-                .field("caption_html", caption_html)
+                .field("caption", caption)
                 .finish_non_exhaustive(),
             Self::Photo {
                 destination,
                 image_bytes,
-                caption_html,
+                caption,
             } => formatter
                 .debug_struct("Photo")
                 .field("destination", destination)
                 .field("image_bytes", &image_bytes.len())
-                .field("caption_html", caption_html)
+                .field("caption", caption)
                 .finish(),
         }
     }
@@ -243,7 +282,7 @@ pub fn track_audio_publish(
     title: impl Into<String>,
     performer: impl Into<String>,
     duration: i64,
-    caption_html: impl Into<String>,
+    caption: TrackCaption,
     on_upload_progress: Option<UploadProgressCallback>,
 ) -> DumpPublish {
     DumpPublish::TrackAudio {
@@ -251,7 +290,7 @@ pub fn track_audio_publish(
         title: title.into(),
         performer: performer.into(),
         duration,
-        caption_html: caption_html.into(),
+        caption,
         on_upload_progress,
     }
 }
@@ -259,13 +298,13 @@ pub fn track_audio_publish(
 pub fn zip_document_publish(
     file_path: impl Into<String>,
     thumb_path: Option<String>,
-    caption_html: impl Into<String>,
+    caption: ZipCaption,
     on_upload_progress: Option<UploadProgressCallback>,
 ) -> DumpPublish {
     DumpPublish::ZipDocument {
         file_path: file_path.into(),
         thumb_path,
-        caption_html: caption_html.into(),
+        caption,
         on_upload_progress,
     }
 }
@@ -288,14 +327,14 @@ pub fn zip_chat_delivery(
     destination: ChatRef,
     file_path: impl Into<String>,
     thumb_path: Option<String>,
-    caption_html: impl Into<String>,
+    caption: ZipCaption,
     on_upload_progress: Option<UploadProgressCallback>,
 ) -> ChatDelivery {
     ChatDelivery::ZipDocument {
         destination,
         file_path: file_path.into(),
         thumb_path,
-        caption_html: caption_html.into(),
+        caption,
         on_upload_progress,
     }
 }
@@ -303,11 +342,11 @@ pub fn zip_chat_delivery(
 pub fn photo_delivery(
     destination: ChatRef,
     image_bytes: Vec<u8>,
-    caption_html: impl Into<String>,
+    caption: AlbumDetailsCaption,
 ) -> ChatDelivery {
     ChatDelivery::Photo {
         destination,
         image_bytes,
-        caption_html: caption_html.into(),
+        caption,
     }
 }

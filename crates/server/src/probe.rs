@@ -30,6 +30,9 @@ const STATUS_KEY: &str = "status";
 
 const LIVENESS_KEY: &str = "liveness";
 
+// Probe results are cached in moka like every other TTL cache in the workspace; only the
+// lifetime differs — these are process-wide statics rather than per-`ServerState` fields,
+// because health probes must answer even before/without a `ServerState` request scope.
 static STATUS_CACHE: std::sync::LazyLock<Cache<&'static str, Arc<StatusReport>>> =
     std::sync::LazyLock::new(|| {
         Cache::builder()

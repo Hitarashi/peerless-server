@@ -308,6 +308,7 @@ fn acquisition_with_retry_config(
     AppleStreamAcquisition<FakeStream, FakeMirror>,
     Arc<Mutex<Vec<String>>>,
 ) {
+    let retry = peerless_core::retry::RetryPolicy::new(rounds, retry_base_delay_ms);
     let calls = Arc::new(Mutex::new(Vec::new()));
     let policy = MirrorPolicyManager::new(mirror, None);
     let stream = FakeStream::new(failures, Arc::clone(&calls));
@@ -318,10 +319,7 @@ fn acquisition_with_retry_config(
             wrapper_url.map(str::to_owned),
             None,
             kind,
-            AppleAcquisitionConfig {
-                retry_rounds: rounds,
-                retry_base_delay_ms,
-            },
+            AppleAcquisitionConfig { retry },
         ),
         calls,
     )
@@ -424,8 +422,7 @@ fn fallback_rip_stage(
         None,
         WrapperKind::Endpoints,
         AppleAcquisitionConfig {
-            retry_rounds: 1,
-            retry_base_delay_ms: 0,
+            retry: peerless_core::retry::RetryPolicy::new(1, 0),
         },
     );
     FallbackRipStage {
@@ -501,8 +498,7 @@ async fn highest_quality_endpoint_wrapper_returns_non_ec3_stream() {
         None,
         WrapperKind::Endpoints,
         AppleAcquisitionConfig {
-            retry_rounds: 1,
-            retry_base_delay_ms: 0,
+            retry: peerless_core::retry::RetryPolicy::new(1, 0),
         },
     );
 
@@ -579,8 +575,7 @@ async fn cancellation_does_not_retry_or_open_primary_circuit() {
         None,
         WrapperKind::Native,
         AppleAcquisitionConfig {
-            retry_rounds: 4,
-            retry_base_delay_ms: 0,
+            retry: peerless_core::retry::RetryPolicy::new(4, 0),
         },
     );
     let signal = CancellationToken::new();
@@ -641,8 +636,7 @@ async fn primary_failure_opens_circuit_and_primary_success_clears_it() {
         None,
         WrapperKind::Native,
         AppleAcquisitionConfig {
-            retry_rounds: 1,
-            retry_base_delay_ms: 0,
+            retry: peerless_core::retry::RetryPolicy::new(1, 0),
         },
     );
     successful_acquisition
@@ -1112,8 +1106,7 @@ async fn cancellation_after_non_ec3_candidate_is_not_typed_unavailable() {
         None,
         WrapperKind::Endpoints,
         AppleAcquisitionConfig {
-            retry_rounds: 3,
-            retry_base_delay_ms: 0,
+            retry: peerless_core::retry::RetryPolicy::new(3, 0),
         },
     );
     let signal = CancellationToken::new();
@@ -1144,8 +1137,7 @@ async fn atmos_non_ec3_wrapper_candidate_falls_back_to_ec3_candidate() {
         None,
         WrapperKind::Endpoints,
         AppleAcquisitionConfig {
-            retry_rounds: 1,
-            retry_base_delay_ms: 0,
+            retry: peerless_core::retry::RetryPolicy::new(1, 0),
         },
     );
 

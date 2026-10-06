@@ -1,13 +1,9 @@
 use std::{
-    collections::HashMap,
     fs::OpenOptions,
     io::Write,
     path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex, OnceLock,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    sync::{Arc, LazyLock},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use engine::limits::MAX_DOCUMENT_BYTES;
@@ -22,6 +18,7 @@ use crate::{
     BotState,
     handlers::chat_peer_ref,
     html::{escape, parse_dynamic_html},
+    pending::PendingConfirmations,
 };
 
 const KB: f64 = 1024.0;
@@ -32,21 +29,12 @@ struct PendingImport {
     user_id: i64,
     media: ferogram::tl::enums::MessageMedia,
     file_name: String,
-    expires_at: Instant,
 }
 
-fn pending_imports() -> &'static Mutex<HashMap<String, PendingImport>> {
-    static PENDING: OnceLock<Mutex<HashMap<String, PendingImport>>> = OnceLock::new();
-    PENDING.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn next_token() -> String {
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-    format!(
-        "{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    )
+fn pending_imports() -> &'static PendingConfirmations<PendingImport> {
+    static PENDING: LazyLock<PendingConfirmations<PendingImport>> =
+        LazyLock::new(|| PendingConfirmations::new(CONFIRMATION_TTL));
+    &PENDING
 }
 
 fn confirmation_keyboard(token: &str) -> ferogram::tl::enums::ReplyMarkup {
@@ -237,23 +225,11 @@ async fn import(state: Arc<BotState>, msg: ferogram::update::IncomingMessage) {
         return;
     }
 
-    let token = next_token();
-    {
-        let mut pending = pending_imports()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let now = Instant::now();
-        pending.retain(|_, value| value.expires_at > now);
-        pending.insert(
-            token.clone(),
-            PendingImport {
-                user_id: msg.sender_user_id().unwrap_or_default(),
-                media: doc,
-                file_name: file_name.clone(),
-                expires_at: now + CONFIRMATION_TTL,
-            },
-        );
-    }
+    let token = pending_imports().insert(PendingImport {
+        user_id: msg.sender_user_id().unwrap_or_default(),
+        media: doc,
+        file_name: file_name.clone(),
+    });
     let text = format!(
         "<b>Restore this database archive?</b><br/><br/><blockquote>File: <code>{}</code></blockquote><br/><i>Current database records may be merged or replaced according to the archive contents.</i>",
         escape(&file_name)
@@ -303,13 +279,7 @@ pub async fn callback(
             return;
         }
     };
-    let pending = {
-        let mut map = pending_imports()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        map.retain(|_, value| value.expires_at > Instant::now());
-        map.remove(&token)
-    };
+    let pending = pending_imports().take(&token);
     let Some(pending) = pending else {
         let _ = query
             .answer()

@@ -15,8 +15,8 @@ use engine::{
             AlbumUpload, ArtworkProvider, BoxFuture, CachedAlbum, CachedTrack, ChatDelivery,
             CollectionResolver, Delivery, DeliveryError, DeliveryReceipt, DumpMessageRef,
             DumpPublication, DumpPublish, OrchestratorConfig, ProviderDeps, ProviderPresentation,
-            SaveTrackInput, StorageRetryPolicy, Storefront, TaskBookkeeping, TrackAcquisition,
-            TrackCache, TrackCacheError, UploadProgressCallback,
+            RetryConfig, SaveTrackInput, StorageRetryPolicy, Storefront, TaskBookkeeping,
+            TrackAcquisition, TrackCache, TrackCacheError, UploadProgressCallback,
         },
         types::{OrchestratorEvent, RipTaskOptions, TaskPhase},
     },
@@ -320,8 +320,7 @@ async fn wait_for_phase(
 async fn cancel_during_active_rip_emits_exactly_one_cancelled_terminal() {
     let orch = Arc::new(RipOrchestrator::new(OrchestratorConfig {
         storage_retry: StorageRetryPolicy::test(),
-        upload_retry_base_ms: 0,
-        upload_max_retries: 0,
+        upload_retry: RetryConfig::new(0, 0),
     }));
     let terminals = terminal_recorder(&orch);
     let deps = Arc::new(RaceDeps {
@@ -351,8 +350,7 @@ async fn cancel_during_active_rip_emits_exactly_one_cancelled_terminal() {
 async fn settled_failed_job_is_no_longer_cancellable() {
     let orch = Arc::new(RipOrchestrator::new(OrchestratorConfig {
         storage_retry: StorageRetryPolicy::test(),
-        upload_retry_base_ms: 0,
-        upload_max_retries: 0,
+        upload_retry: RetryConfig::new(0, 0),
     }));
     let terminals = terminal_recorder(&orch);
     let deps = Arc::new(RaceDeps {

@@ -13,6 +13,7 @@ path = "src/main.rs"
 diesel.workspace = true
 db = { path = "../db" }
 engine = { path = "../engine" }
+peerless-core = { path = "../core" }
 apple = { path = "../apple" }
 music = { path = "../music" }
 media = { path = "../media" }

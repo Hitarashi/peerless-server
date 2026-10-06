@@ -5,30 +5,28 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, Instant},
+    time::Instant,
 };
 
-use engine::{
-    Codec,
-    orchestrator::{
-        caption::{parse_dump_caption, parse_zip_dump_caption},
-        deps::SaveTrackInput,
-    },
-};
+use engine::{Codec, orchestrator::deps::SaveTrackInput};
 use ferogram::{
     InputMessage,
     filters::{self, Dispatcher},
     media::Document,
 };
+use peerless_core::retry::exponential_delay;
 
 use crate::{
     BotState,
+    caption::{parse_dump_caption, parse_zip_dump_caption},
     html::{escape, parse_dynamic_html},
 };
 
 static INDEXING: AtomicBool = AtomicBool::new(false);
 const INDEX_BATCH_SIZE: i32 = 100;
-const INDEX_BATCH_RETRIES: usize = 3;
+const INDEX_BATCH_RETRIES: u32 = 3;
+/// Base of the doubling backoff between dump-batch scan retries.
+const INDEX_BATCH_RETRY_BASE_MS: u64 = 250;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct IndexSummary {
@@ -315,7 +313,7 @@ async fn get_messages_with_retry(
     batch_end: i32,
 ) -> Result<Vec<ferogram::update::IncomingMessage>, String> {
     let mut last_error = String::new();
-    for attempt in 0..INDEX_BATCH_RETRIES {
+    for retry_index in 0..INDEX_BATCH_RETRIES {
         match state
             .client
             .get_messages(state.dump_peer.clone(), ids)
@@ -324,8 +322,9 @@ async fn get_messages_with_retry(
             Ok(messages) => return Ok(messages),
             Err(error) => {
                 last_error = error.to_string();
-                if attempt + 1 < INDEX_BATCH_RETRIES {
-                    tokio::time::sleep(Duration::from_millis(250)).await;
+                if retry_index + 1 < INDEX_BATCH_RETRIES {
+                    tokio::time::sleep(exponential_delay(INDEX_BATCH_RETRY_BASE_MS, retry_index))
+                        .await;
                 }
             }
         }

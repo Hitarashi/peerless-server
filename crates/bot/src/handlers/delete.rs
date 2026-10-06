@@ -1,10 +1,6 @@
 use std::{
-    collections::HashMap,
-    sync::{
-        Arc, Mutex, OnceLock,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::{Duration, Instant},
+    sync::{Arc, LazyLock},
+    time::Duration,
 };
 
 use apple::parse_alac_input;
@@ -16,7 +12,7 @@ use ferogram::{
     update::CallbackQuery,
 };
 
-use crate::{BotState, html::parse_dynamic_html};
+use crate::{BotState, html::parse_dynamic_html, pending::PendingConfirmations};
 
 const RESTRICTED: &str =
     "! <b>Access restricted</b><br/>This command is restricted to the bot owner.";
@@ -28,21 +24,12 @@ struct PendingDelete {
     user_id: i64,
     track_id: String,
     message_id: i64,
-    expires_at: Instant,
 }
 
-fn pending_deletes() -> &'static Mutex<HashMap<String, PendingDelete>> {
-    static PENDING: OnceLock<Mutex<HashMap<String, PendingDelete>>> = OnceLock::new();
-    PENDING.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn next_token() -> String {
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-    format!(
-        "{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    )
+fn pending_deletes() -> &'static PendingConfirmations<PendingDelete> {
+    static PENDING: LazyLock<PendingConfirmations<PendingDelete>> =
+        LazyLock::new(|| PendingConfirmations::new(CONFIRMATION_TTL));
+    &PENDING
 }
 
 fn confirmation_keyboard(token: &str) -> ferogram::tl::enums::ReplyMarkup {
@@ -133,23 +120,11 @@ async fn delete(msg: ferogram::update::IncomingMessage, state: Arc<BotState>) {
         return;
     };
 
-    let token = next_token();
-    {
-        let mut pending = pending_deletes()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let now = Instant::now();
-        pending.retain(|_, value| value.expires_at > now);
-        pending.insert(
-            token.clone(),
-            PendingDelete {
-                user_id: sender,
-                track_id: track_id.clone(),
-                message_id: cached.message_id,
-                expires_at: now + CONFIRMATION_TTL,
-            },
-        );
-    }
+    let token = pending_deletes().insert(PendingDelete {
+        user_id: sender,
+        track_id: track_id.clone(),
+        message_id: cached.message_id,
+    });
     let text = format!(
         "<b>Delete this cached track?</b><br/><br/><blockquote><b>Details:</b><br/>• Apple ID: <code>{track_id}</code><br/>• Codec: <code>{}</code><br/>• Dump message: <code>#{}</code></blockquote><br/><i>This removes the dump message and database record.</i>",
         cached.codec, cached.message_id
@@ -191,13 +166,7 @@ pub async fn callback(
             return;
         }
     };
-    let pending = {
-        let mut map = pending_deletes()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        map.retain(|_, value| value.expires_at > Instant::now());
-        map.remove(&token)
-    };
+    let pending = pending_deletes().take(&token);
     let Some(pending) = pending else {
         let _ = query
             .answer()

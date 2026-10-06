@@ -388,7 +388,7 @@ fn zip_delivery_details_html(
     zip: &engine::orchestrator::types::ZipDeliveryInfo,
     include_label: bool,
 ) -> String {
-    let caption_meta = engine::orchestrator::caption::AlbumDetailsCaptionMetadata {
+    let caption_meta = crate::caption::AlbumDetailsCaptionMetadata {
         album: &zip.album,
         artist: &zip.artist,
         album_url: zip.album_url.as_deref(),
@@ -404,7 +404,7 @@ fn zip_delivery_details_html(
         user_id: job.user_id,
         codec: zip.codec.as_deref(),
     };
-    let details_html = engine::orchestrator::caption::format_album_details_caption(&caption_meta);
+    let details_html = crate::caption::format_album_details_caption(&caption_meta);
     if include_label {
         format!(
             "<b>{} archive</b><br/>{details_html}",

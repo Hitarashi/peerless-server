@@ -15,28 +15,13 @@ use engine::{
     types::{AlbumTracks, ArtistTracks, TrackRipResult},
 };
 use music::PlaylistData;
+use peerless_core::retry::RetryConfig;
 
 use crate::{providers::ProviderRegistry, telegram_sink::FerogramTelegramSink};
 
-fn retry_values() -> (u64, u32) {
-    let retry_base_ms = std::env::var("ALAC_RETRY_BASE_MS")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .filter(|value| *value <= engine::limits::MAX_RETRY_BASE_MS)
-        .unwrap_or(2000);
-    let max_retries = std::env::var("ALAC_MAX_RETRIES")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .filter(|value| *value <= engine::limits::MAX_RETRIES)
-        .unwrap_or(3);
-    (retry_base_ms, max_retries)
-}
-
 pub fn orchestrator_config() -> OrchestratorConfig {
-    let (upload_retry_base_ms, upload_max_retries) = retry_values();
     OrchestratorConfig {
-        upload_retry_base_ms,
-        upload_max_retries,
+        upload_retry: RetryConfig::from_env(),
         ..OrchestratorConfig::default()
     }
 }
@@ -99,10 +84,10 @@ impl RipDeps {
             lyricsporn_api_endpoint.clone(),
         );
         let probe_policy = apple.mirror_policy().shared();
-        let (retry_base_ms, max_retries) = retry_values();
+        let retry = RetryConfig::from_env();
         let ripper_config = RipperConfig {
-            base_delay_ms: retry_base_ms,
-            max_retries,
+            base_delay_ms: retry.base_delay_ms,
+            max_retries: retry.retries,
             ..RipperConfig::default()
         };
         let bot_settings = settings.get_settings();

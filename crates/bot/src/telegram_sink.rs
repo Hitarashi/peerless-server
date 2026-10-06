@@ -1,8 +1,9 @@
 use std::{path::Path, sync::Arc, time::Duration};
 
 use engine::orchestrator::deps::{
-    BoxFuture, ChatDelivery, ChatMessageRef, Delivery, DeliveryError, DeliveryReceipt,
-    DeliveryRejection, DumpMessageRef, DumpPublication, DumpPublish, UploadProgressCallback,
+    AlbumDetailsCaption, BoxFuture, ChatDelivery, ChatMessageRef, Delivery, DeliveryError,
+    DeliveryReceipt, DeliveryRejection, DumpMessageRef, DumpPublication, DumpPublish, TrackCaption,
+    UploadProgressCallback, ZipCaption,
 };
 use ferogram::{
     ErrorKind, InputMessage, InvocationError, InvocationErrorExt, PeerRef, TransferHandle,
@@ -26,6 +27,51 @@ fn clamp_plain_text(text: &str, max_utf16: usize) -> String {
     let mut truncated = text[..byte_limit].to_string();
     truncated.push('…');
     truncated
+}
+
+fn render_track_caption(caption: &TrackCaption) -> String {
+    match caption {
+        TrackCaption::Machine { track_id, codec } => {
+            crate::caption::format_dump_caption(&crate::caption::DumpCaptionMetadata {
+                track_id,
+                codec: Some(codec),
+            })
+        }
+        TrackCaption::Plain(text) => text.clone(),
+    }
+}
+
+fn render_zip_caption(caption: &ZipCaption) -> String {
+    crate::caption::format_zip_dump_caption(
+        &crate::caption::DumpZipCaptionMetadata {
+            album_id: &caption.album_id,
+            codec: caption.codec.as_deref(),
+            part_index: caption.part_index,
+            total_parts: caption.total_parts,
+            generation_hash: &caption.generation_hash,
+        },
+        caption.is_complete,
+        0,
+    )
+}
+
+fn render_album_details_caption(caption: &AlbumDetailsCaption) -> String {
+    crate::caption::format_album_details_caption(&crate::caption::AlbumDetailsCaptionMetadata {
+        album: &caption.album,
+        artist: &caption.artist,
+        album_url: caption.album_url.as_deref(),
+        total_tracks: caption.total_tracks,
+        delivered_tracks: caption.delivered_tracks,
+        size_bytes: caption.size_bytes,
+        total_parts: caption.total_parts,
+        release_year: &caption.release_year,
+        genre: caption.genre.as_deref(),
+        record_label: caption.record_label.as_deref(),
+        is_partial: caption.is_partial,
+        user_name: caption.user_name.as_deref(),
+        user_id: caption.user_id,
+        codec: caption.codec.as_deref(),
+    })
 }
 
 fn prepare_media_caption(caption_html: &str) -> InputMessage {
@@ -232,9 +278,10 @@ impl Delivery for FerogramTelegramSink {
                     title,
                     performer,
                     duration,
-                    caption_html,
+                    caption,
                     on_upload_progress,
                 } => {
+                    let caption_html = render_track_caption(&caption);
                     let size = tokio::fs::metadata(&file_path)
                         .await
                         .map_err(|error| DeliveryError::LocalIo(error.to_string()))?
@@ -301,9 +348,10 @@ impl Delivery for FerogramTelegramSink {
                 DumpPublish::ZipDocument {
                     file_path,
                     thumb_path,
-                    caption_html,
+                    caption,
                     on_upload_progress,
                 } => {
+                    let caption_html = render_zip_caption(&caption);
                     let media = self
                         .upload_zip_media(
                             &file_path,
@@ -398,9 +446,10 @@ impl Delivery for FerogramTelegramSink {
                     destination,
                     file_path,
                     thumb_path,
-                    caption_html,
+                    caption,
                     on_upload_progress,
                 } => {
+                    let caption_html = render_zip_caption(&caption);
                     if destination.id() == 0 {
                         return Err(DeliveryError::Unavailable(
                             "destination chat id cannot be 0".to_string(),
@@ -428,8 +477,9 @@ impl Delivery for FerogramTelegramSink {
                 ChatDelivery::Photo {
                     destination,
                     image_bytes,
-                    caption_html,
+                    caption,
                 } => {
+                    let caption_html = render_album_details_caption(&caption);
                     if destination.id() == 0 {
                         return Err(DeliveryError::Unavailable(
                             "destination chat id cannot be 0".to_string(),

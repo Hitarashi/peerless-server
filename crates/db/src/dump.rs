@@ -2,9 +2,9 @@ use std::{io::Write, time::Instant};
 
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
-use engine::limits::MAX_DOCUMENT_BYTES;
 use flate2::{Compression, write::GzEncoder};
 use music::Codec;
+use peerless_core::MAX_DOCUMENT_BYTES;
 use serde::{Deserialize, Serialize};
 
 use crate::{

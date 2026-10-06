@@ -7,13 +7,13 @@ use engine::{
     orchestrator::{
         OrchestratorError, RipOrchestrator,
         deps::{
-            AlbumCache, AlbumCacheError, AlbumCacheOperation, AlbumReplacementExpectation,
-            AlbumReplacementResult, AlbumUpload, ArtworkProvider, CachedAlbum, CachedTrack,
-            ChatDelivery, ChatMessageRef, CollectionResolver, Delivery, DeliveryError,
-            DeliveryReceipt, DumpMessageRef, DumpPublication, DumpPublish, OrchestratorConfig,
-            ProviderDeps, ProviderPresentation, SaveTrackInput, StorageRetryPolicy, Storefront,
-            TaskBookkeeping, TrackAcquisition, TrackCache, TrackCacheError, TrackCacheOperation,
-            UploadProgressCallback,
+            AlbumCache, AlbumCacheError, AlbumCacheOperation, AlbumDetailsCaption,
+            AlbumReplacementExpectation, AlbumReplacementResult, AlbumUpload, ArtworkProvider,
+            CachedAlbum, CachedTrack, ChatDelivery, ChatMessageRef, CollectionResolver, Delivery,
+            DeliveryError, DeliveryReceipt, DumpMessageRef, DumpPublication, DumpPublish,
+            OrchestratorConfig, ProviderDeps, ProviderPresentation, RetryConfig, SaveTrackInput,
+            StorageRetryPolicy, Storefront, TaskBookkeeping, TrackAcquisition, TrackCache,
+            TrackCacheError, TrackCacheOperation, UploadProgressCallback, ZipCaption,
         },
         types::{
             DownloadLane, OrchestratorEvent, RipTaskOptions, RipTaskProgress, RipTaskSummary,
@@ -97,11 +97,11 @@ struct DepsState {
     deleted_album_zip_ids: Vec<String>,
     found_albums: HashMap<String, Vec<CachedAlbum>>,
     sent_documents: Vec<String>,
-    sent_document_captions: Vec<String>,
+    sent_document_captions: Vec<ZipCaption>,
     uploaded_document_bytes: Vec<u8>,
 
     sent_thumbs: Vec<String>,
-    sent_photos: Vec<(i64, usize, String)>,
+    sent_photos: Vec<(i64, usize, AlbumDetailsCaption)>,
     fetch_artwork_urls: Vec<String>,
     artwork_bytes: Option<Vec<u8>>,
 
@@ -302,7 +302,7 @@ impl Delivery for FakeSink {
                 DumpPublish::ZipDocument {
                     file_path,
                     thumb_path,
-                    caption_html,
+                    caption,
                     on_upload_progress,
                 } => {
                     let bytes = std::fs::read(&file_path).unwrap_or_default();
@@ -312,7 +312,7 @@ impl Delivery for FakeSink {
                     }
                     let mut st = state.lock().unwrap();
                     st.sent_documents.push(file_path);
-                    st.sent_document_captions.push(caption_html);
+                    st.sent_document_captions.push(caption);
                     st.uploaded_document_bytes = bytes;
                     if let Some(thumb_path) = thumb_path {
                         st.sent_thumbs.push(thumb_path);
@@ -389,7 +389,7 @@ impl Delivery for FakeSink {
                 ChatDelivery::ZipDocument {
                     destination,
                     file_path,
-                    caption_html,
+                    caption,
                     on_upload_progress,
                     ..
                 } => {
@@ -400,7 +400,7 @@ impl Delivery for FakeSink {
                     }
                     let mut st = state.lock().unwrap();
                     st.sent_documents.push(file_path);
-                    st.sent_document_captions.push(caption_html);
+                    st.sent_document_captions.push(caption);
                     st.uploaded_document_bytes = bytes;
                     let result = st
                         .zip_chat_results
@@ -412,12 +412,12 @@ impl Delivery for FakeSink {
                 ChatDelivery::Photo {
                     destination,
                     image_bytes,
-                    caption_html,
+                    caption,
                 } => {
                     state.lock().unwrap().sent_photos.push((
                         destination.id(),
                         image_bytes.len(),
-                        caption_html,
+                        caption,
                     ));
                     Ok(DeliveryReceipt::PreviewDelivered)
                 }
@@ -1026,8 +1026,7 @@ fn setup_with_upload_retries(
     let (deps, state) = FakeDeps::new();
     let orch = RipOrchestrator::new(OrchestratorConfig {
         storage_retry: StorageRetryPolicy::test(),
-        upload_retry_base_ms: 0,
-        upload_max_retries,
+        upload_retry: RetryConfig::new(upload_max_retries, 0),
     });
     let events = EventLog::attach(&orch);
     (orch, deps, state, events)
@@ -3162,7 +3161,11 @@ async fn cached_aac_zip_uses_aac_identity_everywhere() {
     let st = state.lock().unwrap();
     assert_eq!(st.saved_albums.len(), 1);
     assert_eq!(st.saved_albums[0].codec, engine::Codec::Aac);
-    assert!(st.sent_document_captions[0].contains("\"codec\":\"aac\""));
+    assert_eq!(
+        st.sent_document_captions[0].codec.as_deref(),
+        Some("aac"),
+        "AAC identity reaches the ZIP caption"
+    );
     assert_eq!(
         summary
             .zip_delivery

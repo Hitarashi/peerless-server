@@ -1,4 +1,4 @@
-use crate::types::{Codec, TrackRipResult};
+use engine::types::{Codec, TrackRipResult};
 
 pub const MAX_MEDIA_CAPTION_UTF16_LEN: usize = 1024;
 
@@ -159,7 +159,7 @@ pub fn format_album_details_caption(meta: &AlbumDetailsCaptionMetadata<'_>) -> S
         None => "unknown tracks".to_owned(),
     };
 
-    let size = crate::progress::format_bytes(meta.size_bytes.max(0) as u64);
+    let size = engine::progress::format_bytes(meta.size_bytes.max(0) as u64);
     let parts_info = if meta.total_parts > 1 {
         format!(" · {} parts", meta.total_parts)
     } else {
@@ -208,7 +208,7 @@ pub fn format_dump_caption(meta: &DumpCaptionMetadata<'_>) -> String {
 
     let canonical_codec = meta
         .codec
-        .and_then(|c| c.parse::<crate::types::Codec>().ok())
+        .and_then(|c| c.parse::<Codec>().ok())
         .map(|c| c.as_str())
         .unwrap_or(default_codec);
 

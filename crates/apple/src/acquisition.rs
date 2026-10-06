@@ -8,6 +8,13 @@ use engine::{
     },
     types::TrackMeta,
 };
+use peerless_core::retry::{
+    DEFAULT_RETRIES, DEFAULT_RETRY_BASE_MS, RetryPolicy, exponential_delay,
+};
+
+/// Upper bound for `ALAC_STREAM_RETRY_BASE_MS`; stream acquisition retries stay far
+/// below the workspace-wide [`peerless_core::limits::MAX_RETRY_BASE_MS`] cap.
+const MAX_STREAM_RETRY_BASE_MS: u64 = 30_000;
 use music::CodecPreference;
 use tokio_util::sync::CancellationToken;
 
@@ -77,18 +84,17 @@ pub fn map_acquisition_outcome(
     }
 }
 
+/// Stream-acquisition retry budget: total connection rounds plus the base delay
+/// `exponential_delay` doubles between them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AppleAcquisitionConfig {
-    pub retry_rounds: u32,
-
-    pub retry_base_delay_ms: u64,
+    pub retry: RetryPolicy,
 }
 
 impl Default for AppleAcquisitionConfig {
     fn default() -> Self {
         Self {
-            retry_rounds: 3,
-            retry_base_delay_ms: 2_000,
+            retry: RetryPolicy::new(DEFAULT_RETRIES, DEFAULT_RETRY_BASE_MS),
         }
     }
 }
@@ -96,17 +102,19 @@ impl Default for AppleAcquisitionConfig {
 impl AppleAcquisitionConfig {
     fn from_environment() -> Self {
         Self {
-            retry_rounds: std::env::var("ALAC_STREAM_RETRIES")
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .filter(|rounds| *rounds > 0)
-                .unwrap_or(3),
-            retry_base_delay_ms: std::env::var("ALAC_STREAM_RETRY_BASE_MS")
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .filter(|delay| *delay > 0)
-                .unwrap_or(2_000)
-                .min(30_000),
+            retry: RetryPolicy::new(
+                std::env::var("ALAC_STREAM_RETRIES")
+                    .ok()
+                    .and_then(|value| value.parse().ok())
+                    .filter(|rounds| *rounds > 0)
+                    .unwrap_or(DEFAULT_RETRIES),
+                std::env::var("ALAC_STREAM_RETRY_BASE_MS")
+                    .ok()
+                    .and_then(|value| value.parse().ok())
+                    .filter(|delay| *delay > 0)
+                    .unwrap_or(DEFAULT_RETRY_BASE_MS)
+                    .min(MAX_STREAM_RETRY_BASE_MS),
+            ),
         }
     }
 }
@@ -127,8 +135,13 @@ impl<S: StreamHttp, M: MirrorHttp> AppleStreamAcquisition<S, M> {
             wrapper_api_key,
             wrapper_kind,
             retry_config: AppleAcquisitionConfig {
-                retry_rounds: retry_config.retry_rounds.max(1),
-                retry_base_delay_ms: retry_config.retry_base_delay_ms.min(30_000),
+                retry: RetryPolicy::new(
+                    retry_config.retry.total_attempts.max(1),
+                    retry_config
+                        .retry
+                        .base_delay_ms
+                        .min(MAX_STREAM_RETRY_BASE_MS),
+                ),
             },
         }
     }
@@ -146,8 +159,8 @@ impl<S: StreamHttp, M: MirrorHttp> AppleStreamAcquisition<S, M> {
         codec_preference: CodecPreference,
     ) -> Result<AcquisitionOutcome, StreamError> {
         let track = TrackLabel::from_meta(meta);
-        let rounds = self.retry_config.retry_rounds;
-        let base_delay = self.retry_config.retry_base_delay_ms;
+        let rounds = self.retry_config.retry.total_attempts.max(1);
+        let base_delay = self.retry_config.retry.base_delay_ms;
         let mut all_errors = Vec::new();
 
         let primary = self
@@ -161,7 +174,7 @@ impl<S: StreamHttp, M: MirrorHttp> AppleStreamAcquisition<S, M> {
                 if signal.as_ref().is_some_and(CancellationToken::is_cancelled) {
                     break;
                 }
-                let delay = base_delay * 2u64.pow(round - 1);
+                let delay = exponential_delay(base_delay, round - 1).as_millis() as u64;
                 tracing::debug!(
                     round,
                     rounds,
@@ -738,8 +751,7 @@ mod tests {
             None,
             super::WrapperKind::Native,
             super::AppleAcquisitionConfig {
-                retry_rounds: 1,
-                retry_base_delay_ms: 0,
+                retry: peerless_core::retry::RetryPolicy::new(1, 0),
             },
         );
         let deps = AppleRipperDeps::new(

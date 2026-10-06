@@ -57,23 +57,23 @@ pub type RipTaskRunner = Arc<
 
 #[derive(Clone)]
 pub struct ServerState {
-    pub db: db::DbPool,
-    pub stream_engine: Arc<stream::StreamEngine>,
-    pub session_mgr: Arc<db::SessionManager>,
-    pub tracks_repo: Arc<db::TracksRepository>,
-    pub settings_store: Arc<db::SettingsStore>,
-    pub rip_orchestrator: Arc<engine::orchestrator::RipOrchestrator>,
-    pub token_cache: Arc<Cache<String, auth::AuthedUser>>,
-    pub telegram_client: Option<ferogram::Client>,
-    pub avatar_cache: Arc<Cache<i64, Option<Arc<Vec<u8>>>>>,
-    pub task_sync_tx: broadcast::Sender<rip_tasks::TaskSyncEvent>,
-    pub active_tasks: Arc<parking_lot::RwLock<HashMap<String, rip_tasks::ServerTaskMeta>>>,
-    pub admin_id: i64,
-    pub sync_hub: playback_sync::PlaybackSyncHub,
-    pub http_client: reqwest::Client,
-    pub rip_task_runner: RipTaskRunner,
-    pub app_key: String,
-    pub started_at: std::time::Instant,
+    db: db::DbPool,
+    stream_engine: Arc<stream::StreamEngine>,
+    session_mgr: Arc<db::SessionManager>,
+    tracks_repo: Arc<db::TracksRepository>,
+    settings_store: Arc<db::SettingsStore>,
+    rip_orchestrator: Arc<engine::orchestrator::RipOrchestrator>,
+    token_cache: Arc<Cache<String, auth::AuthedUser>>,
+    telegram_client: Option<ferogram::Client>,
+    avatar_cache: Arc<Cache<i64, Option<Arc<Vec<u8>>>>>,
+    task_sync_tx: broadcast::Sender<rip_tasks::TaskSyncEvent>,
+    active_tasks: Arc<parking_lot::RwLock<HashMap<String, rip_tasks::ServerTaskMeta>>>,
+    admin_id: i64,
+    sync_hub: playback_sync::PlaybackSyncHub,
+    http_client: reqwest::Client,
+    rip_task_runner: RipTaskRunner,
+    app_key: String,
+    started_at: std::time::Instant,
 }
 
 impl ServerState {
@@ -104,7 +104,7 @@ impl ServerState {
                 .build(),
         );
         let http_client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(30))
             .build()
             .unwrap_or_default();
         let rip_task_runner: RipTaskRunner = Arc::new(
@@ -150,6 +150,25 @@ impl ServerState {
         self
     }
 
+    /// Shared registry of in-flight rip tasks, keyed by task id.
+    pub fn active_tasks(
+        &self,
+    ) -> &Arc<parking_lot::RwLock<HashMap<String, rip_tasks::ServerTaskMeta>>> {
+        &self.active_tasks
+    }
+
+    /// Subscribe to task-sync events broadcast to connected clients.
+    pub fn subscribe_task_sync(&self) -> broadcast::Receiver<rip_tasks::TaskSyncEvent> {
+        self.task_sync_tx.subscribe()
+    }
+
+    /// Broadcast a task-update event to connected clients.
+    pub fn notify_task_updated(&self, task_id: String) {
+        let _ = self
+            .task_sync_tx
+            .send(rip_tasks::TaskSyncEvent::Updated { task_id });
+    }
+
     fn remove_active_task(&self, task_id: &str) -> Option<rip_tasks::ServerTaskMeta> {
         let task = self.active_tasks.write().remove(task_id)?;
         let _ = self.task_sync_tx.send(rip_tasks::TaskSyncEvent::Dismissed {
@@ -191,13 +210,10 @@ impl ServerState {
             return;
         };
         let previous = &task.latest_progress;
-        let is_archive_stage = progress.upload.as_ref().is_some_and(|lane| {
-            matches!(
-                lane.stage,
-                rip_tasks::RipTaskUploadStage::BuildingArchive
-                    | rip_tasks::RipTaskUploadStage::UploadingArchive
-            )
-        });
+        let is_archive_stage = progress
+            .upload
+            .as_ref()
+            .is_some_and(|lane| lane.stage.is_archive());
         progress.total_tracks = progress.total_tracks.or(previous.total_tracks);
         if is_archive_stage {
             if progress.current_track_title.is_none() {

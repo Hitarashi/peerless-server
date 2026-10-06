@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 music = { path = "../music" }
 media = { path = "../media" }
+peerless-core = { path = "../core" }
 bytes.workspace = true
 futures-util.workspace = true
 serde.workspace = true

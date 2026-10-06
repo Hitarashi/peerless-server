@@ -208,7 +208,9 @@ async fn create_task(
         controller: controller.clone(),
         created_at: std::time::Instant::now(),
         latest_progress: RipTaskProgress {
-            job_stage: Some(crate::rip_tasks::RipTaskJobStage::Queued),
+            job_stage: Some(
+                engine::orchestrator::types::TaskActivity::Queued { position: 1 }.into(),
+            ),
             download: None,
             upload: None,
             percent: Some(0.0),
@@ -380,7 +382,9 @@ mod tests {
             controller: tokio_util::sync::CancellationToken::new(),
             created_at: std::time::Instant::now(),
             latest_progress: RipTaskProgress {
-                job_stage: Some(crate::rip_tasks::RipTaskJobStage::Queued),
+                job_stage: Some(
+                    engine::orchestrator::types::TaskActivity::Queued { position: 1 }.into(),
+                ),
                 download: None,
                 upload: None,
                 percent: Some(0.0),

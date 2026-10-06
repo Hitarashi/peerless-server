@@ -12,10 +12,10 @@ use db::{
 };
 use diesel::sql_query;
 use diesel_async::RunQueryDsl;
-use engine::orchestrator::deps::{
+use music::{Codec, Provider};
+use peerless_core::{
     AlbumReplacementExpectation, AlbumReplacementResult, AlbumUpload, SaveTrackInput,
 };
-use music::{Codec, Provider};
 use serde_json::json;
 
 async fn client() -> DbPool {

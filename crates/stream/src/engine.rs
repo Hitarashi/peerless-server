@@ -77,6 +77,9 @@ impl StreamEngine {
             .max_capacity(1000)
             .time_to_live(std::time::Duration::from_secs(3600 * 24))
             .build();
+        // Cache-of-mutexes, not a value cache: it exists to collapse concurrent metadata
+        // refreshes per (track, worker) onto one lock, so it shares moka for bounded
+        // lifecycle only — its entries are `Arc<Mutex<()>>`, never metadata.
         let metadata_refresh_locks = Cache::builder()
             .max_capacity(1000)
             .time_to_live(std::time::Duration::from_secs(3600 * 24))

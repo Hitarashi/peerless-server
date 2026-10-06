@@ -2,8 +2,9 @@ use std::sync::RwLock;
 
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
-use engine::settings::{
-    BotSettings, LyricspornApiEndpoint, RippingMode, default_settings, normalize_lyricsporn_api_url,
+use peerless_core::{
+    BotSettings, LyricspornApiEndpoint, MAX_COLLECTION_TRACKS, RippingMode, default_settings,
+    normalize_lyricsporn_api_url, validate_collection_limit,
 };
 use serde_json::{Value, json};
 
@@ -151,8 +152,8 @@ impl SettingsStore {
 
     pub async fn set_max_collection_tracks(&self, limit: i64) -> u32 {
         let value = u32::try_from(limit.max(0))
-            .unwrap_or(engine::limits::MAX_COLLECTION_TRACKS)
-            .min(engine::limits::MAX_COLLECTION_TRACKS);
+            .unwrap_or(MAX_COLLECTION_TRACKS)
+            .min(MAX_COLLECTION_TRACKS);
         self.set_setting("max_collection_tracks", json!(value))
             .await
             .max_collection_tracks
@@ -242,7 +243,7 @@ fn apply_value(settings: &mut BotSettings, key: &str, value: &Value) -> bool {
         "max_collection_tracks" => value
             .as_u64()
             .and_then(|v| u32::try_from(v).ok())
-            .filter(|v| engine::limits::validate_collection_limit(*v))
+            .filter(|v| validate_collection_limit(*v))
             .map(|v| settings.max_collection_tracks = v)
             .is_some(),
         "stream_public_url" => {

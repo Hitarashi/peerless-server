@@ -1,7 +1,7 @@
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use engine::orchestrator::types::{
-    ByteProgress, DownloadLane, RipActivity, TaskActivity, TrackLabel, UploadLane,
+    ByteProgress, DownloadLane, RipActivity, TaskActivity, TaskPhase, TrackLabel, UploadLane,
 };
 use tokio::sync::Mutex;
 
@@ -29,21 +29,13 @@ pub trait DashboardSink: Send + Sync {
     fn delete<'a>(&'a self, id: i32) -> DashboardFuture<'a, ()>;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum JobPhase {
-    Processing,
-    Queued,
-    Delivering,
-    WaitingDuplicate,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DashboardJob {
     pub id: String,
     pub requester_id: i64,
     pub requester_name: String,
     pub header: String,
-    pub phase: JobPhase,
+    pub phase: TaskPhase,
     pub queue_position: Option<u64>,
     pub cached: u64,
     pub ripped: u64,
@@ -105,13 +97,13 @@ pub fn render(
     {
         let number = start + offset + 1;
         let state = match job.phase {
-            JobPhase::Processing => "Processing".to_owned(),
-            JobPhase::Delivering => "⚡ Delivering (Cache)".to_owned(),
-            JobPhase::WaitingDuplicate => "⏳ Waiting on inflight rip".to_owned(),
-            JobPhase::Queued => job.queue_position.map_or_else(
+            TaskPhase::Delivering => "⚡ Delivering (Cache)".to_owned(),
+            TaskPhase::WaitingDuplicate => "⏳ Waiting on inflight rip".to_owned(),
+            TaskPhase::Queued => job.queue_position.map_or_else(
                 || "Queued".to_owned(),
                 |position| format!("Queued · position #{position}"),
             ),
+            _ => "Processing".to_owned(),
         };
         let pct = job.percent.min(100) as f64;
         let mut lines = vec![
@@ -121,7 +113,7 @@ pub fn render(
                 crate::presentation::box_progress_bar(pct)
             ),
         ];
-        if job.phase != JobPhase::Processing {
+        if !job.phase.is_working() {
             lines.push(format!("┝ Status: {}", esc(&state)));
         }
         lines.push(format!(
@@ -550,7 +542,7 @@ mod tests {
                 requester_id: 7,
                 requester_name: "Alice".into(),
                 header: "Album: <b>3 Originals</b> by <b>Rick Astley</b>".into(),
-                phase: JobPhase::Processing,
+                phase: TaskPhase::Processing,
                 queue_position: None,
                 cached: 0,
                 ripped: 0,
@@ -581,7 +573,7 @@ mod tests {
                 requester_id: 7,
                 requester_name: "Alice".into(),
                 header: "Track: <b>Song</b>".into(),
-                phase: JobPhase::Queued,
+                phase: TaskPhase::Queued,
                 queue_position: Some(2),
                 cached: 0,
                 ripped: 0,
@@ -609,7 +601,7 @@ mod tests {
                 requester_id: 7,
                 requester_name: "Alice".into(),
                 header: format!("Track {number}"),
-                phase: JobPhase::Processing,
+                phase: TaskPhase::Processing,
                 queue_position: None,
                 cached: 0,
                 ripped: 0,
@@ -646,7 +638,7 @@ mod tests {
                 requester_id: 7,
                 requester_name: "Alice".into(),
                 header: "Track".into(),
-                phase: JobPhase::Processing,
+                phase: TaskPhase::Processing,
                 queue_position: None,
                 cached: 0,
                 ripped: 0,
@@ -692,7 +684,7 @@ mod tests {
                 requester_id: 7,
                 requester_name: "Alice".into(),
                 header: "Track".into(),
-                phase: JobPhase::Processing,
+                phase: TaskPhase::Processing,
                 queue_position: None,
                 cached: 0,
                 ripped: 0,
@@ -719,7 +711,7 @@ mod tests {
             requester_id: 7,
             requester_name: "Alice".into(),
             header: "Album".into(),
-            phase: JobPhase::Processing,
+            phase: TaskPhase::Processing,
             queue_position: None,
             cached: 0,
             ripped: 0,

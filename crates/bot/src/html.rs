@@ -1,5 +1,5 @@
 pub fn escape(value: &str) -> String {
-    engine::orchestrator::caption::html_escape(value)
+    crate::caption::html_escape(value)
 }
 
 pub fn parse_dynamic_html(content: &str) -> String {

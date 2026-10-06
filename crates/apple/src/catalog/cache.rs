@@ -1,3 +1,11 @@
+//! Synchronous TTL + LRU map for cached Lyricsporn responses.
+//!
+//! Deliberately not moka (the workspace's cache elsewhere): this cache is read and
+//! written from synchronous `Catalog` helpers behind a plain `Mutex`, and its eviction
+//! contract is strict LRU with a capacity of `0` degenerating to a single resident
+//! entry. `moka` offers neither — its API is async, its admission policy is W-TinyLFU
+//! rather than LRU, and `max_capacity(0)` stores nothing at all.
+
 use std::time::{Duration, Instant};
 
 use indexmap::IndexMap;

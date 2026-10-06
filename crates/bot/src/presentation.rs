@@ -53,10 +53,6 @@ pub fn heading(kind: FeedbackKind, title: &str) -> String {
     format!("{symbol}<b>{title}</b>")
 }
 
-pub fn escape(value: &str) -> String {
-    crate::html::escape(value)
-}
-
 pub fn action_label(action: &str, target: Option<&str>) -> String {
     match target {
         Some(target) if !target.is_empty() => format!("{action} · {target}"),
@@ -150,13 +146,6 @@ mod tests {
             "✓ <b>Complete</b>"
         );
         assert_eq!(heading(FeedbackKind::Warning, "Paused"), "! <b>Paused</b>");
-    }
-
-    #[test]
-    fn escape_matches_the_single_workspace_escaper() {
-        for input in ["&", "<b>", "a&b", "\"'&<>", "", "plain — 文字"] {
-            assert_eq!(escape(input), crate::html::escape(input));
-        }
     }
 
     #[test]

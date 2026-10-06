@@ -95,6 +95,7 @@ dependencies = [
  "indexmap",
  "media",
  "music",
+ "peerless-core",
  "rand 0.10.3",
  "regex",
  "reqwest",
@@ -302,6 +303,7 @@ dependencies = [
  "media",
  "music",
  "parking_lot",
+ "peerless-core",
  "regex",
  "reqwest",
  "serde_json",
@@ -655,10 +657,10 @@ dependencies = [
  "diesel",
  "diesel-async",
  "diesel_migrations",
- "engine",
  "flate2",
  "futures-util",
  "music",
+ "peerless-core",
  "rand 0.10.3",
  "rustls",
  "rustls-platform-verifier",
@@ -872,6 +874,7 @@ dependencies = [
  "indexmap",
  "media",
  "music",
+ "peerless-core",
  "reqwest",
  "serde",
  "serde_json",
@@ -2136,6 +2139,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "peerless-core"
+version = "0.1.0"
+dependencies = [
+ "music",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "pem-rfc7468"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3055,6 +3069,7 @@ dependencies = [
  "futures-util",
  "moka",
  "music",
+ "peerless-core",
  "rand 0.10.3",
  "sha2",
  "thiserror 2.0.21",

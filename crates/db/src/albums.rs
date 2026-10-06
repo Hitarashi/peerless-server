@@ -1,9 +1,7 @@
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
-use engine::orchestrator::deps::{
-    AlbumReplacementExpectation, AlbumReplacementResult, AlbumUpload,
-};
 use music::Codec;
+use peerless_core::{AlbumReplacementExpectation, AlbumReplacementResult, AlbumUpload};
 
 use crate::{
     DbError, DbPool,

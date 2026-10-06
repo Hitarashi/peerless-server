@@ -88,15 +88,6 @@ fn same_progress_phase(
         && previous.completed_tracks == current.completed_tracks
 }
 
-fn lane_byte_values(
-    progress: &engine::orchestrator::types::ByteProgress,
-) -> (Option<u64>, Option<u64>, Option<f32>) {
-    let bytes_done = Some(progress.completed);
-    let bytes_total = progress.total;
-    let percent = server::rip_tasks::lane_percent(bytes_done, bytes_total);
-    (bytes_done, bytes_total, percent)
-}
-
 fn extract_archive_codec(archive_name: &str) -> Option<String> {
     let name = archive_name.strip_suffix(".zip").unwrap_or(archive_name);
     let mut parts = Vec::new();
@@ -114,23 +105,6 @@ fn extract_archive_codec(archive_name: &str) -> Option<String> {
         }
     }
     parts.pop().map(|s| s.to_string())
-}
-
-fn map_job_stage(
-    activity: Option<&engine::orchestrator::types::TaskActivity>,
-) -> Option<server::rip_tasks::RipTaskJobStage> {
-    use engine::orchestrator::types::TaskActivity;
-    use server::rip_tasks::RipTaskJobStage as Stage;
-
-    match activity? {
-        TaskActivity::Resolving => Some(Stage::Resolving),
-        TaskActivity::CheckingCache { .. } => Some(Stage::CheckingCache),
-        TaskActivity::Queued { .. } => Some(Stage::Queued),
-        TaskActivity::SkippingUncached => Some(Stage::SkippingUncached),
-        TaskActivity::CachedDelivered => Some(Stage::CachedDelivered),
-        TaskActivity::ProcessingNext => Some(Stage::ProcessingNext),
-        TaskActivity::WaitingDuplicate { .. } => Some(Stage::WaitingDuplicate),
-    }
 }
 
 #[derive(Debug)]
@@ -416,9 +390,7 @@ async fn main() -> Result<()> {
     let server_state_for_events = Arc::clone(&server_state);
     let progress_throttles = Mutex::new(HashMap::<String, ProgressThrottle>::new());
     orchestrator.subscribe(Arc::new(move |event| {
-        use engine::orchestrator::types::{
-            DownloadLane, OrchestratorEvent, RipActivity, UploadLane,
-        };
+        use engine::orchestrator::types::{ByteProgress, OrchestratorEvent, UploadLane};
 
         let state = &server_state_for_events;
 
@@ -452,7 +424,7 @@ async fn main() -> Result<()> {
         let find_task = |job: &engine::orchestrator::types::ActiveRipTask,
                          register_if_missing: bool|
          -> Option<server::rip_tasks::ServerTaskMeta> {
-            let mut tasks = state.active_tasks.write();
+            let mut tasks = state.active_tasks().write();
             let is_album = job.total_tracks > 1;
             let (parsed_title, parsed_artist) =
                 parse_job_title_and_artist(&job.job_header, is_album);
@@ -523,7 +495,9 @@ async fn main() -> Result<()> {
                 controller: tokio_util::sync::CancellationToken::new(),
                 created_at: std::time::Instant::now(),
                 latest_progress: server::rip_tasks::RipTaskProgress {
-                    job_stage: Some(server::rip_tasks::RipTaskJobStage::Queued),
+                    job_stage: Some(
+                        engine::orchestrator::types::TaskActivity::Queued { position: 1 }.into(),
+                    ),
                     download: None,
                     upload: None,
                     percent: Some(0.0),
@@ -539,9 +513,7 @@ async fn main() -> Result<()> {
             };
             tasks.insert(task_id.clone(), meta.clone());
             drop(tasks);
-            let _ = state
-                .task_sync_tx
-                .send(server::rip_tasks::TaskSyncEvent::Updated { task_id });
+            state.notify_task_updated(task_id);
             Some(meta)
         };
 
@@ -570,198 +542,85 @@ async fn main() -> Result<()> {
                 if let Some(task) = find_task(job, true) {
                     let download_codec = progress.codec.clone().or_else(|| task.codec.clone());
                     let download = progress.download.as_ref().map(|download_lane| {
-                        use server::rip_tasks::RipTaskDownloadStage as Stage;
-
-                        match download_lane {
-                            DownloadLane::Rip(activity) => match activity {
-                                RipActivity::ResolvingMetadata => {
-                                    server::rip_tasks::RipTaskDownloadLane {
-                                        stage: Stage::ResolvingMetadata,
-                                        title: None,
-                                        artist: None,
-                                        artwork_url: None,
-                                        bytes_done: None,
-                                        bytes_total: None,
-                                        percent: None,
-                                        codec: download_codec.clone(),
-                                        track_index: None,
-                                        total_tracks: None,
-                                    }
-                                }
-                                RipActivity::Connecting { track } => {
-                                    server::rip_tasks::RipTaskDownloadLane {
-                                        stage: Stage::Connecting,
-                                        title: Some(track.title.clone()),
-                                        artist: Some(track.artist.clone()),
-                                        artwork_url: track.artwork_url.clone(),
-                                        bytes_done: None,
-                                        bytes_total: None,
-                                        percent: None,
-                                        codec: download_codec.clone(),
-                                        track_index: track.track_index,
-                                        total_tracks: track.total_tracks,
-                                    }
-                                }
-                                RipActivity::Downloading { track, progress } => {
-                                    let (bytes_done, bytes_total, percent) =
-                                        lane_byte_values(progress);
-                                    server::rip_tasks::RipTaskDownloadLane {
-                                        stage: Stage::Downloading,
-                                        title: Some(track.title.clone()),
-                                        artist: Some(track.artist.clone()),
-                                        artwork_url: track.artwork_url.clone(),
-                                        bytes_done,
-                                        bytes_total,
-                                        percent,
-                                        codec: download_codec.clone(),
-                                        track_index: track.track_index,
-                                        total_tracks: track.total_tracks,
-                                    }
-                                }
-                                RipActivity::MaterializingCachedMedia { track, progress } => {
-                                    let (bytes_done, bytes_total, percent) =
-                                        lane_byte_values(progress);
-                                    server::rip_tasks::RipTaskDownloadLane {
-                                        stage: Stage::MaterializingCachedMedia,
-                                        title: Some(track.title.clone()),
-                                        artist: Some(track.artist.clone()),
-                                        artwork_url: track.artwork_url.clone(),
-                                        bytes_done,
-                                        bytes_total,
-                                        percent,
-                                        codec: download_codec.clone(),
-                                        track_index: track.track_index,
-                                        total_tracks: track.total_tracks,
-                                    }
-                                }
-                                RipActivity::Decrypting { track } => {
-                                    server::rip_tasks::RipTaskDownloadLane {
-                                        stage: Stage::Decrypting,
-                                        title: Some(track.title.clone()),
-                                        artist: Some(track.artist.clone()),
-                                        artwork_url: track.artwork_url.clone(),
-                                        bytes_done: None,
-                                        bytes_total: None,
-                                        percent: None,
-                                        codec: download_codec.clone(),
-                                        track_index: track.track_index,
-                                        total_tracks: track.total_tracks,
-                                    }
-                                }
-                                RipActivity::Tagging { track } => {
-                                    server::rip_tasks::RipTaskDownloadLane {
-                                        stage: Stage::Tagging,
-                                        title: Some(track.title.clone()),
-                                        artist: Some(track.artist.clone()),
-                                        artwork_url: track.artwork_url.clone(),
-                                        bytes_done: None,
-                                        bytes_total: None,
-                                        percent: None,
-                                        codec: download_codec.clone(),
-                                        track_index: track.track_index,
-                                        total_tracks: track.total_tracks,
-                                    }
-                                }
-                            },
-                            DownloadLane::CachedDelivery { track } => {
-                                server::rip_tasks::RipTaskDownloadLane {
-                                    stage: Stage::CachedDelivery,
-                                    title: Some(track.title.clone()),
-                                    artist: Some(track.artist.clone()),
-                                    artwork_url: track.artwork_url.clone(),
-                                    bytes_done: None,
-                                    bytes_total: None,
-                                    percent: None,
-                                    codec: download_codec.clone(),
-                                    track_index: track.track_index,
-                                    total_tracks: track.total_tracks,
-                                }
-                            }
+                        let byte_progress = download_lane.byte_progress();
+                        let (title, artist, artwork_url, track_index, total_tracks) =
+                            match download_lane.track() {
+                                Some(track) => (
+                                    Some(track.title.clone()),
+                                    Some(track.artist.clone()),
+                                    track.artwork_url.clone(),
+                                    track.track_index,
+                                    track.total_tracks,
+                                ),
+                                None => (None, None, None, None, None),
+                            };
+                        server::rip_tasks::RipTaskDownloadLane {
+                            stage: download_lane.into(),
+                            title,
+                            artist,
+                            artwork_url,
+                            bytes_done: byte_progress.map(|progress| progress.completed),
+                            bytes_total: byte_progress.and_then(|progress| progress.total),
+                            percent: byte_progress.and_then(ByteProgress::percent),
+                            codec: download_codec.clone(),
+                            track_index,
+                            total_tracks,
                         }
                     });
 
                     let upload = progress.upload.as_ref().map(|upload_lane| {
-                        use server::rip_tasks::RipTaskUploadStage as Stage;
-
-                        match upload_lane {
-                            UploadLane::Track {
-                                track,
-                                progress: byte_progress,
-                                ..
-                            } => {
-                                let (bytes_done, bytes_total, percent) =
-                                    lane_byte_values(byte_progress);
-                                server::rip_tasks::RipTaskUploadLane {
-                                    stage: Stage::UploadingTrack,
-                                    title: Some(track.title.clone()),
-                                    artist: Some(track.artist.clone()),
-                                    artwork_url: track.artwork_url.clone(),
-                                    bytes_done,
-                                    bytes_total,
-                                    percent,
-                                    codec: progress.codec.clone().or_else(|| task.codec.clone()),
-                                    track_index: track.track_index,
-                                    total_tracks: track.total_tracks,
-                                }
-                            }
-                            UploadLane::ArchiveBuild {
-                                archive,
-                                progress: byte_progress,
-                            } => {
-                                let (bytes_done, bytes_total, percent) =
-                                    lane_byte_values(byte_progress);
-                                let archive_codec = extract_archive_codec(archive)
-                                    .or_else(|| progress.codec.clone())
-                                    .or_else(|| task.codec.clone());
-                                server::rip_tasks::RipTaskUploadLane {
-                                    stage: Stage::BuildingArchive,
-                                    title: Some(archive.clone()),
-                                    artist: None,
-                                    artwork_url: task.artwork_url.clone(),
-                                    bytes_done,
-                                    bytes_total,
-                                    percent,
-                                    codec: archive_codec,
-                                    track_index: None,
-                                    total_tracks: None,
-                                }
-                            }
-                            UploadLane::ArchiveUpload {
-                                archive,
-                                progress: byte_progress,
-                            } => {
-                                let (bytes_done, bytes_total, percent) =
-                                    lane_byte_values(byte_progress);
-                                let archive_codec = extract_archive_codec(archive)
-                                    .or_else(|| progress.codec.clone())
-                                    .or_else(|| task.codec.clone());
-                                server::rip_tasks::RipTaskUploadLane {
-                                    stage: Stage::UploadingArchive,
-                                    title: Some(archive.clone()),
-                                    artist: None,
-                                    artwork_url: task.artwork_url.clone(),
-                                    bytes_done,
-                                    bytes_total,
-                                    percent,
-                                    codec: archive_codec,
-                                    track_index: None,
-                                    total_tracks: None,
-                                }
-                            }
+                        let byte_progress = upload_lane.byte_progress();
+                        let (title, artist, artwork_url, track_index, total_tracks, codec) =
+                            match upload_lane {
+                                UploadLane::Track { track, .. } => (
+                                    Some(track.title.clone()),
+                                    Some(track.artist.clone()),
+                                    track.artwork_url.clone(),
+                                    track.track_index,
+                                    track.total_tracks,
+                                    progress.codec.clone().or_else(|| task.codec.clone()),
+                                ),
+                                UploadLane::ArchiveBuild { archive, .. }
+                                | UploadLane::ArchiveUpload { archive, .. } => (
+                                    Some(archive.clone()),
+                                    None,
+                                    task.artwork_url.clone(),
+                                    None,
+                                    None,
+                                    extract_archive_codec(archive)
+                                        .or_else(|| progress.codec.clone())
+                                        .or_else(|| task.codec.clone()),
+                                ),
+                            };
+                        server::rip_tasks::RipTaskUploadLane {
+                            stage: upload_lane.into(),
+                            title,
+                            artist,
+                            artwork_url,
+                            bytes_done: Some(byte_progress.completed),
+                            bytes_total: byte_progress.total,
+                            percent: byte_progress.percent(),
+                            codec,
+                            track_index,
+                            total_tracks,
                         }
                     });
 
-                    let is_archive = upload.as_ref().is_some_and(|lane| {
-                        matches!(
-                            lane.stage,
-                            server::rip_tasks::RipTaskUploadStage::BuildingArchive
-                                | server::rip_tasks::RipTaskUploadStage::UploadingArchive
-                        )
-                    });
-                    let lane_percent = upload
+                    let is_archive = progress
+                        .upload
                         .as_ref()
-                        .and_then(|lane| lane.percent)
-                        .or_else(|| download.as_ref().and_then(|lane| lane.percent));
+                        .is_some_and(|upload_lane| upload_lane.is_archive());
+                    let lane_percent = progress
+                        .upload
+                        .as_ref()
+                        .and_then(|upload_lane| upload_lane.byte_progress().percent())
+                        .or_else(|| {
+                            progress.download.as_ref().and_then(|download_lane| {
+                                download_lane
+                                    .byte_progress()
+                                    .and_then(ByteProgress::percent)
+                            })
+                        });
                     let overall_percent = if is_archive {
                         lane_percent
                     } else {
@@ -816,7 +675,7 @@ async fn main() -> Result<()> {
                         };
 
                     let next_progress = server::rip_tasks::RipTaskProgress {
-                        job_stage: map_job_stage(progress.job_activity.as_ref()),
+                        job_stage: progress.job_activity.clone().map(Into::into),
                         download,
                         upload,
                         percent: overall_percent,
@@ -842,7 +701,7 @@ async fn main() -> Result<()> {
             OrchestratorEvent::Completed(job, summary) => {
                 if let Some(task) = find_task(job, false) {
                     if let Some(summary_codec) = &summary.codec {
-                        let mut tasks = state.active_tasks.write();
+                        let mut tasks = state.active_tasks().write();
                         if let Some(t) = tasks.get_mut(&task.task_id) {
                             t.codec = Some(summary_codec.clone());
                         }
@@ -964,15 +823,30 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use server::rip_tasks::{RipTaskDownloadLane, RipTaskDownloadStage, RipTaskProgress};
+    use engine::orchestrator::types::{ByteProgress, DownloadLane, RipActivity, TrackLabel};
+    use server::rip_tasks::{RipTaskDownloadLane, RipTaskProgress};
 
     use super::*;
 
-    fn progress(stage: RipTaskDownloadStage, bytes_done: u64) -> RipTaskProgress {
+    fn downloading(bytes_done: u64) -> RipActivity {
+        RipActivity::Downloading {
+            track: TrackLabel::new("Track", "Artist"),
+            progress: ByteProgress::new(bytes_done, Some(100)),
+        }
+    }
+
+    fn decrypting() -> RipActivity {
+        RipActivity::Decrypting {
+            track: TrackLabel::new("Track", "Artist"),
+        }
+    }
+
+    fn progress(stage: RipActivity, bytes_done: u64) -> RipTaskProgress {
+        let lane = DownloadLane::Rip(stage);
         RipTaskProgress {
             job_stage: None,
             download: Some(RipTaskDownloadLane {
-                stage,
+                stage: (&lane).into(),
                 title: Some("Track".to_owned()),
                 artist: Some("Artist".to_owned()),
                 artwork_url: None,
@@ -997,37 +871,33 @@ mod tests {
 
     #[test]
     fn unknown_byte_total_keeps_completed_bytes_and_null_percent() {
-        let (bytes_done, bytes_total, percent) =
-            lane_byte_values(&engine::orchestrator::types::ByteProgress {
-                completed: 512,
-                total: None,
-            });
+        let byte_progress = ByteProgress::new(512, None);
 
-        assert_eq!(bytes_done, Some(512));
-        assert_eq!(bytes_total, None);
-        assert_eq!(percent, None);
+        assert_eq!(Some(byte_progress.completed), Some(512));
+        assert_eq!(byte_progress.total, None);
+        assert_eq!(byte_progress.percent(), None);
     }
 
     #[test]
     fn progress_throttle_emits_at_the_250ms_boundary_and_on_phase_changes() {
         let started = Instant::now();
         let mut throttle = ProgressThrottle::default();
-        assert!(throttle.should_emit(started, &progress(RipTaskDownloadStage::Downloading, 1)));
+        assert!(throttle.should_emit(started, &progress(downloading(1), 1)));
         assert!(!throttle.should_emit(
             started + Duration::from_millis(249),
-            &progress(RipTaskDownloadStage::Downloading, 2)
+            &progress(downloading(2), 2)
         ));
         assert!(throttle.should_emit(
             started + Duration::from_millis(250),
-            &progress(RipTaskDownloadStage::Downloading, 2)
+            &progress(downloading(2), 2)
         ));
         assert!(!throttle.should_emit(
             started + Duration::from_millis(500),
-            &progress(RipTaskDownloadStage::Downloading, 2)
+            &progress(downloading(2), 2)
         ));
         assert!(throttle.should_emit(
             started + Duration::from_millis(501),
-            &progress(RipTaskDownloadStage::Decrypting, 0)
+            &progress(decrypting(), 0)
         ));
     }
 }

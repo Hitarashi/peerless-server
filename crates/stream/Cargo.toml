@@ -9,6 +9,7 @@ license.workspace = true
 ferogram.workspace = true
 db = { path = "../db" }
 music = { path = "../music" }
+peerless-core = { path = "../core" }
 tokio.workspace = true
 bytes.workspace = true
 futures-util.workspace = true

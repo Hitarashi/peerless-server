@@ -9,6 +9,7 @@ license.workspace = true
 engine = { path = "../engine" }
 music = { path = "../music" }
 media = { path = "../media" }
+peerless-core = { path = "../core" }
 bytes.workspace = true
 futures-util.workspace = true
 regex.workspace = true

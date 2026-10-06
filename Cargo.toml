@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/music",
+    "crates/core",
     "crates/engine",
     "crates/apple",
     "crates/db",
@@ -49,6 +50,7 @@ indexmap = "2"
 cuid2 = "0.1"
 sha2 = "0.11"
 sha1 = "0.10"
+# todo)) update sha1 to 0.11 when rsa updates to 0.10
 rsa = { version = "0.9", features = ["sha1", "getrandom"] }
 md-5 = "0.11"
 aes = "0.9"

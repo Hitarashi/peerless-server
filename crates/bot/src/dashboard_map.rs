@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 
 use engine::orchestrator::types::{
-    ActiveRipTask, DownloadLane, RipTaskProgress, TaskActivity, TaskPhase as EnginePhase,
-    UploadLane,
+    ActiveRipTask, DownloadLane, RipTaskProgress, TaskActivity, TaskPhase, UploadLane,
 };
 
-use crate::dashboard::{DashboardJob, DashboardSnapshot, JobPhase};
+use crate::dashboard::{DashboardJob, DashboardSnapshot};
 
 #[derive(Debug, Default)]
 pub struct JobContexts {
@@ -81,37 +80,6 @@ impl JobContexts {
     }
 }
 
-pub fn phase_from(engine_phase: EnginePhase) -> JobPhase {
-    match engine_phase {
-        EnginePhase::Queued => JobPhase::Queued,
-        EnginePhase::Delivering => JobPhase::Delivering,
-        EnginePhase::WaitingDuplicate => JobPhase::WaitingDuplicate,
-        _ => JobPhase::Processing,
-    }
-}
-
-fn fallback_job_activity(job: &ActiveRipTask) -> Option<TaskActivity> {
-    match job.phase {
-        EnginePhase::Resolving => Some(TaskActivity::Resolving),
-        EnginePhase::CheckingCache => Some(TaskActivity::CheckingCache {
-            item: job.job_header.clone(),
-        }),
-        EnginePhase::Queued => Some(TaskActivity::Queued {
-            position: job
-                .queue_position
-                .and_then(|position| u32::try_from(position).ok())
-                .unwrap_or(1),
-        }),
-        EnginePhase::Processing => None,
-        EnginePhase::Delivering => Some(TaskActivity::CachedDelivered),
-        EnginePhase::WaitingDuplicate => None,
-    }
-}
-
-pub fn percent_from(progress: &RipTaskProgress) -> u8 {
-    progress.percent.min(100) as u8
-}
-
 pub fn job_to_dashboard(
     job: &ActiveRipTask,
     context: &JobContext,
@@ -132,7 +100,7 @@ pub fn job_to_dashboard(
         requester_id: job.user_id,
         requester_name: context.requester_name.clone(),
         header: context.header.clone(),
-        phase: phase_from(job.phase),
+        phase: job.phase,
         queue_position: job.queue_position,
         cached: job.cached_count as u64,
         ripped: job.ripped_count as u64,
@@ -157,32 +125,25 @@ pub fn snapshot_from(
     let mut ordered = active.to_vec();
     ordered.sort_by(|left, right| {
         fn key(job: &ActiveRipTask) -> (u8, u64, u64) {
-            match job.phase {
-                EnginePhase::Delivering | EnginePhase::Processing => (0, 0, job.start_time_ms),
-                EnginePhase::Queued => {
-                    (1, job.queue_position.unwrap_or(u64::MAX), job.start_time_ms)
-                }
-                EnginePhase::WaitingDuplicate => (2, 0, job.start_time_ms),
-                _ => (0, 0, job.start_time_ms),
-            }
+            let position = match job.phase {
+                TaskPhase::Queued => job.queue_position.unwrap_or(u64::MAX),
+                _ => 0,
+            };
+            (job.phase.display_rank(), position, job.start_time_ms)
         }
         key(left)
             .cmp(&key(right))
             .then_with(|| left.id.cmp(&right.id))
     });
-    let current_job_activity = ordered.iter().find_map(|job| {
-        let context = contexts.get(&job.id);
-        context
-            .and_then(|value| value.job_activity.clone())
-            .or_else(|| {
-                context
-                    .is_none()
-                    .then(|| fallback_job_activity(job))
-                    .flatten()
-            })
+    let current_job_activity = ordered.iter().find_map(|job| match contexts.get(&job.id) {
+        Some(context) => context.job_activity.clone(),
+        None => job
+            .phase
+            .fallback_activity(&job.job_header, job.queue_position),
     });
     let current_download = ordered.iter().find_map(|job| {
-        (job.phase != EnginePhase::Queued && job.phase != EnginePhase::WaitingDuplicate)
+        job.phase
+            .has_lane_activity()
             .then(|| {
                 contexts
                     .get(&job.id)
@@ -191,7 +152,8 @@ pub fn snapshot_from(
             .flatten()
     });
     let current_upload = ordered.iter().find_map(|job| {
-        (job.phase != EnginePhase::Queued && job.phase != EnginePhase::WaitingDuplicate)
+        job.phase
+            .has_lane_activity()
             .then(|| {
                 contexts
                     .get(&job.id)
@@ -234,8 +196,12 @@ mod tests {
 
     use super::*;
 
+    fn job_header() -> String {
+        "Album: <b>X</b> by <b>Y</b>".to_owned()
+    }
+
     fn engine_job(
-        phase: EnginePhase,
+        phase: TaskPhase,
         queue_position: Option<u64>,
         user: i64,
         user_name: Option<&str>,
@@ -271,7 +237,7 @@ mod tests {
 
     #[test]
     fn queued_jobs_map_to_waiting_rows_with_position() {
-        let job = engine_job(EnginePhase::Queued, Some(3), 7, Some("Alice"));
+        let job = engine_job(TaskPhase::Queued, Some(3), 7, Some("Alice"));
         let ctx = JobContext {
             header: job.job_header.clone(),
             requester_name: "Alice".into(),
@@ -280,7 +246,7 @@ mod tests {
             upload: None,
         };
         let row = job_to_dashboard(&job, &ctx, 7, false);
-        assert_eq!(row.phase, JobPhase::Queued);
+        assert_eq!(row.phase, TaskPhase::Queued);
         assert_eq!(row.queue_position, Some(3));
         assert_eq!(row.requester_name, "Alice");
         assert_eq!(row.cached, 2);
@@ -291,21 +257,44 @@ mod tests {
     }
 
     #[test]
-    fn resolving_and_processing_map_to_processing() {
+    fn dashboard_rows_carry_the_canonical_phase_unchanged() {
         for phase in [
-            EnginePhase::Resolving,
-            EnginePhase::CheckingCache,
-            EnginePhase::Processing,
+            TaskPhase::Resolving,
+            TaskPhase::CheckingCache,
+            TaskPhase::Processing,
+            TaskPhase::Queued,
+            TaskPhase::Delivering,
+            TaskPhase::WaitingDuplicate,
         ] {
+            let ctx = JobContext {
+                header: job_header(),
+                requester_name: "u".into(),
+                job_activity: None,
+                download: None,
+                upload: None,
+            };
             let job = engine_job(phase, Some(0), 1, None);
-            assert_eq!(phase_from(job.phase), JobPhase::Processing);
+            assert_eq!(job_to_dashboard(&job, &ctx, 1, false).phase, phase);
         }
-        assert_eq!(phase_from(EnginePhase::Queued), JobPhase::Queued);
-        assert_eq!(phase_from(EnginePhase::Delivering), JobPhase::Delivering);
-        assert_eq!(
-            phase_from(EnginePhase::WaitingDuplicate),
-            JobPhase::WaitingDuplicate
-        );
+    }
+
+    #[test]
+    fn working_and_lane_capable_phases_match_the_dashboard_rules() {
+        for phase in [
+            TaskPhase::Resolving,
+            TaskPhase::CheckingCache,
+            TaskPhase::Processing,
+        ] {
+            assert!(phase.is_working(), "{phase:?} should hide the status line");
+            assert!(phase.has_lane_activity(), "{phase:?} should allow lanes");
+            assert_eq!(phase.display_rank(), 0);
+        }
+        assert!(!TaskPhase::Delivering.is_working());
+        assert!(TaskPhase::Delivering.has_lane_activity());
+        assert!(!TaskPhase::Queued.has_lane_activity());
+        assert!(!TaskPhase::WaitingDuplicate.has_lane_activity());
+        assert_eq!(TaskPhase::Queued.display_rank(), 1);
+        assert_eq!(TaskPhase::WaitingDuplicate.display_rank(), 2);
     }
 
     #[test]
@@ -317,7 +306,7 @@ mod tests {
             download: None,
             upload: None,
         };
-        let job = engine_job(EnginePhase::Processing, None, 42, Some("Bob"));
+        let job = engine_job(TaskPhase::Processing, None, 42, Some("Bob"));
         assert!(job_to_dashboard(&job, &ctx, 42, false).is_cancel_allowed_for_viewer);
         assert!(job_to_dashboard(&job, &ctx, 99, true).is_cancel_allowed_for_viewer);
         assert!(!job_to_dashboard(&job, &ctx, 99, false).is_cancel_allowed_for_viewer);
@@ -326,8 +315,8 @@ mod tests {
     #[test]
     fn snapshot_includes_all_active_jobs_with_mode_and_health() {
         let mut contexts = JobContexts::new();
-        contexts.remember(&engine_job(EnginePhase::Processing, None, 1, Some("A")));
-        let active = vec![engine_job(EnginePhase::Processing, None, 1, Some("A"))];
+        contexts.remember(&engine_job(TaskPhase::Processing, None, 1, Some("A")));
+        let active = vec![engine_job(TaskPhase::Processing, None, 1, Some("A"))];
         let snapshot = snapshot_from(&active, &contexts, 1, false, "live", Some("healthy".into()));
         assert_eq!(snapshot.jobs.len(), 1);
         assert_eq!(snapshot.ripping_mode, "live");
@@ -337,10 +326,10 @@ mod tests {
 
     #[test]
     fn snapshot_lists_processing_jobs_before_queued_jobs() {
-        let mut processing = engine_job(EnginePhase::Processing, Some(0), 1, Some("Drake"));
+        let mut processing = engine_job(TaskPhase::Processing, Some(0), 1, Some("Drake"));
         processing.id = "processing".into();
         processing.start_time_ms = 20;
-        let mut queued = engine_job(EnginePhase::Queued, Some(1), 2, Some("Hitarashi"));
+        let mut queued = engine_job(TaskPhase::Queued, Some(1), 2, Some("Hitarashi"));
         queued.id = "queued".into();
         queued.start_time_ms = 30;
 
@@ -362,7 +351,7 @@ mod tests {
 
     #[test]
     fn progress_activity_is_preserved_for_dashboard_rows() {
-        let job = engine_job(EnginePhase::Processing, Some(0), 7, Some("Alice"));
+        let job = engine_job(TaskPhase::Processing, Some(0), 7, Some("Alice"));
         let download = DownloadLane::Rip(RipActivity::Downloading {
             track: TrackLabel::new("Song", "Artist"),
             progress: ByteProgress {
@@ -407,7 +396,7 @@ mod tests {
 
     #[test]
     fn upload_only_progress_stays_in_the_upload_lane() {
-        let job = engine_job(EnginePhase::Processing, Some(0), 7, Some("Alice"));
+        let job = engine_job(TaskPhase::Processing, Some(0), 7, Some("Alice"));
         let mut contexts = JobContexts::new();
         contexts.remember(&job);
         let upload = UploadLane::Track {
@@ -441,7 +430,7 @@ mod tests {
 
     #[test]
     fn zip_upload_progress_stays_in_the_upload_lane() {
-        let job = engine_job(EnginePhase::Processing, Some(0), 7, Some("Alice"));
+        let job = engine_job(TaskPhase::Processing, Some(0), 7, Some("Alice"));
         let mut contexts = JobContexts::new();
         contexts.remember(&job);
         let upload = UploadLane::ArchiveUpload {
@@ -477,18 +466,16 @@ mod tests {
 
     #[test]
     fn cache_checking_and_resolving_fallback_to_semantic_status() {
-        let job_cache = engine_job(EnginePhase::CheckingCache, None, 1, Some("Alice"));
+        let job_cache = engine_job(TaskPhase::CheckingCache, None, 1, Some("Alice"));
         let contexts = JobContexts::new();
         let s_cache = snapshot_from(&[job_cache], &contexts, 1, false, "live", None);
         assert_eq!(
             s_cache.current_job_activity,
-            Some(TaskActivity::CheckingCache {
-                item: "Album: <b>X</b> by <b>Y</b>".into()
-            })
+            Some(TaskActivity::CheckingCache { item: job_header() })
         );
         assert_eq!(s_cache.current_download, None);
 
-        let job_resolve = engine_job(EnginePhase::Resolving, None, 1, Some("Alice"));
+        let job_resolve = engine_job(TaskPhase::Resolving, None, 1, Some("Alice"));
         let s_resolve = snapshot_from(&[job_resolve], &contexts, 1, false, "live", None);
         assert_eq!(
             s_resolve.current_job_activity,
@@ -498,21 +485,21 @@ mod tests {
     }
 
     #[test]
-    fn percent_is_clamped_and_zero_total_renders_zero() {
-        let progress = RipTaskProgress {
-            job_id: "j".into(),
-            total_tracks: 0,
-            completed_tracks: 0,
-            cached_count: 0,
-            ripped_count: 0,
-            failed_count: 0,
-            skipped_count: 0,
-            percent: 0,
+    fn dashboard_row_percent_tracks_completed_tracks_and_zero_total_is_zero() {
+        let ctx = JobContext {
+            header: job_header(),
+            requester_name: "Alice".into(),
             job_activity: None,
             download: None,
             upload: None,
-            codec: None,
         };
-        assert_eq!(percent_from(&progress), 0);
+
+        // cached 2 + ripped 3 + failed 1 of 10 tracks.
+        let mut job = engine_job(TaskPhase::Processing, None, 7, Some("Alice"));
+        assert_eq!(job_to_dashboard(&job, &ctx, 7, false).percent, 60);
+
+        job.total_tracks = 0;
+        job.skipped_count = 3;
+        assert_eq!(job_to_dashboard(&job, &ctx, 7, false).percent, 0);
     }
 }
