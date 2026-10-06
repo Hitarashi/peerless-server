@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::{
     Json,
     body::Body,
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::{Method, StatusCode, header},
     response::Response,
 };
@@ -116,8 +116,8 @@ pub use verify_stream_ticket as verify_playback_ticket;
 /// Playback metadata and signed stream URL returned to audio player clients.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PlaybackInfo {
-    /// Signed playback URL pointing to `/api/v1/stream?ticket=...`.
-    #[schema(example = "/api/v1/stream?ticket=eyJhbGciOi...")]
+    /// Signed playback URL pointing to `/api/v1/tracks/{id}/stream?ticket=...`.
+    #[schema(example = "/api/v1/tracks/415/stream?ticket=eyJhbGciOi...")]
     pub stream_url: String,
     /// Number of seconds the stream ticket remains valid (7,200s / 2 hours).
     #[schema(example = 7200)]
@@ -143,7 +143,7 @@ pub struct PlaybackInfo {
 }
 
 #[utoipa::path(
-    method(get),
+    method(get, head),
     path = "/api/v1/tracks/{id}/playback",
     tag = "stream",
     summary = "Issue Stream Ticket & Playback Info",
@@ -204,7 +204,7 @@ pub async fn issue_playback_ticket(
 
     let expires_in = 7200; // 2 hours
     let ticket = create_playback_ticket(&state.app_key, db_track_id, user.telegram_id, expires_in);
-    let stream_url = format!("/api/v1/stream?ticket={ticket}");
+    let stream_url = format!("/api/v1/tracks/{db_track_id}/stream?ticket={ticket}");
 
     let file_size = match state
         .stream_engine
@@ -236,11 +236,12 @@ pub struct StreamQuery {
 
 #[utoipa::path(
     method(get, head),
-    path = "/api/v1/stream",
+    path = "/api/v1/tracks/{id}/stream",
     tag = "stream",
     summary = "Direct Lossless Audio Stream",
-    description = "GET streams audio bytes using a valid signed HMAC ticket. Without a `Range` header it returns the full stream with 200; a single byte range returns 206. Range values may use `bytes=start-end`, `bytes=start-`, or `bytes=-suffix-length`; the response `Content-Range` uses inclusive offsets in the form `bytes start-end/total`, and an end beyond the file size is clamped. HEAD performs the same ticket and media checks and returns the corresponding status and headers without an audio response body.",
+    description = "GET streams audio bytes using a valid signed HMAC ticket matching the requested track ID. Without a `Range` header it returns the full stream with 200; a single byte range returns 206. Range values may use `bytes=start-end`, `bytes=start-`, or `bytes=-suffix-length`; the response `Content-Range` uses inclusive offsets in the form `bytes start-end/total`, and an end beyond the file size is clamped. HEAD performs the same ticket and media checks and returns the corresponding status and headers without an audio response body.",
     params(
+        ("id" = i32, Path, description = "Unique database track ID"),
         StreamQuery
     ),
     responses(
@@ -248,12 +249,14 @@ pub struct StreamQuery {
         (status = 206, description = "GET response: partial audio byte stream for the requested range, with `Content-Range: bytes start-end/total` and inclusive offsets. HEAD returns the same range status and headers with no body.", body = Vec<u8>, content_type = "audio/*"),
         (status = 400, description = "Missing or empty stream ticket, or malformed or out-of-bounds Range header"),
         (status = 401, description = "Invalid, expired, or tampered stream ticket"),
+        (status = 403, description = "Ticket does not match requested track"),
         (status = 404, description = "Track or its media document not found"),
         (status = 500, description = "Internal error while resolving media or constructing the response")
     )
 )]
 pub async fn stream_handler(
     State(state): State<Arc<ServerState>>,
+    Path(id): Path<i32>,
     method: Method,
     headers: axum::http::HeaderMap,
     Query(query): Query<StreamQuery>,
@@ -266,7 +269,19 @@ pub async fn stream_handler(
         .ok_or_else(|| ServerError::BadRequest("Missing 'ticket' query parameter".into()))?;
 
     let (db_track_id, _user_id) = verify_playback_ticket(&state.app_key, ticket)?;
+    if id != db_track_id {
+        return Err(ServerError::Forbidden("Ticket does not match requested track".into()));
+    }
 
+    stream_audio_internal(&state, db_track_id, method, headers).await
+}
+
+async fn stream_audio_internal(
+    state: &ServerState,
+    db_track_id: i32,
+    method: Method,
+    headers: axum::http::HeaderMap,
+) -> Result<Response, ServerError> {
     let range_header = headers.get(header::RANGE).and_then(|h| h.to_str().ok());
 
     let (status, content_type, accept_ranges, content_length, content_range, body) =
@@ -302,7 +317,8 @@ pub async fn stream_handler(
         .status(StatusCode::from_u16(status).unwrap_or(StatusCode::OK))
         .header(header::CONTENT_TYPE, content_type)
         .header(header::ACCEPT_RANGES, accept_ranges)
-        .header(header::CONTENT_LENGTH, content_length.to_string());
+        .header(header::CONTENT_LENGTH, content_length.to_string())
+        .header(header::CACHE_CONTROL, "public, max-age=2592000, immutable");
 
     if let Some(content_range) = content_range {
         builder = builder.header(header::CONTENT_RANGE, content_range);

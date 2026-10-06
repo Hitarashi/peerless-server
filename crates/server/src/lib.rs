@@ -261,8 +261,8 @@ pub fn create_router(state: Arc<ServerState>) -> Router {
             get(streaming::issue_playback_ticket),
         )
         .route(
-            "/api/v1/stream",
-            get(streaming::stream_handler).head(streaming::stream_handler),
+            "/api/v1/tracks/{id}/stream",
+            get(streaming::stream_handler),
         )
         .route("/api/v1/ws/sync", get(playback_sync::ws_handler))
         // TODO: Switch to QUERY once Axum releases QUERY method routing.

@@ -202,21 +202,29 @@ async fn test_docs_and_unauthorized_endpoints() {
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 
-    // 6. Test Bad Request to /api/v1/stream (missing ticket and track_id)
+    // 6. Test Bad Request to /api/v1/tracks/1/stream (missing ticket)
     let req = Request::builder()
-        .uri("/api/v1/stream")
+        .uri("/api/v1/tracks/1/stream")
         .body(Body::empty())
         .unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 
-    // 7. Test /api/v1/stream with invalid ticket
+    // 7. Test /api/v1/tracks/1/stream with invalid ticket
     let req = Request::builder()
-        .uri("/api/v1/stream?ticket=bogus_ticket_signature")
+        .uri("/api/v1/tracks/1/stream?ticket=bogus_ticket_signature")
         .body(Body::empty())
         .unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+
+    // Verify legacy /api/v1/stream is dropped (404 Not Found)
+    let req = Request::builder()
+        .uri("/api/v1/stream")
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
 
     // 8. Test /open endpoint
     let req = Request::builder()
@@ -604,7 +612,7 @@ async fn test_auth_lifecycle() {
         pb_res["stream_url"]
             .as_str()
             .unwrap()
-            .contains("/api/v1/stream?ticket=")
+            .contains("/api/v1/tracks/1/stream?ticket=")
     );
     assert_eq!(pb_res["expires_in"], 7200);
     assert!(pb_res["file_size"].as_i64().is_some());

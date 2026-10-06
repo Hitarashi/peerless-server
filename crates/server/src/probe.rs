@@ -27,7 +27,7 @@ use crate::ServerState;
 
 /// Subsystem identifier: the PostgreSQL pool backing every request.
 pub const SUBSYSTEM_DATABASE: &str = "database";
-/// Subsystem identifier: the MTProto worker pool backing `/api/v1/stream`.
+/// Subsystem identifier: the MTProto worker pool backing `/api/v1/tracks/{id}/stream`.
 pub const SUBSYSTEM_STREAM_WORKERS: &str = "stream_workers";
 /// Subsystem identifier: the in-memory media chunk cache.
 pub const SUBSYSTEM_CACHE: &str = "cache";

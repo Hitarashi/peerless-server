@@ -26,7 +26,7 @@ impl Modify for SecurityAddon {
             );
         }
 
-        if let Some(stream_path) = openapi.paths.paths.get_mut("/api/v1/stream")
+        if let Some(stream_path) = openapi.paths.paths.get_mut("/api/v1/tracks/{id}/stream")
             && let Some(head) = stream_path.head.as_mut()
         {
             for response in head.responses.responses.values_mut() {
@@ -43,7 +43,7 @@ impl Modify for SecurityAddon {
     info(
         title = "ALAC Lossless Media Streaming Server API",
         version = "1.0.0",
-        description = "# Lossless Audio & Media Streaming Engine\n\nHigh-performance lossless audio streaming server powered by Telegram MTProto backend, serving ripped source bytes via HTTP byte ranges without server-side transcoding, with sliding session auth, Apple cache lookup, and on-demand ripping.\n\nFor the authenticated playback WebSocket message contract, see the [Playback WebSocket AsyncAPI document](/api/v1/docs-ws.json).\n\n### Core Workflows\n1. **Authentication**: Users authenticate via the Telegram bot command `/stream` to obtain a single-use OTP code, exchanged at `/api/v1/auth/exchange` for sliding session tokens.\n2. **Source-byte Streaming**: Lossless streams are requested via `/api/v1/tracks/{id}/playback` and served at `/api/v1/stream` with HTTP 206 Partial Content Range support. The server returns the cached source bytes without server-side transcoding.\n3. **Apple Cache Lookup**: Check cached track formats with file sizes and complete album ZIP availability with total sizes by Apple Music IDs at `/api/v1/lookup`.\n4. **On-Demand Ripping**: Create and cancel rip tasks over the authenticated playback WebSocket RPC; `rip_tasks_snapshot` remains the authoritative active-task list, with live progress delivered on the same WebSocket.",
+        description = "# Lossless Audio & Media Streaming Engine\n\nHigh-performance lossless audio streaming server powered by Telegram MTProto backend, serving ripped source bytes via HTTP byte ranges without server-side transcoding, with sliding session auth, Apple cache lookup, and on-demand ripping.\n\nFor the authenticated playback WebSocket message contract, see the [Playback WebSocket AsyncAPI document](/api/v1/docs-ws.json).\n\n### Core Workflows\n1. **Authentication**: Users authenticate via the Telegram bot command `/stream` to obtain a single-use OTP code, exchanged at `/api/v1/auth/exchange` for sliding session tokens.\n2. **Source-byte Streaming**: Lossless streams are requested via `/api/v1/tracks/{id}/playback` and served at `/api/v1/tracks/{id}/stream` with HTTP 206 Partial Content Range support. The server returns the cached source bytes without server-side transcoding.\n3. **Apple Cache Lookup**: Check cached track formats with file sizes and complete album ZIP availability with total sizes by Apple Music IDs at `/api/v1/lookup`.\n4. **On-Demand Ripping**: Create and cancel rip tasks over the authenticated playback WebSocket RPC; `rip_tasks_snapshot` remains the authoritative active-task list, with live progress delivered on the same WebSocket.",
         license(name = "MIT")
     ),
     servers(
@@ -219,12 +219,12 @@ mod tests {
 
         assert!(document["components"]["schemas"]["AuthedUser"].is_object());
         assert!(
-            document["paths"]["/api/v1/stream"]["get"]["responses"]["200"]["content"]["audio/*"]
+            document["paths"]["/api/v1/tracks/{id}/stream"]["get"]["responses"]["200"]["content"]["audio/*"]
                 .is_object()
         );
         for status in ["200", "206"] {
             assert!(
-                document["paths"]["/api/v1/stream"]["head"]["responses"][status]
+                document["paths"]["/api/v1/tracks/{id}/stream"]["head"]["responses"][status]
                     .get("content")
                     .is_none()
             );

@@ -38,7 +38,7 @@ mirrors with native client applications (such as [Peerless KMP](https://github.c
 │                            │ HTTP 206 Partial Content    │
 │  ┌─────────────────────────┴──────────────────────────┐  │
 │  │ Axum Web Server & Playback Sync Hub                │  │
-│  │ - /api/v1/stream (HMAC signed tickets)             │  │
+│  │ - /api/v1/tracks/{id}/stream (HMAC signed tickets) │  │
 │  │ - /api/v1/ws/sync (Playback & Task Sync WebSockets) │  │
 │  │ - /api/v1/integrations/lastfm (Encrypted AES-GCM)  │  │
 │  │ - /api/v1/docs (OpenAPI 3.1 Scalar UI)              │  │
@@ -96,7 +96,7 @@ mirrors with native client applications (such as [Peerless KMP](https://github.c
 |                  | `GET`      | `/api/v1/auth/me`                                               | Fetch authenticated user profile & sessions                  |
 |                  | `GET`      | `/api/v1/auth/me/avatar`                                        | Fetch the authenticated user's Telegram avatar               |
 | **Streaming**    | `GET`      | `/api/v1/tracks/{id}/playback`                                  | Acquire short-lived signed stream ticket                     |
-|                  | `GET/HEAD` | `/api/v1/stream?ticket=...`                                     | HTTP byte-range streaming (206 for Range requests)           |
+|                  | `GET/HEAD` | `/api/v1/tracks/{id}/stream?ticket=...`                          | HTTP byte-range streaming (206 for Range requests)           |
 |                  | `GET`      | `/api/v1/ws/sync`                                               | Playback sync; create, cancel, and observe rip tasks         |
 | **Lookup**       | `POST`     | `/api/v1/lookup`                                                | Apple track formats and file sizes; complete album ZIP availability and total sizes |
 | **Integrations** | `POST`     | `/api/v1/integrations/lastfm/login`                             | Connect Last.fm account (AES-256-GCM encrypted)              |
@@ -153,7 +153,7 @@ Public routes, which need no session bearer token:
 - `GET /api/v1/health` and `GET /api/v1/status` — unauthenticated liveness and diagnostics.
 - `GET /api/v1/docs`, `/api/v1/docs.json`, `/api/v1/docs.yaml`, and `/api/v1/docs-ws.json` — the rendered and
   machine-readable contracts.
-- `GET`/`HEAD /api/v1/stream?ticket=...` — authorized by its own short-lived HMAC-signed ticket derived from `APP_KEY`,
+- `GET`/`HEAD /api/v1/tracks/{id}/stream?ticket=...` — authorized by its own short-lived HMAC-signed ticket derived from `APP_KEY`,
   not by a session bearer token. Get one from `GET /api/v1/tracks/{id}/playback`.
 
 The playback WebSocket `GET /api/v1/ws/sync` requires the same `Authorization: Bearer <token>` header during the
