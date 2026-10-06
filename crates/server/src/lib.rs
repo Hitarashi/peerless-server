@@ -10,8 +10,9 @@ pub mod probe;
 pub mod rip_task_rpc;
 pub mod rip_tasks;
 pub mod streaming;
+pub mod task_registry;
 
-use std::{collections::HashMap, net::IpAddr, sync::Arc, time::Duration};
+use std::{net::IpAddr, sync::Arc, time::Duration};
 
 use axum::{
     Router,
@@ -67,7 +68,7 @@ pub struct ServerState {
     telegram_client: Option<ferogram::Client>,
     avatar_cache: Arc<Cache<i64, Option<Arc<Vec<u8>>>>>,
     task_sync_tx: broadcast::Sender<rip_tasks::TaskSyncEvent>,
-    active_tasks: Arc<parking_lot::RwLock<HashMap<String, rip_tasks::ServerTaskMeta>>>,
+    tasks: task_registry::TaskRegistry,
     admin_id: i64,
     sync_hub: playback_sync::PlaybackSyncHub,
     http_client: reqwest::Client,
@@ -86,7 +87,7 @@ impl ServerState {
         app_key: String,
     ) -> Self {
         let (task_sync_tx, _) = broadcast::channel(256);
-        let active_tasks = Arc::new(parking_lot::RwLock::new(HashMap::new()));
+        let tasks = task_registry::TaskRegistry::default();
         let admin_id = std::env::var("ADMIN_ID")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -125,7 +126,7 @@ impl ServerState {
             telegram_client: None,
             avatar_cache,
             task_sync_tx,
-            active_tasks,
+            tasks,
             admin_id,
             sync_hub: playback_sync::PlaybackSyncHub::default(),
             http_client,
@@ -151,10 +152,8 @@ impl ServerState {
     }
 
     /// Shared registry of in-flight rip tasks, keyed by task id.
-    pub fn active_tasks(
-        &self,
-    ) -> &Arc<parking_lot::RwLock<HashMap<String, rip_tasks::ServerTaskMeta>>> {
-        &self.active_tasks
+    pub fn tasks(&self) -> &task_registry::TaskRegistry {
+        &self.tasks
     }
 
     /// Subscribe to task-sync events broadcast to connected clients.
@@ -170,7 +169,7 @@ impl ServerState {
     }
 
     fn remove_active_task(&self, task_id: &str) -> Option<rip_tasks::ServerTaskMeta> {
-        let task = self.active_tasks.write().remove(task_id)?;
+        let task = self.tasks.remove(task_id)?;
         let _ = self.task_sync_tx.send(rip_tasks::TaskSyncEvent::Dismissed {
             task_id: task_id.to_string(),
         });
@@ -205,44 +204,44 @@ impl ServerState {
         task_id: &str,
         mut progress: rip_tasks::RipTaskProgress,
     ) {
-        let mut tasks = self.active_tasks.write();
-        let Some(task) = tasks.get_mut(task_id) else {
-            return;
-        };
-        let previous = &task.latest_progress;
-        let is_archive_stage = progress
-            .upload
-            .as_ref()
-            .is_some_and(|lane| lane.stage.is_archive());
-        progress.total_tracks = progress.total_tracks.or(previous.total_tracks);
-        if is_archive_stage {
-            if progress.current_track_title.is_none() {
-                progress.current_track_title = Some("Album ZIP archive".to_owned());
+        let applied = self.tasks.update(task_id, |task| {
+            let previous = &task.latest_progress;
+            let is_archive_stage = progress
+                .upload
+                .as_ref()
+                .is_some_and(|lane| lane.stage.is_archive());
+            progress.total_tracks = progress.total_tracks.or(previous.total_tracks);
+            if is_archive_stage {
+                if progress.current_track_title.is_none() {
+                    progress.current_track_title = Some("Album ZIP archive".to_owned());
+                }
+                progress.current_track_artist = None;
+                progress.current_track_index = None;
+                progress.completed_tracks = progress.total_tracks;
+            } else {
+                progress.current_track_title = progress
+                    .current_track_title
+                    .or_else(|| previous.current_track_title.clone());
+                progress.current_track_artist = progress
+                    .current_track_artist
+                    .or_else(|| previous.current_track_artist.clone());
+                progress.current_track_index = progress
+                    .current_track_index
+                    .or(previous.current_track_index);
+                progress.completed_tracks = progress.completed_tracks.or(previous.completed_tracks);
             }
-            progress.current_track_artist = None;
-            progress.current_track_index = None;
-            progress.completed_tracks = progress.total_tracks;
-        } else {
-            progress.current_track_title = progress
-                .current_track_title
-                .or_else(|| previous.current_track_title.clone());
-            progress.current_track_artist = progress
-                .current_track_artist
-                .or_else(|| previous.current_track_artist.clone());
-            progress.current_track_index = progress
-                .current_track_index
-                .or(previous.current_track_index);
-            progress.completed_tracks = progress.completed_tracks.or(previous.completed_tracks);
+            progress.current_track_artwork_url = progress
+                .current_track_artwork_url
+                .or_else(|| previous.current_track_artwork_url.clone());
+            task.artwork_url = progress
+                .current_track_artwork_url
+                .clone()
+                .or_else(|| task.artwork_url.clone());
+            task.latest_progress = progress;
+        });
+        if !applied {
+            return;
         }
-        progress.current_track_artwork_url = progress
-            .current_track_artwork_url
-            .or_else(|| previous.current_track_artwork_url.clone());
-        task.artwork_url = progress
-            .current_track_artwork_url
-            .clone()
-            .or_else(|| task.artwork_url.clone());
-        task.latest_progress = progress;
-        drop(tasks);
         let _ = self.task_sync_tx.send(rip_tasks::TaskSyncEvent::Updated {
             task_id: task_id.to_string(),
         });

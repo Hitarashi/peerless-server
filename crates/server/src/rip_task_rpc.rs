@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -6,6 +6,7 @@ use utoipa::ToSchema;
 use crate::{
     ServerError, ServerState,
     rip_tasks::{RipTaskProgress, RipTaskRequest, ServerTaskMeta},
+    task_registry::{TaskRegistry, TaskRemovalRejected},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,7 +226,7 @@ async fn create_task(
         is_album: false,
     };
 
-    let reserved_task_id = match reserve_task(&state.active_tasks, meta) {
+    let reserved_task_id = match reserve_task(state.tasks(), meta) {
         Ok(task_id) => task_id,
         Err(existing_task_id) => {
             return Ok(RipTaskRpcSuccess::Created {
@@ -285,7 +286,7 @@ fn cancel_task(
     }
 
     let task = remove_task_if_authorized(
-        &state.active_tasks,
+        state.tasks(),
         &task_id,
         identity.telegram_id,
         state.admin_id,
@@ -319,50 +320,33 @@ fn cancel_task(
     })
 }
 
-fn reserve_task(
-    active_tasks: &parking_lot::RwLock<HashMap<String, ServerTaskMeta>>,
-    meta: ServerTaskMeta,
-) -> Result<String, String> {
-    let mut tasks = active_tasks.write();
-    if let Some(existing) = tasks.values().find(|task| {
-        !task.is_album
-            && task.provider == meta.provider
-            && task.track_id == meta.track_id
-            && task.codec == meta.codec
-    }) {
-        return Err(existing.task_id.clone());
-    }
-
-    let task_id = meta.task_id.clone();
-    tasks.insert(task_id.clone(), meta);
-    Ok(task_id)
+fn reserve_task(tasks: &TaskRegistry, meta: ServerTaskMeta) -> Result<String, String> {
+    tasks.insert_unique(meta, |existing, candidate| {
+        !existing.is_album
+            && existing.provider == candidate.provider
+            && existing.track_id == candidate.track_id
+            && existing.codec == candidate.codec
+    })
 }
 
 fn remove_task_if_authorized(
-    active_tasks: &parking_lot::RwLock<HashMap<String, ServerTaskMeta>>,
+    tasks: &TaskRegistry,
     task_id: &str,
     user_id: i64,
     admin_id: i64,
 ) -> Result<ServerTaskMeta, CancelFailure> {
-    let mut tasks = active_tasks.write();
-    let Some(task) = tasks.get(task_id) else {
-        return Err(CancelFailure::NotFound);
-    };
-    if user_id != task.owner_id && user_id != admin_id {
-        return Err(CancelFailure::NotAuthorized);
+    match tasks.remove_if(task_id, |task| {
+        user_id == task.owner_id || user_id == admin_id
+    }) {
+        Ok(Some(task)) => Ok(task),
+        Ok(None) => Err(CancelFailure::NotFound),
+        Err(TaskRemovalRejected) => Err(CancelFailure::NotAuthorized),
     }
-
-    Ok(tasks
-        .remove(task_id)
-        .expect("task was checked while holding write lock"))
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::HashMap,
-        sync::{Arc, Barrier},
-    };
+    use std::sync::{Arc, Barrier};
 
     use super::*;
 
@@ -403,12 +387,12 @@ mod tests {
     #[test]
     fn concurrent_identical_creates_reserve_exactly_one_task() {
         const REQUESTS: usize = 16;
-        let tasks = Arc::new(parking_lot::RwLock::new(HashMap::new()));
+        let tasks = TaskRegistry::default();
         let barrier = Arc::new(Barrier::new(REQUESTS));
 
         let handles = (0..REQUESTS)
             .map(|n| {
-                let tasks = Arc::clone(&tasks);
+                let tasks = tasks.clone();
                 let barrier = Arc::clone(&barrier);
                 std::thread::spawn(move || {
                     barrier.wait();
@@ -421,8 +405,13 @@ mod tests {
             .map(|handle| handle.join().expect("reservation thread succeeds"))
             .collect::<Vec<_>>();
 
-        assert_eq!(tasks.read().len(), 1);
-        let winner = tasks.read().keys().next().unwrap().clone();
+        assert_eq!(tasks.len(), 1);
+        let winner = tasks
+            .all()
+            .into_iter()
+            .next()
+            .expect("exactly one reserved task")
+            .task_id;
         assert_eq!(outcomes.iter().filter(|outcome| outcome.is_ok()).count(), 1);
         assert!(outcomes.iter().all(|outcome| match outcome {
             Ok(task_id) => task_id == &winner,
@@ -432,27 +421,23 @@ mod tests {
 
     #[test]
     fn cancellation_keeps_owner_or_admin_rule_and_checks_atomically() {
-        let tasks = parking_lot::RwLock::new(HashMap::from([(
-            "task-1".to_owned(),
-            test_task("task-1", 100),
-        )]));
+        let tasks = TaskRegistry::default();
+        tasks.insert("task-1".to_owned(), test_task("task-1", 100));
 
         assert_eq!(
             remove_task_if_authorized(&tasks, "task-1", 200, 300).unwrap_err(),
             CancelFailure::NotAuthorized
         );
-        assert!(tasks.read().contains_key("task-1"));
+        assert!(tasks.contains_key("task-1"));
         assert_eq!(
             remove_task_if_authorized(&tasks, "task-1", 300, 300)
                 .unwrap()
                 .task_id,
             "task-1"
         );
-        assert!(!tasks.read().contains_key("task-1"));
+        assert!(!tasks.contains_key("task-1"));
 
-        tasks
-            .write()
-            .insert("task-2".to_owned(), test_task("task-2", 100));
+        tasks.insert("task-2".to_owned(), test_task("task-2", 100));
         assert_eq!(
             remove_task_if_authorized(&tasks, "task-2", 100, 300)
                 .unwrap()
@@ -463,7 +448,7 @@ mod tests {
 
     #[test]
     fn codec_is_part_of_the_active_task_reservation_key() {
-        let tasks = parking_lot::RwLock::new(HashMap::new());
+        let tasks = TaskRegistry::default();
         assert_eq!(
             reserve_task(&tasks, test_task("flac", 100)),
             Ok("flac".to_owned())
@@ -471,7 +456,7 @@ mod tests {
         let mut alac_task = test_task("alac", 101);
         alac_task.codec = Some("alac".to_owned());
         assert_eq!(reserve_task(&tasks, alac_task), Ok("alac".to_owned()));
-        assert_eq!(tasks.read().len(), 2);
+        assert_eq!(tasks.len(), 2);
     }
 
     #[test]

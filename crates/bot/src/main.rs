@@ -424,27 +424,26 @@ async fn main() -> Result<()> {
         let find_task = |job: &engine::orchestrator::types::ActiveRipTask,
                          register_if_missing: bool|
          -> Option<server::rip_tasks::ServerTaskMeta> {
-            let mut tasks = state.active_tasks().write();
             let is_album = job.total_tracks > 1;
             let (parsed_title, parsed_artist) =
                 parse_job_title_and_artist(&job.job_header, is_album);
 
-            if let Some(task) = job
-                .user_name
-                .as_ref()
-                .and_then(|uname| tasks.get_mut(uname))
-            {
-                if task.rip_task_id.is_empty() {
-                    task.rip_task_id = job.id.clone();
-                }
-                if is_album {
-                    task.is_album = true;
-                }
-                return Some(task.clone());
+            if let Some(task) = job.user_name.as_ref().and_then(|uname| {
+                state.tasks().update_and_get(uname, |task| {
+                    if task.rip_task_id.is_empty() {
+                        task.rip_task_id = job.id.clone();
+                    }
+                    if is_album {
+                        task.is_album = true;
+                    }
+                })
+            }) {
+                return Some(task);
             }
 
-            for task in tasks.values_mut() {
-                if task.rip_task_id == job.id {
+            if let Some(task) = state.tasks().update_first_matching(
+                |task| task.rip_task_id == job.id,
+                |task| {
                     if task.task_id.starts_with("bot_") {
                         task.is_album = is_album;
                         task.title = Some(parsed_title.clone());
@@ -452,22 +451,26 @@ async fn main() -> Result<()> {
                             .clone()
                             .or_else(|| is_album.then(|| format!("{} tracks", job.total_tracks)));
                     }
-                    return Some(task.clone());
-                }
+                },
+            ) {
+                return Some(task);
             }
 
-            for task in tasks.values_mut() {
-                if task.rip_task_id.is_empty()
-                    && (task.owner_id == job.user_id || job.user_id == 0)
-                    && task.provider == job.provider
-                    && job.source_track_ids.iter().any(|id| id == &task.track_id)
-                {
+            if let Some(task) = state.tasks().update_first_matching(
+                |task| {
+                    task.rip_task_id.is_empty()
+                        && (task.owner_id == job.user_id || job.user_id == 0)
+                        && task.provider == job.provider
+                        && job.source_track_ids.iter().any(|id| id == &task.track_id)
+                },
+                |task| {
                     task.rip_task_id = job.id.clone();
                     if is_album {
                         task.is_album = true;
                     }
-                    return Some(task.clone());
-                }
+                },
+            ) {
+                return Some(task);
             }
 
             if !register_if_missing {
@@ -511,8 +514,7 @@ async fn main() -> Result<()> {
                 },
                 is_album,
             };
-            tasks.insert(task_id.clone(), meta.clone());
-            drop(tasks);
+            state.tasks().insert(task_id.clone(), meta.clone());
             state.notify_task_updated(task_id);
             Some(meta)
         };
@@ -701,10 +703,9 @@ async fn main() -> Result<()> {
             OrchestratorEvent::Completed(job, summary) => {
                 if let Some(task) = find_task(job, false) {
                     if let Some(summary_codec) = &summary.codec {
-                        let mut tasks = state.active_tasks().write();
-                        if let Some(t) = tasks.get_mut(&task.task_id) {
-                            t.codec = Some(summary_codec.clone());
-                        }
+                        state.tasks().update(&task.task_id, |meta| {
+                            meta.codec = Some(summary_codec.clone());
+                        });
                     }
                     progress_throttles
                         .lock()

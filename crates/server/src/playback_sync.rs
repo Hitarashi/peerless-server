@@ -279,13 +279,16 @@ async fn handle_socket(
             task_event = task_rx.recv() => {
                 let outgoing = match task_event {
                     Ok(crate::rip_tasks::TaskSyncEvent::Updated { task_id }) if my_device_id.is_some() => {
-                        let tasks = state.active_tasks.read();
-                        tasks.get(&task_id).map(|task| {
-                            let is_owner = task.owner_id == telegram_id || telegram_id == state.admin_id;
-                            ServerMessage::RipTaskUpdated {
-                                task: Box::new(task.snapshot(is_owner)),
-                            }
-                        })
+                        state
+                            .tasks()
+                            .get(&task_id)
+                            .map(|task| {
+                                let is_owner =
+                                    task.owner_id == telegram_id || telegram_id == state.admin_id;
+                                ServerMessage::RipTaskUpdated {
+                                    task: Box::new(task.snapshot(is_owner)),
+                                }
+                            })
                     }
                     Ok(crate::rip_tasks::TaskSyncEvent::Dismissed { task_id })
                         if my_device_id.is_some() =>
@@ -507,7 +510,7 @@ async fn dispatch_rip_task_rpc(
             let task = if task_id.is_empty() {
                 None
             } else {
-                state.active_tasks.read().get(&task_id).map(|task| {
+                state.tasks().get(&task_id).map(|task| {
                     let is_owner = task.owner_id == identity.telegram_id
                         || identity.telegram_id == state.admin_id;
                     Box::new(task.snapshot(is_owner))
@@ -566,9 +569,10 @@ fn task_snapshots_for_user(
     state: &ServerState,
     telegram_id: i64,
 ) -> Vec<crate::rip_tasks::RipTaskSnapshot> {
-    let tasks = state.active_tasks.read();
-    let mut snapshots = tasks
-        .values()
+    let mut snapshots = state
+        .tasks()
+        .all()
+        .into_iter()
         .map(|task| {
             let is_owner = task.owner_id == telegram_id || telegram_id == state.admin_id;
             (task.created_at, task.snapshot(is_owner))
