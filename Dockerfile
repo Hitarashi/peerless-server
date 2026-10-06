@@ -17,6 +17,7 @@ RUN apt-get update \
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates/music/Cargo.toml crates/music/Cargo.toml
+COPY crates/core/Cargo.toml crates/core/Cargo.toml
 COPY crates/engine/Cargo.toml crates/engine/Cargo.toml
 COPY crates/apple/Cargo.toml crates/apple/Cargo.toml
 COPY crates/db/Cargo.toml crates/db/Cargo.toml
@@ -26,10 +27,11 @@ COPY crates/server/Cargo.toml crates/server/Cargo.toml
 COPY crates/bot/Cargo.toml crates/bot/Cargo.toml
 RUN --mount=type=cache,id=peerless-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=peerless-cargo-git,target=/usr/local/cargo/git \
-    mkdir -p crates/music/src crates/engine/src crates/apple/src \
+    mkdir -p crates/music/src crates/core/src crates/engine/src crates/apple/src \
              crates/db/src crates/media/src crates/stream/src \
              crates/server/src crates/bot/src \
  && echo 'pub fn _stub() {}' > crates/music/src/lib.rs \
+ && echo 'pub fn _stub() {}' > crates/core/src/lib.rs \
  && echo 'pub fn _stub() {}' > crates/engine/src/lib.rs \
  && echo 'pub fn _stub() {}' > crates/apple/src/lib.rs \
  && echo 'pub fn _stub() {}' > crates/db/src/lib.rs \
@@ -44,7 +46,7 @@ RUN --mount=type=cache,id=peerless-cargo-registry,target=/usr/local/cargo/regist
 COPY crates ./crates
 RUN --mount=type=cache,id=peerless-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=peerless-cargo-git,target=/usr/local/cargo/git \
-    touch crates/music/src/lib.rs crates/engine/src/lib.rs \
+    touch crates/music/src/lib.rs crates/core/src/lib.rs crates/engine/src/lib.rs \
           crates/apple/src/lib.rs crates/db/src/lib.rs \
           crates/media/src/lib.rs crates/stream/src/lib.rs crates/server/src/lib.rs \
           crates/bot/src/lib.rs crates/bot/src/main.rs \
