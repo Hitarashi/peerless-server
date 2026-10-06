@@ -23,7 +23,7 @@ use engine::{
     ripper::RipError,
     settings::{BotSettings, RippingMode, default_settings},
     types::{
-        AlbumTracks, ArtistTracks, ParsedTargetItem, Provider, TargetKind, TrackMeta,
+        AlbumTracks, ArtistTracks, ParsedTargetItem, TargetKind, TrackMeta,
         TrackRipResult,
     },
 };
@@ -37,7 +37,6 @@ impl ProviderPresentation for FakePresentation {
     }
     fn album_url(
         &self,
-        _provider: Provider,
         album_id: &str,
         storefront: Storefront<'_>,
     ) -> Option<String> {
@@ -470,7 +469,6 @@ impl Delivery for FakeSink {
 impl CollectionResolver for FakeDeps {
     async fn fetch_album_tracks(
         &self,
-        _provider: Provider,
         id: &str,
         _storefront: Storefront<'_>,
     ) -> Result<AlbumTracks, String> {
@@ -484,7 +482,6 @@ impl CollectionResolver for FakeDeps {
 
     async fn fetch_artist_tracks(
         &self,
-        _provider: Provider,
         id: &str,
         _storefront: Storefront<'_>,
     ) -> Result<ArtistTracks, String> {
@@ -498,7 +495,6 @@ impl CollectionResolver for FakeDeps {
 
     async fn fetch_playlist_tracks(
         &self,
-        _provider: Provider,
         id: &str,
         _storefront: Storefront<'_>,
     ) -> Result<PlaylistData, String> {
@@ -630,7 +626,7 @@ impl ArtworkProvider for FakeDeps {
         self.state.lock().unwrap().artwork_bytes.clone()
     }
 
-    fn artwork_url_at_size(&self, _provider: Provider, url: &str, size: u16) -> String {
+    fn artwork_url_at_size(&self, url: &str, size: u16) -> String {
         let _ = size;
         url.to_owned()
     }
@@ -643,11 +639,10 @@ impl ProviderPresentation for FakeDeps {
 
     fn album_url(
         &self,
-        provider: Provider,
         album_id: &str,
         storefront: Storefront<'_>,
     ) -> Option<String> {
-        FakePresentation.album_url(provider, album_id, storefront)
+        FakePresentation.album_url(album_id, storefront)
     }
 
     fn unavailable_track_message(&self) -> &str {
@@ -659,11 +654,7 @@ impl ProviderPresentation for FakeDeps {
     }
 }
 
-impl ProviderDeps for FakeDeps {
-    fn supports_provider(&self, provider: Provider) -> bool {
-        provider == Provider::Apple
-    }
-}
+impl ProviderDeps for FakeDeps {}
 
 impl TrackCache for FakeDeps {
     fn find_cached_tracks<'a>(
@@ -779,7 +770,6 @@ impl AlbumCache for FakeDeps {
 
     fn replace_albums<'a>(
         &'a self,
-        _: engine::types::Provider,
         album_id: &'a str,
         codec: engine::Codec,
         expected: AlbumReplacementExpectation,
@@ -853,11 +843,9 @@ impl AlbumCache for FakeDeps {
 
     fn find_albums<'a>(
         &'a self,
-        provider: engine::types::Provider,
         album_id: &'a str,
         codec: Option<engine::Codec>,
     ) -> engine::orchestrator::deps::BoxFuture<'a, Result<Vec<CachedAlbum>, AlbumCacheError>> {
-        let _ = provider;
         let rows = self
             .state
             .lock()
@@ -875,11 +863,10 @@ impl AlbumCache for FakeDeps {
 
     fn delete_albums<'a>(
         &'a self,
-        provider: engine::types::Provider,
         album_id: &'a str,
         codec: Option<engine::Codec>,
     ) -> engine::orchestrator::deps::BoxFuture<'a, Result<(), AlbumCacheError>> {
-        let _ = (provider, codec);
+        let _ = codec;
         self.state
             .lock()
             .unwrap()
@@ -974,7 +961,6 @@ impl EventLog {
 
 fn options(items: Vec<ParsedTargetItem>, is_admin: bool) -> RipTaskOptions {
     RipTaskOptions {
-        provider: engine::types::Provider::Apple,
         chat_id: 100,
         user_id: 42,
         user_name: Some("tester".into()),
@@ -1440,7 +1426,7 @@ async fn artist_album_ids_resolution() {
     );
 
     let album_ids = deps
-        .fetch_artist_album_ids(Provider::Apple, "art.1", "us".into())
+        .fetch_artist_album_ids("art.1", "us".into())
         .await
         .expect("artist album ids resolved");
     assert_eq!(album_ids, vec!["alb.1".to_string(), "alb.2".to_string()]);
@@ -2672,7 +2658,6 @@ async fn empty_tracks_after_cap_edge() {
 
 fn album_options(album: &str, cache_only: bool, force: bool) -> RipTaskOptions {
     RipTaskOptions {
-        provider: engine::types::Provider::Apple,
         chat_id: 100,
         user_id: 42,
         user_name: Some("tester".into()),

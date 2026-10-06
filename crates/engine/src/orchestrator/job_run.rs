@@ -153,7 +153,6 @@ impl RipOrchestrator {
                 }
                 TargetKind::Album => match deps
                     .fetch_album_tracks(
-                        options.provider.clone(),
                         &item.id,
                         effective_sf.as_str().into(),
                     )
@@ -191,7 +190,6 @@ impl RipOrchestrator {
                 TargetKind::Artist => {
                     match deps
                         .fetch_artist_tracks(
-                            options.provider.clone(),
                             &item.id,
                             effective_sf.as_str().into(),
                         )
@@ -222,7 +220,6 @@ impl RipOrchestrator {
                 TargetKind::Playlist => {
                     match deps
                         .fetch_playlist_tracks(
-                            options.provider.clone(),
                             &item.id,
                             effective_sf.as_str().into(),
                         )
@@ -305,7 +302,7 @@ impl RipOrchestrator {
             (Some(name), Some(artist)) => {
                 if let (Some(id), Some(sf)) = (&album_id, &album_sf) {
                     let album_url =
-                        deps.album_url(options.provider.clone(), id, sf.as_str().into());
+                        deps.album_url(id, sf.as_str().into());
                     if let Some(album_url) = album_url {
                         format!(
                             "Album: <a href=\"{album_url}\"><b>{}</b></a> by <b>{}</b>",
@@ -364,7 +361,7 @@ impl RipOrchestrator {
 
         let zip_generation_hash = zip_build.then(|| {
             let ids: Vec<&str> = tracks_to_process.iter().map(|t| t.id.as_str()).collect();
-            album_generation_hash(options.provider.as_str(), &options.parsed_items[0].id, &ids)
+            album_generation_hash("apple", &options.parsed_items[0].id, &ids)
         });
         let mut workspace_guard = WorkspaceGuard::new();
         let mut zip_states: Vec<Arc<ZipState>> = Vec::new();
@@ -450,7 +447,7 @@ impl RipOrchestrator {
 
         let existing_album_rows = if zip_build {
             match deps
-                .find_albums(options.provider.clone(), &options.parsed_items[0].id, None)
+                .find_albums(&options.parsed_items[0].id, None)
                 .await
             {
                 Ok(rows) => rows,
@@ -583,20 +580,15 @@ impl RipOrchestrator {
         let has_fresh = uncached_items.iter().any(|item| item.cached.is_none());
         let cache_hits_present = uncached_items.iter().any(|item| item.cached.is_some());
         let can_rip_live = settings.can_rip_live(options.is_admin)
-            && settings.can_rip_provider(&options.provider, options.is_admin);
+            && settings.can_rip_apple(options.is_admin);
 
         if !can_rip_live
-            && !settings.can_rip_provider(&options.provider, options.is_admin)
+            && !settings.can_rip_apple(options.is_admin)
             && (has_fresh || !cache_hits_present)
         {
-            let provider_name = if options.provider.is_apple() {
-                "Apple Music"
-            } else {
-                options.provider.as_str()
-            };
             warnings.push(format!(
                 "{} live ripping is currently disabled by administrator.",
-                provider_name
+                "Apple Music"
             ));
         }
 
@@ -863,7 +855,6 @@ impl RipOrchestrator {
                                             .unwrap_or_default(),
                                         album_url: match (&album_id, &album_sf) {
                                             (Some(id), Some(storefront)) => deps.album_url(
-                                                options.provider.clone(),
                                                 id,
                                                 storefront.as_str().into(),
                                             ),
@@ -992,7 +983,7 @@ impl RipOrchestrator {
                 .unwrap_or_default(),
             zip_album_url: match (&album_id, &album_sf) {
                 (Some(id), Some(storefront)) => {
-                    deps.album_url(options.provider.clone(), id, storefront.as_str().into())
+                    deps.album_url(id, storefront.as_str().into())
                 }
                 _ => None,
             },

@@ -140,54 +140,55 @@ async fn create_task(
         ));
     }
 
-    let provider = match request.provider.to_lowercase().as_str() {
-        "apple" => music::Provider::Apple,
-        _ => {
-            return Err(map_server_error(
-                Some(request_id),
-                ServerError::BadRequest("unsupported provider".to_owned()),
-            ));
-        }
-    };
-
-    if request.track_id.trim().is_empty() {
+    let Some((target_id, is_album)) = request.target() else {
         return Err(RipTaskRpcError::new(
             Some(request_id),
             RipTaskRpcErrorCode::Validation,
-            "track_id must not be empty",
+            "track_id or album_id must not be empty",
         ));
-    }
-
-    let codec = request
-        .codec
-        .as_deref()
-        .map(|value| match value.to_lowercase().as_str() {
-            "alac" => music::Codec::Alac,
-            "aac" | "mp4a.40.2" | "mp4a.40.5" => music::Codec::Aac,
-            "ec-3" | "ec3" | "atmos" | "dolby" => music::Codec::Ec3,
-            _ => music::Codec::Alac,
-        });
-
-    let cached_tracks = match state
-        .tracks_repo
-        .find_all_by_track_id(&request.track_id)
-        .await
-    {
-        Ok(tracks) => tracks,
-        Err(error) => {
-            return Err(map_cache_lookup_error(Some(request_id), error));
-        }
     };
-    if let Some(track) = cached_tracks
-        .into_iter()
-        .find(|track| codec.is_none_or(|requested| requested == track.codec))
-    {
+
+    let (is_cached, result_track_id) = if is_album {
+        let album_repo = db::AlbumsRepository::new(state.db.clone());
+        match album_repo
+            .find_album_parts_by_ids(std::slice::from_ref(&target_id))
+            .await
+        {
+            Ok(parts) => {
+                let alac_parts: Vec<_> = parts.iter().filter(|p| p.codec == music::Codec::Alac).collect();
+                let aac_parts: Vec<_> = parts.iter().filter(|p| p.codec == music::Codec::Aac).collect();
+                let any_complete = crate::lookup::has_complete_archive_parts(&alac_parts)
+                    || crate::lookup::has_complete_archive_parts(&aac_parts);
+                (any_complete, None)
+            }
+            Err(error) => {
+                return Err(map_cache_lookup_error(Some(request_id), error));
+            }
+        }
+    } else {
+        let cached_tracks = match state
+            .tracks_repo
+            .find_all_by_track_id(&target_id)
+            .await
+        {
+            Ok(tracks) => tracks,
+            Err(error) => {
+                return Err(map_cache_lookup_error(Some(request_id), error));
+            }
+        };
+        let matching = cached_tracks
+            .iter()
+            .find(|t| t.codec == music::Codec::Alac)
+            .or_else(|| cached_tracks.iter().find(|t| t.codec == music::Codec::Aac));
+        (matching.is_some(), matching.map(|t| t.id))
+    };
+
+    if is_cached {
         return Ok(RipTaskRpcSuccess::Created {
             request_id,
-
             task_id: String::new(),
             status: RipTaskRpcStatus::Completed,
-            result_track_id: Some(track.id),
+            result_track_id,
         });
     }
 
@@ -198,14 +199,13 @@ async fn create_task(
 
         rip_task_id: String::new(),
         owner_id: identity.telegram_id,
-        provider: provider.clone(),
-        track_id: request.track_id.clone(),
-        codec: codec.map(|codec| codec.as_str().to_owned()),
-        title: request.title,
-        artist: request.artist,
-        album: request.album,
-        duration: request.duration,
-        artwork_url: request.artwork_url,
+        track_id: target_id.clone(),
+        codec: None,
+        title: None,
+        artist: None,
+        album: None,
+        duration: None,
+        artwork_url: None,
         controller: controller.clone(),
         created_at: std::time::Instant::now(),
         latest_progress: RipTaskProgress {
@@ -223,7 +223,10 @@ async fn create_task(
             completed_tracks: None,
             failed_tracks: None,
         },
-        is_album: false,
+        is_album,
+        completed: false,
+        result_track_id: None,
+        error: None,
     };
 
     let reserved_task_id = match reserve_task(state.tasks(), meta) {
@@ -247,18 +250,15 @@ async fn create_task(
     tracing::info!(
         task_id = %reserved_task_id,
         user_id = identity.telegram_id,
-        provider = ?provider,
-        track_id = %request.track_id,
-        codec = ?codec,
+        track_id = %target_id,
         "Rip task submitted and dispatched"
     );
 
     (state.rip_task_runner)(
         state.clone(),
         reserved_task_id.clone(),
-        provider,
-        request.track_id,
-        codec,
+        target_id,
+        is_album,
         identity.telegram_id,
         controller,
     );
@@ -322,10 +322,8 @@ fn cancel_task(
 
 fn reserve_task(tasks: &TaskRegistry, meta: ServerTaskMeta) -> Result<String, String> {
     tasks.insert_unique(meta, |existing, candidate| {
-        !existing.is_album
-            && existing.provider == candidate.provider
+        existing.is_album == candidate.is_album
             && existing.track_id == candidate.track_id
-            && existing.codec == candidate.codec
     })
 }
 
@@ -355,7 +353,6 @@ mod tests {
             task_id: task_id.to_owned(),
             rip_task_id: String::new(),
             owner_id,
-            provider: music::Provider::Apple,
             track_id: "track-1".to_owned(),
             codec: Some("flac".to_owned()),
             title: None,
@@ -381,6 +378,9 @@ mod tests {
                 failed_tracks: None,
             },
             is_album: false,
+            completed: false,
+            result_track_id: None,
+            error: None,
         }
     }
 
@@ -447,15 +447,18 @@ mod tests {
     }
 
     #[test]
-    fn codec_is_part_of_the_active_task_reservation_key() {
+    fn reservation_key_distinguishes_album_and_track_for_same_id() {
         let tasks = TaskRegistry::default();
         assert_eq!(
-            reserve_task(&tasks, test_task("flac", 100)),
-            Ok("flac".to_owned())
+            reserve_task(&tasks, test_task("track", 100)),
+            Ok("track".to_owned())
         );
-        let mut alac_task = test_task("alac", 101);
-        alac_task.codec = Some("alac".to_owned());
-        assert_eq!(reserve_task(&tasks, alac_task), Ok("alac".to_owned()));
+        let duplicate = test_task("duplicate", 101);
+        assert_eq!(reserve_task(&tasks, duplicate), Err("track".to_owned()));
+
+        let mut album_task = test_task("album", 102);
+        album_task.is_album = true;
+        assert_eq!(reserve_task(&tasks, album_task), Ok("album".to_owned()));
         assert_eq!(tasks.len(), 2);
     }
 

@@ -18,7 +18,7 @@ use engine::{
     types::TrackMeta,
 };
 use futures_util::stream;
-use music::{CodecPreference, Provider};
+use music::CodecPreference;
 use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
 
@@ -204,7 +204,7 @@ async fn happy_path_progress_and_result_mapping() {
         .rip(
             &deps,
             "42",
-            RipOptions::new(Provider::Apple, "us").with_progress(&cb),
+            RipOptions::new("us").with_progress(&cb),
         )
         .await
         .unwrap();
@@ -266,7 +266,7 @@ async fn metadata_error_cleans_staging_lane() {
     let ripper = AlacTrackRipper::new(config(dir.path(), 0, 1));
 
     let error = ripper
-        .rip(&deps, "42", RipOptions::new(Provider::Apple, "us"))
+        .rip(&deps, "42", RipOptions::new("us"))
         .await
         .unwrap_err();
 
@@ -285,7 +285,7 @@ async fn retry_succeeds_after_two_failures() {
         .rip(
             &deps,
             "42",
-            RipOptions::new(Provider::Apple, "us").with_progress(&cb),
+            RipOptions::new("us").with_progress(&cb),
         )
         .await
         .unwrap();
@@ -310,7 +310,7 @@ async fn exhaustion_rethrows_last_error() {
     deps.connect_fails = 10;
     let ripper = AlacTrackRipper::new(config(dir.path(), 2, 1));
     let error = ripper
-        .rip(&deps, "42", RipOptions::new(Provider::Apple, "us"))
+        .rip(&deps, "42", RipOptions::new("us"))
         .await
         .unwrap_err();
     assert!(matches!(
@@ -372,7 +372,7 @@ async fn cancelled_error_bypasses_retries() {
         .rip(
             &stage,
             "42",
-            RipOptions::new(Provider::Apple, "us").with_progress(&cb),
+            RipOptions::new("us").with_progress(&cb),
         )
         .await
         .unwrap_err();
@@ -391,7 +391,7 @@ async fn cancellation_mid_rip_no_retry() {
         .rip(
             &deps,
             "42",
-            RipOptions::new(Provider::Apple, "us").with_signal(token),
+            RipOptions::new("us").with_signal(token),
         )
         .await
         .unwrap_err();
@@ -471,7 +471,7 @@ async fn stalled_stream_is_retryable() {
     let ripper = AlacTrackRipper::new(config(dir.path(), 1, 1));
     tokio::time::pause();
     let error = ripper
-        .rip(&stage, "42", RipOptions::new(Provider::Apple, "us"))
+        .rip(&stage, "42", RipOptions::new("us"))
         .await
         .unwrap_err();
     assert!(matches!(
@@ -507,7 +507,7 @@ async fn progress_totals_with_content_length() {
         .rip(
             &deps,
             "42",
-            RipOptions::new(Provider::Apple, "us").with_progress(&cb),
+            RipOptions::new("us").with_progress(&cb),
         )
         .await
         .unwrap();
@@ -533,7 +533,7 @@ async fn short_body_is_rejected_before_tagging() {
     let ripper = AlacTrackRipper::new(config(dir.path(), 0, 1));
 
     let error = ripper
-        .rip(&deps, "42", RipOptions::new(Provider::Apple, "us"))
+        .rip(&deps, "42", RipOptions::new("us"))
         .await
         .unwrap_err();
 
@@ -562,7 +562,7 @@ async fn output_dir_override_used() {
         .rip(
             &deps,
             "42",
-            RipOptions::new(Provider::Apple, "us").with_output_dir(other.path()),
+            RipOptions::new("us").with_output_dir(other.path()),
         )
         .await
         .unwrap();
@@ -579,7 +579,7 @@ async fn long_metadata_filename_is_bounded_and_rip_succeeds() {
     let ripper = AlacTrackRipper::new(config(dir.path(), 0, 1));
 
     let result = ripper
-        .rip(&deps, "42", RipOptions::new(Provider::Apple, "us"))
+        .rip(&deps, "42", RipOptions::new("us"))
         .await
         .expect("long metadata should produce a bounded output name");
     let filename = Path::new(&result.file_path)
@@ -607,7 +607,7 @@ async fn local_io_error_is_non_retryable() {
         .rip(
             &deps,
             "42",
-            RipOptions::new(Provider::Apple, "us").with_progress(&cb),
+            RipOptions::new("us").with_progress(&cb),
         )
         .await
         .expect_err("a local io error should fail without retries");
@@ -638,7 +638,7 @@ async fn progress_throttles_to_one_per_second() {
         .rip(
             &deps,
             "42",
-            RipOptions::new(Provider::Apple, "us").with_progress(&cb),
+            RipOptions::new("us").with_progress(&cb),
         )
         .await
         .unwrap();
@@ -662,7 +662,7 @@ async fn not_found_404_skips_retries_completely() {
     deps.connect_permanent = Some("Wrapper /m3u8 returned HTTP 404".into());
     let ripper = AlacTrackRipper::new(config(dir.path(), 4, 1000));
     let error = ripper
-        .rip(&deps, "6804576275", RipOptions::new(Provider::Apple, "in"))
+        .rip(&deps, "6804576275", RipOptions::new("in"))
         .await
         .unwrap_err();
     assert!(matches!(
@@ -687,7 +687,7 @@ async fn typed_unavailable_outcome_bypasses_retries() {
         .rip(
             &deps,
             "42",
-            RipOptions::new(Provider::Apple, "us").with_codec_preference(CodecPreference::Atmos),
+            RipOptions::new("us").with_codec_preference(CodecPreference::Atmos),
         )
         .await
         .unwrap_err();

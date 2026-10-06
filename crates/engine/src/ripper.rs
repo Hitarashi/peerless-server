@@ -7,7 +7,7 @@ use std::{
 };
 
 use futures_util::{FutureExt, StreamExt};
-use music::{CodecPreference, Provider};
+use music::CodecPreference;
 use peerless_core::retry::{exponential_delay, jitter_multiplier as retry_jitter_multiplier};
 use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
@@ -231,11 +231,9 @@ async fn fetch_lyrics(
     client: reqwest::Client,
     timeout: Duration,
     api_endpoint: crate::settings::LyricspornApiEndpoint,
-    provider: Provider,
     track_id: &str,
 ) -> Option<String> {
-    if provider != Provider::Apple
-        || track_id.is_empty()
+    if track_id.is_empty()
         || track_id.len() > 20
         || !track_id.bytes().all(|byte| byte.is_ascii_digit())
     {
@@ -399,7 +397,6 @@ pub struct AlacTrackRipper {
 
 #[derive(Clone)]
 pub struct RipOptions<'a> {
-    pub provider: Provider,
     pub storefront: &'a str,
     pub on_progress: Option<&'a RipProgressCallback>,
     pub signal: Option<CancellationToken>,
@@ -410,7 +407,6 @@ pub struct RipOptions<'a> {
 impl std::fmt::Debug for RipOptions<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RipOptions")
-            .field("provider", &self.provider)
             .field("storefront", &self.storefront)
             .field("signal", &self.signal)
             .field("output_dir", &self.output_dir)
@@ -420,9 +416,8 @@ impl std::fmt::Debug for RipOptions<'_> {
 }
 
 impl<'a> RipOptions<'a> {
-    pub fn new(provider: Provider, storefront: &'a str) -> Self {
+    pub fn new(storefront: &'a str) -> Self {
         Self {
-            provider,
             storefront,
             on_progress: None,
             signal: None,
@@ -532,7 +527,6 @@ impl AlacTrackRipper {
             signal,
             output_dir,
             codec_preference,
-            provider,
         } = options;
         let on_progress = *on_progress;
         let signal = signal.as_ref();
@@ -574,7 +568,7 @@ impl AlacTrackRipper {
                 let timeout = self.config.lyrics_timeout;
                 let api_endpoint = self.config.lyricsporn_api_endpoint.clone();
                 async move {
-                    match fetch_lyrics(client, timeout, api_endpoint, provider.clone(), &track_id)
+                    match fetch_lyrics(client, timeout, api_endpoint, &track_id)
                         .await
                     {
                         Some(l) => {

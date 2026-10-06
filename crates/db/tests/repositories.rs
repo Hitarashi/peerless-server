@@ -12,7 +12,7 @@ use db::{
 };
 use diesel::sql_query;
 use diesel_async::RunQueryDsl;
-use music::{Codec, Provider};
+use music::Codec;
 use peerless_core::{
     AlbumReplacementExpectation, AlbumReplacementResult, AlbumUpload, SaveTrackInput,
 };
@@ -266,7 +266,6 @@ async fn albums_repository_replacement_rolls_back_and_preserves_old_rows() {
     repo.save_album(&old).await.expect("save old archive row");
 
     let replacement = AlbumUpload {
-        provider: Provider::Apple,
         album_id: album_id.clone(),
         codec: Codec::Alac,
         part_index: 1,
@@ -339,7 +338,6 @@ async fn albums_repository_replacement_switches_primary_codec_and_keeps_atmos() 
     .expect("save Atmos row");
 
     let replacement = AlbumUpload {
-        provider: Provider::Apple,
         album_id: album_id.clone(),
         codec: Codec::Aac,
         part_index: 1,
@@ -395,7 +393,6 @@ async fn albums_repository_concurrent_replacement_commits_one_generation() {
     let first_album = album_id.clone();
     let first = tokio::spawn(async move {
         let upload = AlbumUpload {
-            provider: Provider::Apple,
             album_id: first_album.clone(),
             codec: Codec::Alac,
             part_index: 1,
@@ -423,7 +420,6 @@ async fn albums_repository_concurrent_replacement_commits_one_generation() {
     let second_album = album_id.clone();
     let second = tokio::spawn(async move {
         let upload = AlbumUpload {
-            provider: Provider::Apple,
             album_id: second_album.clone(),
             codec: Codec::Alac,
             part_index: 1,

@@ -135,13 +135,23 @@ where
             .unwrap_or_else(|| item.rendition.codec_preference())
     };
     let rip_options = RipOptions {
-        provider: ctx.options.provider.clone(),
         storefront: &storefront,
         on_progress: Some(&on_progress),
         signal: Some(queue_signal.clone()),
         output_dir: Some(rip_job_dir),
         codec_preference,
     };
+    let initial_codec = match item.rendition {
+        Rendition::Atmos => "ec-3",
+        Rendition::Primary => match codec_preference {
+            music::CodecPreference::HighestQuality
+            | music::CodecPreference::HiRes192
+            | music::CodecPreference::HiRes96
+            | music::CodecPreference::LosslessCd => "alac",
+            music::CodecPreference::Atmos => "ec-3",
+        },
+    };
+    bus.set_codec(shared, Some(initial_codec.to_string()));
     let rip_result = match deps.rip(&item.track_id, rip_options).await {
         Ok(rip_result) => {
             bus.set_codec(shared, Some(rip_result.codec.clone()));

@@ -60,7 +60,7 @@ use crate::{
     queue::{EnqueueOptions, SequentialRipQueue},
     ripper::{RipError, RipOptions, RipProgressCallback},
     settings::{BotSettings, resolve_default_storefront},
-    types::{AlbumTracks, ArtistTracks, Codec, Provider, TargetKind, TrackRipResult},
+    types::{AlbumTracks, ArtistTracks, Codec, TargetKind, TrackRipResult},
     zip::{
         TELEGRAM_SPLIT_THRESHOLD_BYTES, ZipTrackEntry, album_generation_hash,
         build_zip_entry_filename_with_codec, create_zip_archive, plan_zip_parts_with_codec,
@@ -287,12 +287,6 @@ impl RipOrchestrator {
         options: &RipTaskOptions,
         admission_group_id: Option<String>,
     ) -> Result<RipTaskSummary, OrchestratorError> {
-        if !deps.supports_provider(options.provider.clone()) {
-            return Err(OrchestratorError::Message(format!(
-                "provider {} is not available",
-                options.provider
-            )));
-        }
         let job_id = cuid2::create_id();
         self.admit_in_group(&job_id, options, admission_group_id.as_deref())?;
         let mut admission_guard = AdmissionGuard::new(Arc::clone(&self.admissions), job_id.clone());
@@ -316,7 +310,6 @@ impl RipOrchestrator {
         let shared: Arc<Mutex<TaskShared>> = Arc::new(Mutex::new(TaskShared {
             job: ActiveRipTask {
                 id: job_id.clone(),
-                provider: options.provider.clone(),
                 source_track_ids: options
                     .parsed_items
                     .iter()
@@ -360,7 +353,6 @@ impl RipOrchestrator {
             .parsed_items
             .iter()
             .map(|item| InflightTargetKey {
-                provider: options.provider.clone(),
                 kind: item.kind,
                 id: item.id.clone(),
                 storefront: item
@@ -463,7 +455,6 @@ mod hardening_tests {
 
     fn options(user_id: i64, is_admin: bool) -> RipTaskOptions {
         RipTaskOptions {
-            provider: Provider::Apple,
             chat_id: user_id,
             user_id,
             user_name: None,

@@ -83,6 +83,7 @@ where
     }
 
     bus.set_job_activity(shared, None);
+    bus.set_codec(shared, Some(cached.codec.as_str().to_string()));
     bus.set_download(
         shared,
         Some(DownloadLane::CachedDelivery {

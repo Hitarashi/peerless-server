@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use diesel::result::{DatabaseErrorKind, Error as DieselError};
 use engine::{
-    Codec, Provider,
+    Codec,
     orchestrator::deps::{
         AlbumCache, AlbumCacheError, AlbumCacheOperation, AlbumReplacementExpectation,
         AlbumReplacementResult, AlbumUpload, ArtworkProvider, BoxFuture, CachedAlbum, CachedTrack,
@@ -139,45 +139,41 @@ impl RipDeps {
 impl CollectionResolver for RipDeps {
     async fn fetch_album_tracks(
         &self,
-        provider: Provider,
         id: &str,
         storefront: Storefront<'_>,
     ) -> Result<AlbumTracks, String> {
         self.providers
-            .fetch_album_tracks(provider, id, storefront)
+            .fetch_album_tracks(id, storefront)
             .await
     }
 
     async fn fetch_artist_tracks(
         &self,
-        provider: Provider,
         id: &str,
         storefront: Storefront<'_>,
     ) -> Result<ArtistTracks, String> {
         self.providers
-            .fetch_artist_tracks(provider, id, storefront)
+            .fetch_artist_tracks(id, storefront)
             .await
     }
 
     async fn fetch_artist_album_ids(
         &self,
-        provider: Provider,
         id: &str,
         storefront: Storefront<'_>,
     ) -> Result<Vec<String>, String> {
         self.providers
-            .fetch_artist_album_ids(provider, id, storefront)
+            .fetch_artist_album_ids(id, storefront)
             .await
     }
 
     async fn fetch_playlist_tracks(
         &self,
-        provider: Provider,
         id: &str,
         storefront: Storefront<'_>,
     ) -> Result<PlaylistData, String> {
         self.providers
-            .fetch_playlist_tracks(provider, id, storefront)
+            .fetch_playlist_tracks(id, storefront)
             .await
     }
 }
@@ -197,8 +193,8 @@ impl ArtworkProvider for RipDeps {
         self.providers.fetch_artwork(url).await
     }
 
-    fn artwork_url_at_size(&self, provider: Provider, url: &str, size: u16) -> String {
-        self.providers.artwork_url_at_size(provider, url, size)
+    fn artwork_url_at_size(&self, url: &str, size: u16) -> String {
+        self.providers.artwork_url_at_size(url, size)
     }
 }
 
@@ -209,11 +205,10 @@ impl ProviderPresentation for RipDeps {
 
     fn album_url(
         &self,
-        provider: Provider,
         album_id: &str,
         storefront: Storefront<'_>,
     ) -> Option<String> {
-        self.providers.album_url(provider, album_id, storefront)
+        self.providers.album_url(album_id, storefront)
     }
 
     fn unavailable_track_message(&self) -> &str {
@@ -225,11 +220,7 @@ impl ProviderPresentation for RipDeps {
     }
 }
 
-impl ProviderDeps for RipDeps {
-    fn supports_provider(&self, provider: Provider) -> bool {
-        self.providers.supports_provider(provider)
-    }
-}
+impl ProviderDeps for RipDeps {}
 
 impl TrackCache for RipDeps {
     fn find_cached_tracks<'a>(
@@ -301,7 +292,6 @@ impl AlbumCache for RipDeps {
 
     fn replace_albums<'a>(
         &'a self,
-        _provider: Provider,
         album_id: &'a str,
         codec: Codec,
         expected: AlbumReplacementExpectation,
@@ -319,7 +309,6 @@ impl AlbumCache for RipDeps {
 
     fn find_albums<'a>(
         &'a self,
-        _provider: Provider,
         album_id: &'a str,
         codec: Option<Codec>,
     ) -> BoxFuture<'a, Result<Vec<CachedAlbum>, AlbumCacheError>> {
@@ -346,7 +335,6 @@ impl AlbumCache for RipDeps {
 
     fn delete_albums<'a>(
         &'a self,
-        _provider: Provider,
         album_id: &'a str,
         codec: Option<Codec>,
     ) -> BoxFuture<'a, Result<(), AlbumCacheError>> {

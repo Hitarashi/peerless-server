@@ -5,7 +5,7 @@ use engine::{
         TrackAcquisition,
     },
     ripper::{AlacTrackRipper, RipError, RipperConfig},
-    types::{AlbumTracks, ArtistTracks, Provider, TrackRipResult},
+    types::{AlbumTracks, ArtistTracks, TrackRipResult},
 };
 use music::PlaylistData;
 
@@ -45,13 +45,9 @@ impl ProviderRegistry {
 impl CollectionResolver for ProviderRegistry {
     async fn fetch_album_tracks(
         &self,
-        provider: Provider,
         id: &str,
         storefront: Storefront<'_>,
     ) -> Result<AlbumTracks, String> {
-        if provider != Provider::Apple {
-            return Err("unsupported provider".to_owned());
-        }
         self.catalog()
             .fetch_album_tracks(id, self.storefront(storefront))
             .await
@@ -60,13 +56,9 @@ impl CollectionResolver for ProviderRegistry {
 
     async fn fetch_artist_tracks(
         &self,
-        provider: Provider,
         id: &str,
         storefront: Storefront<'_>,
     ) -> Result<ArtistTracks, String> {
-        if provider != Provider::Apple {
-            return Err("unsupported provider".to_owned());
-        }
         self.catalog()
             .fetch_artist_tracks(id, self.storefront(storefront))
             .await
@@ -75,13 +67,9 @@ impl CollectionResolver for ProviderRegistry {
 
     async fn fetch_artist_album_ids(
         &self,
-        provider: Provider,
         id: &str,
         storefront: Storefront<'_>,
     ) -> Result<Vec<String>, String> {
-        if provider != Provider::Apple {
-            return Err("unsupported provider".to_owned());
-        }
         self.catalog()
             .fetch_artist_album_ids(id, self.storefront(storefront))
             .await
@@ -90,13 +78,9 @@ impl CollectionResolver for ProviderRegistry {
 
     async fn fetch_playlist_tracks(
         &self,
-        provider: Provider,
         id: &str,
         storefront: Storefront<'_>,
     ) -> Result<PlaylistData, String> {
-        if provider != Provider::Apple {
-            return Err("unsupported provider".to_owned());
-        }
         self.playlist()
             .fetch_playlist_tracks(id, self.storefront(storefront))
             .await
@@ -110,11 +94,6 @@ impl TrackAcquisition for ProviderRegistry {
         track_id: &str,
         options: engine::ripper::RipOptions<'_>,
     ) -> Result<TrackRipResult, RipError> {
-        if options.provider != Provider::Apple {
-            return Err(RipError::TrackUnavailable {
-                reason: "unsupported provider".to_string(),
-            });
-        }
         self.ripper
             .rip(self.apple.ripper_deps(), track_id, options)
             .await
@@ -126,12 +105,8 @@ impl ArtworkProvider for ProviderRegistry {
         engine::ripper::fetch_artwork_bytes(self.ripper.config(), url).await
     }
 
-    fn artwork_url_at_size(&self, provider: Provider, url: &str, size: u16) -> String {
-        if provider == Provider::Apple {
-            apple::catalog::artwork_url_at_size(url, size)
-        } else {
-            String::new()
-        }
+    fn artwork_url_at_size(&self, url: &str, size: u16) -> String {
+        apple::catalog::artwork_url_at_size(url, size)
     }
 }
 
@@ -142,15 +117,10 @@ impl ProviderPresentation for ProviderRegistry {
 
     fn album_url(
         &self,
-        provider: Provider,
         album_id: &str,
         storefront: Storefront<'_>,
     ) -> Option<String> {
-        if provider == Provider::Apple {
-            ApplePresentation.album_url(provider, album_id, self.storefront(storefront).into())
-        } else {
-            None
-        }
+        ApplePresentation.album_url(album_id, self.storefront(storefront).into())
     }
 
     fn unavailable_track_message(&self) -> &str {
@@ -162,8 +132,4 @@ impl ProviderPresentation for ProviderRegistry {
     }
 }
 
-impl ProviderDeps for ProviderRegistry {
-    fn supports_provider(&self, provider: Provider) -> bool {
-        provider == Provider::Apple
-    }
-}
+impl ProviderDeps for ProviderRegistry {}

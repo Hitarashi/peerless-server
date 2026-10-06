@@ -46,9 +46,8 @@ pub type RipTaskRunner = Arc<
     dyn Fn(
             Arc<ServerState>,
             String,
-            music::Provider,
             String,
-            Option<music::Codec>,
+            bool,
             i64,
             tokio_util::sync::CancellationToken,
         ) -> tokio::task::JoinHandle<()>
@@ -109,7 +108,7 @@ impl ServerState {
             .build()
             .unwrap_or_default();
         let rip_task_runner: RipTaskRunner = Arc::new(
-            |_state, _task_id, _provider, _track_id, _codec, _user_id, _controller| {
+            |_state, _task_id, _track_id, _is_album, _user_id, _controller| {
                 tokio::spawn(async move {})
             },
         );
@@ -233,6 +232,12 @@ impl ServerState {
             progress.current_track_artwork_url = progress
                 .current_track_artwork_url
                 .or_else(|| previous.current_track_artwork_url.clone());
+            if task.title.is_none() {
+                task.title = progress.current_track_title.clone();
+            }
+            if task.artist.is_none() {
+                task.artist = progress.current_track_artist.clone();
+            }
             task.artwork_url = progress
                 .current_track_artwork_url
                 .clone()

@@ -325,7 +325,7 @@ async fn main() -> Result<()> {
     let settings_store_for_tasks = Arc::clone(&settings_store);
     let admin_id = env.admin_id;
     let rip_task_runner: server::RipTaskRunner = Arc::new(
-        move |state, task_id, provider, track_id, codec, user_id, controller| {
+        move |state, task_id, track_id, is_album, user_id, controller| {
             let orchestrator = orchestrator_for_tasks.clone();
             let rip_deps = rip_deps_for_tasks.clone();
             let settings_store = Arc::clone(&settings_store_for_tasks);
@@ -338,17 +338,16 @@ async fn main() -> Result<()> {
                     engine::settings::resolve_default_storefront(&settings).to_owned();
                 let item = engine::types::ParsedTargetItem {
                     id: track_id.clone(),
-                    kind: music::TargetKind::Track,
+                    kind: if is_album {
+                        music::TargetKind::Album
+                    } else {
+                        music::TargetKind::Track
+                    },
                     storefront: Some(default_storefront.clone()),
                 };
-                let codec_preference = codec.map(|c| match c {
-                    music::Codec::Alac => music::CodecPreference::HighestQuality,
-                    music::Codec::Aac => music::CodecPreference::LosslessCd,
-                    _ => music::CodecPreference::HighestQuality,
-                });
+                let codec_preference = Some(music::CodecPreference::HighestQuality);
                 let is_admin = user_id == admin_id;
                 let options = engine::orchestrator::types::RipTaskOptions {
-                    provider,
                     chat_id: 0,
                     user_id,
                     user_name: Some(task_id.clone()),
@@ -361,7 +360,8 @@ async fn main() -> Result<()> {
                     reply_to_message_id: None,
                     is_admin,
                     codec_preference,
-                    rendition_policy: engine::orchestrator::types::RenditionPolicy::PrimaryOnly,
+                    rendition_policy:
+                        engine::orchestrator::types::RenditionPolicy::PrimaryWithOptionalAtmos,
                 };
 
                 tracing::info!(task_id = %task_id, "Executing background rip task via RipOrchestrator");
@@ -436,6 +436,14 @@ async fn main() -> Result<()> {
                     if is_album {
                         task.is_album = true;
                     }
+                    if task.title.is_none() && !parsed_title.is_empty() {
+                        task.title = Some(parsed_title.clone());
+                    }
+                    if task.artist.is_none() {
+                        task.artist = parsed_artist
+                            .clone()
+                            .or_else(|| is_album.then(|| format!("{} tracks", job.total_tracks)));
+                    }
                 })
             }) {
                 return Some(task);
@@ -460,7 +468,6 @@ async fn main() -> Result<()> {
                 |task| {
                     task.rip_task_id.is_empty()
                         && (task.owner_id == job.user_id || job.user_id == 0)
-                        && task.provider == job.provider
                         && job.source_track_ids.iter().any(|id| id == &task.track_id)
                 },
                 |task| {
@@ -482,7 +489,6 @@ async fn main() -> Result<()> {
                 task_id: task_id.clone(),
                 rip_task_id: job.id.clone(),
                 owner_id: job.user_id,
-                provider: job.provider.clone(),
                 track_id: job
                     .source_track_ids
                     .first()
@@ -513,6 +519,9 @@ async fn main() -> Result<()> {
                     failed_tracks: is_album.then_some(0),
                 },
                 is_album,
+                completed: false,
+                result_track_id: None,
+                error: None,
             };
             state.tasks().insert(task_id.clone(), meta.clone());
             state.notify_task_updated(task_id);
@@ -542,7 +551,11 @@ async fn main() -> Result<()> {
             }
             OrchestratorEvent::Progress(job, progress) => {
                 if let Some(task) = find_task(job, true) {
-                    let download_codec = progress.codec.clone().or_else(|| task.codec.clone());
+                    let download_codec = progress
+                        .codec
+                        .clone()
+                        .or_else(|| task.codec.clone())
+                        .or_else(|| Some("alac".to_string()));
                     let download = progress.download.as_ref().map(|download_lane| {
                         let byte_progress = download_lane.byte_progress();
                         let (title, artist, artwork_url, track_index, total_tracks) =
@@ -580,7 +593,11 @@ async fn main() -> Result<()> {
                                     track.artwork_url.clone(),
                                     track.track_index,
                                     track.total_tracks,
-                                    progress.codec.clone().or_else(|| task.codec.clone()),
+                                    progress
+                                        .codec
+                                        .clone()
+                                        .or_else(|| task.codec.clone())
+                                        .or_else(|| Some("alac".to_string())),
                                 ),
                                 UploadLane::ArchiveBuild { archive, .. }
                                 | UploadLane::ArchiveUpload { archive, .. } => (
@@ -717,9 +734,35 @@ async fn main() -> Result<()> {
                             .first()
                             .map(|failed| failed.error.as_str())
                             .unwrap_or("One or more tracks failed");
-                        state.fail_task(&task.task_id, error);
+                        state.tasks().update(&task.task_id, |meta| {
+                            meta.error = Some(error.to_string());
+                        });
+                        state.notify_task_updated(task.task_id.clone());
+                        let state = state.clone();
+                        let task_id = task.task_id.clone();
+                        let error_msg = error.to_string();
+                        tokio::spawn(async move {
+                            tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+                            state.fail_task(&task_id, &error_msg);
+                        });
                     } else {
-                        state.complete_task(&task.task_id);
+                        state.tasks().update(&task.task_id, |meta| {
+                            meta.completed = true;
+                            meta.latest_progress.percent = Some(100.0);
+                            meta.latest_progress.job_stage =
+                                Some(server::rip_tasks::RipTaskStage::new("completed"));
+                            if meta.is_album {
+                                meta.latest_progress.completed_tracks =
+                                    meta.latest_progress.total_tracks;
+                            }
+                        });
+                        state.notify_task_updated(task.task_id.clone());
+                        let state = state.clone();
+                        let task_id = task.task_id.clone();
+                        tokio::spawn(async move {
+                            tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+                            state.complete_task(&task_id);
+                        });
                     }
                 }
             }
@@ -738,7 +781,17 @@ async fn main() -> Result<()> {
                         .lock()
                         .expect("progress throttle map poisoned")
                         .remove(&task.task_id);
-                    state.fail_task(&task.task_id, err);
+                    state.tasks().update(&task.task_id, |meta| {
+                        meta.error = Some(err.to_string());
+                    });
+                    state.notify_task_updated(task.task_id.clone());
+                    let state = state.clone();
+                    let task_id = task.task_id.clone();
+                    let err_msg = err.to_string();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+                        state.fail_task(&task_id, &err_msg);
+                    });
                 }
             }
             _ => {}

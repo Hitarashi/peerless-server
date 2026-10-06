@@ -34,7 +34,6 @@ pub use models::{
     Album, NewAlbum, NewUserIntegration, OneTimeAuthCode, SettingsRow, TgWorkerSession, Track,
     User, UserIntegration, UserSession,
 };
-pub use music::Provider;
 pub use peerless_core::{CachedTrack, SaveTrackInput};
 pub use session::{ClientMetadata, SessionIdentity, SessionManager, SessionTokens, hash_token};
 pub use settings::SettingsStore;

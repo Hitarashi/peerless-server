@@ -705,7 +705,6 @@ async fn admin_callback(state: Arc<BotState>, query: CallbackQuery, action: Repo
             )
             .await;
             let options = engine::orchestrator::types::RipTaskOptions {
-                provider: engine::Provider::Apple,
                 chat_id: marked_chat,
                 user_id: query.user_id,
                 user_name: Some(format!("User {}", query.user_id)),

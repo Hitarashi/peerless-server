@@ -6,7 +6,7 @@ pub use music::{
 use tokio_util::sync::CancellationToken;
 
 use super::deps::ChatMessageRef;
-use crate::types::{ParsedTargetItem, Provider, TargetKind};
+use crate::types::{ParsedTargetItem, TargetKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskPhase {
@@ -76,7 +76,6 @@ pub enum TerminalTaskState {
 #[derive(Debug, Clone)]
 pub struct ActiveRipTask {
     pub id: String,
-    pub provider: Provider,
     pub source_track_ids: Vec<String>,
     pub chat_id: i64,
 
@@ -106,7 +105,6 @@ pub struct ActiveRipTask {
 
 #[derive(Debug, Clone)]
 pub struct RipTaskOptions {
-    pub provider: Provider,
     pub chat_id: i64,
     pub user_id: i64,
     pub user_name: Option<String>,

@@ -21,7 +21,7 @@ use engine::{
         types::{OrchestratorEvent, RipTaskOptions, TaskPhase},
     },
     settings::BotSettings,
-    types::{AlbumTracks, ArtistTracks, ParsedTargetItem, Provider, TargetKind},
+    types::{AlbumTracks, ArtistTracks, ParsedTargetItem, TargetKind},
 };
 use music::PlaylistData;
 
@@ -34,7 +34,6 @@ impl ProviderPresentation for RacePresentation {
 
     fn album_url(
         &self,
-        _provider: Provider,
         album_id: &str,
         storefront: Storefront<'_>,
     ) -> Option<String> {
@@ -99,33 +98,30 @@ impl AlbumCache for RaceDeps {
 
     fn replace_albums<'a>(
         &'a self,
-        provider: Provider,
         album_id: &'a str,
         codec: engine::Codec,
         expected: AlbumReplacementExpectation,
         uploads: Vec<AlbumUpload>,
     ) -> BoxFuture<'a, Result<AlbumReplacementResult, AlbumCacheError>> {
-        let _ = (provider, album_id, codec, expected, uploads);
+        let _ = (album_id, codec, expected, uploads);
         Box::pin(async { Ok(AlbumReplacementResult::Stale) })
     }
 
     fn find_albums<'a>(
         &'a self,
-        provider: Provider,
         album_id: &'a str,
         codec: Option<engine::Codec>,
     ) -> BoxFuture<'a, Result<Vec<CachedAlbum>, AlbumCacheError>> {
-        let _ = (provider, album_id, codec);
+        let _ = (album_id, codec);
         Box::pin(async { Ok(Vec::new()) })
     }
 
     fn delete_albums<'a>(
         &'a self,
-        provider: Provider,
         album_id: &'a str,
         codec: Option<engine::Codec>,
     ) -> BoxFuture<'a, Result<(), AlbumCacheError>> {
-        let _ = (provider, album_id, codec);
+        let _ = (album_id, codec);
         Box::pin(async { Ok(()) })
     }
 }
@@ -169,7 +165,6 @@ impl Delivery for RaceDeps {
 impl CollectionResolver for RaceDeps {
     async fn fetch_album_tracks(
         &self,
-        _provider: Provider,
         id: &str,
         _storefront: Storefront<'_>,
     ) -> Result<AlbumTracks, String> {
@@ -178,7 +173,6 @@ impl CollectionResolver for RaceDeps {
     }
     async fn fetch_artist_tracks(
         &self,
-        _provider: Provider,
         id: &str,
         _storefront: Storefront<'_>,
     ) -> Result<ArtistTracks, String> {
@@ -187,7 +181,6 @@ impl CollectionResolver for RaceDeps {
     }
     async fn fetch_playlist_tracks(
         &self,
-        _provider: Provider,
         id: &str,
         _storefront: Storefront<'_>,
     ) -> Result<PlaylistData, String> {
@@ -200,9 +193,8 @@ impl TrackAcquisition for RaceDeps {
     async fn rip(
         &self,
         id: &str,
-        options: engine::ripper::RipOptions<'_>,
+        _options: engine::ripper::RipOptions<'_>,
     ) -> Result<engine::types::TrackRipResult, engine::ripper::RipError> {
-        assert_eq!(options.provider, Provider::Apple);
         let _ = id;
         self.rip_calls.fetch_add(1, Ordering::SeqCst);
 
@@ -222,7 +214,7 @@ impl ArtworkProvider for RaceDeps {
         None
     }
 
-    fn artwork_url_at_size(&self, _provider: Provider, url: &str, size: u16) -> String {
+    fn artwork_url_at_size(&self, url: &str, size: u16) -> String {
         let _ = size;
         url.to_owned()
     }
@@ -235,11 +227,10 @@ impl ProviderPresentation for RaceDeps {
 
     fn album_url(
         &self,
-        provider: Provider,
         album_id: &str,
         storefront: Storefront<'_>,
     ) -> Option<String> {
-        RacePresentation.album_url(provider, album_id, storefront)
+        RacePresentation.album_url(album_id, storefront)
     }
 
     fn unavailable_track_message(&self) -> &str {
@@ -251,15 +242,10 @@ impl ProviderPresentation for RaceDeps {
     }
 }
 
-impl ProviderDeps for RaceDeps {
-    fn supports_provider(&self, provider: Provider) -> bool {
-        provider == Provider::Apple
-    }
-}
+impl ProviderDeps for RaceDeps {}
 
 fn race_options() -> RipTaskOptions {
     RipTaskOptions {
-        provider: engine::Provider::Apple,
         chat_id: 100,
         user_id: 42,
         user_name: Some("tester".to_owned()),

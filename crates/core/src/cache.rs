@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use music::{Codec, Provider, TrackRipResult};
+use music::{Codec, TrackRipResult};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CachedTrack {
@@ -41,7 +41,6 @@ impl SaveTrackInput {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AlbumUpload {
-    pub provider: Provider,
     pub album_id: String,
     pub codec: Codec,
     pub part_index: i32,

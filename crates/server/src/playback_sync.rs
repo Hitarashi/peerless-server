@@ -500,6 +500,12 @@ async fn dispatch_rip_task_rpc(
         }
     };
 
+    let create_request = if let RipTaskRpcRequest::Create { ref request, .. } = request {
+        Some(request.clone())
+    } else {
+        None
+    };
+
     let reply = match crate::rip_task_rpc::handle_request(identity, request, state.clone()).await {
         Ok(RipTaskRpcSuccess::Created {
             request_id,
@@ -508,7 +514,40 @@ async fn dispatch_rip_task_rpc(
             result_track_id,
         }) => {
             let task = if task_id.is_empty() {
-                None
+                if status == RipTaskRpcStatus::Completed {
+                    create_request.map(|request| {
+                        let (target_id, is_album) = request.target().unwrap_or_default();
+                        Box::new(crate::rip_tasks::RipTaskSnapshot {
+                            task_id: String::new(),
+                            source_track_id: target_id,
+                            title: None,
+                            artist: None,
+                            album: None,
+                            duration: None,
+                            artwork_url: None,
+                            job_stage: Some(crate::rip_tasks::RipTaskStage::new("completed")),
+                            download: None,
+                            upload: None,
+                            percent: Some(100.0),
+                            result_track_id,
+                            is_cached: Some(true),
+                            completed: true,
+                            error: None,
+                            owner_id: Some(identity.telegram_id),
+                            is_owner: true,
+                            is_album,
+                            current_track_title: None,
+                            current_track_artist: None,
+                            current_track_artwork_url: None,
+                            current_track_index: None,
+                            total_tracks: None,
+                            completed_tracks: None,
+                            failed_tracks: None,
+                        })
+                    })
+                } else {
+                    None
+                }
             } else {
                 state.tasks().get(&task_id).map(|task| {
                     let is_owner = task.owner_id == identity.telegram_id
@@ -645,14 +684,8 @@ mod tests {
         let create = ClientMessage::CreateRipTask {
             request_id: "create-1".to_owned(),
             request: crate::rip_tasks::RipTaskRequest {
-                provider: "apple".to_owned(),
-                track_id: "123".to_owned(),
-                codec: Some("flac".to_owned()),
-                title: None,
-                artist: None,
-                album: None,
-                duration: None,
-                artwork_url: None,
+                track_id: Some("123".to_owned()),
+                album_id: None,
             },
         };
         let round_trip: ClientMessage =
@@ -663,9 +696,8 @@ mod tests {
                 request,
             } => {
                 assert_eq!(request_id, "create-1");
-                assert_eq!(request.provider, "apple");
-                assert_eq!(request.track_id, "123");
-                assert_eq!(request.codec.as_deref(), Some("flac"));
+                assert_eq!(request.track_id.as_deref(), Some("123"));
+                assert_eq!(request.album_id, None);
             }
             _ => panic!("Expected CreateRipTask variant"),
         }

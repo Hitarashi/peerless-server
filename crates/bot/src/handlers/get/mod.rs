@@ -176,7 +176,6 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
                 match state
                     .rip_deps
                     .fetch_artist_album_ids(
-                        parsed.provider.clone(),
                         &item.id,
                         effective_sf.map(Into::into).unwrap_or_default(),
                     )
@@ -217,7 +216,6 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
         let admission_group_id = format!("get-batch:{chat}:{}", msg.id());
         let default_storefront = default_storefront.to_owned();
         let base_options = engine::orchestrator::types::RipTaskOptions {
-            provider: parsed.provider,
             chat_id: chat,
             user_id: owner_id,
             user_name: Some(owner_display_name.clone()),
@@ -260,7 +258,6 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
                         engine::types::TargetKind::Track => Ok(1),
                         engine::types::TargetKind::Album => rip_deps
                             .fetch_album_tracks(
-                                base_options.provider.clone(),
                                 &item.id,
                                 storefront.into(),
                             )
@@ -268,7 +265,6 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
                             .map(|album| album.tracks.len()),
                         engine::types::TargetKind::Playlist => rip_deps
                             .fetch_playlist_tracks(
-                                base_options.provider.clone(),
                                 &item.id,
                                 storefront.into(),
                             )
@@ -345,7 +341,6 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
     }
 
     let options = engine::orchestrator::types::RipTaskOptions {
-        provider: parsed.provider,
         chat_id: chat,
         user_id: owner_id,
         user_name: Some(owner_display_name),

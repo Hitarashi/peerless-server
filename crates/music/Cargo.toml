@@ -1,6 +1,6 @@
 [package]
 name = "music"
-description = "Provider-neutral music domain types shared across application layers."
+description = "Music domain types shared across application layers."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

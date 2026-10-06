@@ -21,7 +21,6 @@ use engine::{
     types::TrackMeta,
 };
 use futures_util::stream;
-use music::Provider;
 use tokio_util::sync::CancellationToken;
 
 struct FakeMirror {
@@ -694,7 +693,7 @@ async fn corrupt_primary_body_marks_mirror_and_retries_with_wrapper() {
     });
 
     let result = ripper
-        .rip(&stage, "42", RipOptions::new(Provider::Apple, "us"))
+        .rip(&stage, "42", RipOptions::new("us"))
         .await
         .expect("wrapper should succeed after corrupt mirror output");
 
@@ -730,7 +729,7 @@ async fn wrapper_corruption_does_not_fallback_or_poison_mirror() {
         .rip(
             &stage,
             "42",
-            RipOptions::new(Provider::Apple, "us")
+            RipOptions::new("us")
                 .with_codec_preference(apple::CodecPreference::Atmos),
         )
         .await

@@ -4,21 +4,23 @@ use utoipa::ToSchema;
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct RipTaskRequest {
-    #[schema(example = "apple")]
-    pub provider: String,
-
     #[schema(example = "1440857781")]
-    pub track_id: String,
+    pub track_id: Option<String>,
 
-    #[schema(example = "alac")]
-    pub codec: Option<String>,
+    #[schema(example = "1440857780")]
+    pub album_id: Option<String>,
+}
 
-    pub title: Option<String>,
-    pub artist: Option<String>,
-    pub album: Option<String>,
-    pub duration: Option<i32>,
-
-    pub artwork_url: Option<String>,
+impl RipTaskRequest {
+    pub fn target(&self) -> Option<(String, bool)> {
+        if let Some(album_id) = self.album_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            return Some((album_id.to_string(), true));
+        }
+        if let Some(track_id) = self.track_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            return Some((track_id.to_string(), false));
+        }
+        None
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -27,7 +29,6 @@ pub struct ServerTaskMeta {
 
     pub rip_task_id: String,
     pub owner_id: i64,
-    pub provider: music::Provider,
     pub track_id: String,
     pub codec: Option<String>,
     pub title: Option<String>,
@@ -39,6 +40,9 @@ pub struct ServerTaskMeta {
     pub created_at: std::time::Instant,
     pub latest_progress: RipTaskProgress,
     pub is_album: bool,
+    pub completed: bool,
+    pub result_track_id: Option<i32>,
+    pub error: Option<String>,
 }
 
 impl ServerTaskMeta {
@@ -46,7 +50,6 @@ impl ServerTaskMeta {
         let progress = &self.latest_progress;
         RipTaskSnapshot {
             task_id: self.task_id.clone(),
-            provider: self.provider.as_str().to_owned(),
             source_track_id: self.track_id.clone(),
             title: self.title.clone(),
             artist: self.artist.clone(),
@@ -57,10 +60,10 @@ impl ServerTaskMeta {
             download: progress.download.clone(),
             upload: progress.upload.clone(),
             percent: progress.percent,
-            result_track_id: None,
+            result_track_id: self.result_track_id,
             is_cached: None,
-            completed: false,
-            error: None,
+            completed: self.completed,
+            error: self.error.clone(),
             owner_id: Some(self.owner_id),
             is_owner,
             is_album: self.is_album,
@@ -78,7 +81,6 @@ impl ServerTaskMeta {
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct RipTaskSnapshot {
     pub task_id: String,
-    pub provider: String,
     pub source_track_id: String,
     pub title: Option<String>,
     pub artist: Option<String>,
@@ -300,7 +302,6 @@ mod tests {
             task_id: "task-1".to_owned(),
             rip_task_id: "task-1".to_owned(),
             owner_id: 1,
-            provider: music::Provider::Apple,
             track_id: "source-1".to_owned(),
             codec: None,
             title: None,
@@ -324,6 +325,9 @@ mod tests {
                 failed_tracks: None,
             },
             is_album: true,
+            completed: false,
+            result_track_id: None,
+            error: None,
         };
 
         let snapshot = task.snapshot(true);

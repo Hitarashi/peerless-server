@@ -533,7 +533,6 @@ impl engine::orchestrator::deps::ProviderPresentation for ApplePresentation {
 
     fn album_url(
         &self,
-        _provider: engine::types::Provider,
         album_id: &str,
         storefront: engine::orchestrator::deps::Storefront<'_>,
     ) -> Option<String> {

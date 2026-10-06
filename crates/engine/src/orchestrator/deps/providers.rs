@@ -4,7 +4,7 @@ use music::PlaylistData;
 
 use crate::{
     ripper::{RipError, RipOptions},
-    types::{AlbumTracks, ArtistTracks, Provider, TrackRipResult},
+    types::{AlbumTracks, ArtistTracks, TrackRipResult},
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -29,26 +29,23 @@ impl<'a> From<&'a str> for Storefront<'a> {
 pub trait CollectionResolver: Send + Sync {
     fn fetch_album_tracks(
         &self,
-        provider: Provider,
         id: &str,
         storefront: Storefront<'_>,
     ) -> impl Future<Output = Result<AlbumTracks, String>> + Send;
 
     fn fetch_artist_tracks(
         &self,
-        provider: Provider,
         id: &str,
         storefront: Storefront<'_>,
     ) -> impl Future<Output = Result<ArtistTracks, String>> + Send;
 
     fn fetch_artist_album_ids(
         &self,
-        provider: Provider,
         id: &str,
         storefront: Storefront<'_>,
     ) -> impl Future<Output = Result<Vec<String>, String>> + Send {
         async move {
-            let res = self.fetch_artist_tracks(provider, id, storefront).await?;
+            let res = self.fetch_artist_tracks(id, storefront).await?;
             let mut album_ids = Vec::new();
             for t in res.tracks {
                 if let Some(aid) = t.album_id
@@ -63,7 +60,6 @@ pub trait CollectionResolver: Send + Sync {
 
     fn fetch_playlist_tracks(
         &self,
-        provider: Provider,
         id: &str,
         storefront: Storefront<'_>,
     ) -> impl Future<Output = Result<PlaylistData, String>> + Send;
@@ -79,14 +75,13 @@ pub trait TrackAcquisition: Send + Sync {
 
 pub trait ArtworkProvider: Send + Sync {
     fn fetch_artwork(&self, url: &str) -> impl Future<Output = Option<Vec<u8>>> + Send;
-    fn artwork_url_at_size(&self, provider: Provider, url: &str, size: u16) -> String;
+    fn artwork_url_at_size(&self, url: &str, size: u16) -> String;
 }
 
 pub trait ProviderPresentation: Send + Sync {
     fn default_job_header(&self) -> &str;
     fn album_url(
         &self,
-        provider: Provider,
         album_id: &str,
         storefront: Storefront<'_>,
     ) -> Option<String>;
@@ -103,5 +98,4 @@ pub trait ProviderDeps:
     + Sync
     + 'static
 {
-    fn supports_provider(&self, provider: Provider) -> bool;
 }

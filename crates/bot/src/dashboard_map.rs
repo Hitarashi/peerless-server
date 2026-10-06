@@ -209,7 +209,6 @@ mod tests {
         use tokio_util::sync::CancellationToken;
         ActiveRipTask {
             id: "job_1".into(),
-            provider: music::Provider::Apple,
             source_track_ids: vec!["album_1".into()],
             chat_id: 100,
             delivery_chat_id: 100,

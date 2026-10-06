@@ -227,7 +227,7 @@ fn complete_zip_parts(parts: &[db::Album]) -> Vec<AlbumZipPartResult> {
         .collect()
 }
 
-fn has_complete_archive_parts(parts: &[&db::Album]) -> bool {
+pub(crate) fn has_complete_archive_parts(parts: &[&db::Album]) -> bool {
     let Some(first) = parts.first() else {
         return false;
     };

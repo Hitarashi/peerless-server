@@ -10,7 +10,6 @@ use music::CodecPreference;
 
 #[derive(Debug, Clone)]
 pub struct ParsedCommand {
-    pub provider: engine::types::Provider,
     pub items: Vec<ParsedTargetItem>,
     pub force: bool,
     pub storefront: Option<String>,
@@ -30,7 +29,6 @@ pub fn parse_text(text: &str, reply: Option<&str>, force_override: bool) -> Opti
         && !direct.items.is_empty()
     {
         return Some(ParsedCommand {
-            provider: engine::types::Provider::Apple,
             items: direct.items,
             force: force_override || direct.force,
             storefront: direct.storefront,
@@ -46,7 +44,6 @@ pub fn parse_text(text: &str, reply: Option<&str>, force_override: bool) -> Opti
         && let Some(parsed) = parse_alac_input(text, Some(reply_text))
     {
         return Some(ParsedCommand {
-            provider: engine::types::Provider::Apple,
             items: parsed.items,
             force: force_override || parsed.force,
             storefront: parsed.storefront,
@@ -151,7 +148,6 @@ pub async fn parse_message(
                 let apple_items = extract_batch_items(&content);
                 if !apple_items.is_empty() {
                     return ParsedCommand {
-                        provider: engine::types::Provider::Apple,
                         items: apple_items,
                         force: force_override || message.text().is_some_and(has_force_token),
                         storefront: None,
@@ -180,7 +176,6 @@ pub async fn parse_message(
         force_override,
     )
     .unwrap_or(ParsedCommand {
-        provider: engine::types::Provider::Apple,
         items: Vec::new(),
         force: force_override,
         storefront: None,
@@ -217,7 +212,6 @@ mod tests {
         );
         assert!(direct.is_some());
         let direct = direct.unwrap();
-        assert_eq!(direct.provider, engine::types::Provider::Apple);
         assert_eq!(direct.items.len(), 1);
         assert_eq!(
             direct.codec_preference,
@@ -232,7 +226,6 @@ mod tests {
         );
         assert!(reply.is_some());
         let reply = reply.unwrap();
-        assert_eq!(reply.provider, engine::types::Provider::Apple);
         assert_eq!(reply.items.len(), 1);
         assert_eq!(
             reply.codec_preference,

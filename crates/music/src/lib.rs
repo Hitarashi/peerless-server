@@ -5,89 +5,6 @@ use serde::{Deserialize, Serialize};
 pub mod time;
 pub mod url;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "diesel", derive(diesel::AsExpression, diesel::FromSqlRow))]
-#[cfg_attr(feature = "diesel", diesel(sql_type = diesel::sql_types::VarChar))]
-pub enum Provider {
-    Apple,
-    Other(String),
-}
-
-impl Provider {
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::Apple => "apple",
-            Self::Other(value) => value,
-        }
-    }
-
-    pub fn is_apple(&self) -> bool {
-        matches!(self, Self::Apple)
-    }
-}
-
-impl std::fmt::Display for Provider {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl std::str::FromStr for Provider {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let value = value.trim();
-        if value.is_empty() {
-            return Err("provider identifier cannot be empty".to_owned());
-        }
-        if value.eq_ignore_ascii_case("apple") {
-            Ok(Self::Apple)
-        } else {
-            Ok(Self::Other(value.to_owned()))
-        }
-    }
-}
-
-impl Serialize for Provider {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for Provider {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        String::deserialize(deserializer)?
-            .parse()
-            .map_err(serde::de::Error::custom)
-    }
-}
-
-#[cfg(feature = "diesel")]
-impl ToSql<diesel::sql_types::VarChar, Pg> for Provider {
-    fn to_sql<'b>(
-        &'b self,
-        out: &mut diesel::serialize::Output<'b, '_, Pg>,
-    ) -> diesel::serialize::Result {
-        <str as ToSql<diesel::sql_types::Text, Pg>>::to_sql(self.as_str(), out)
-    }
-}
-
-#[cfg(feature = "diesel")]
-impl FromSql<diesel::sql_types::VarChar, Pg> for Provider {
-    fn from_sql(
-        bytes: <Pg as diesel::backend::Backend>::RawValue<'_>,
-    ) -> diesel::deserialize::Result<Self> {
-        <String as FromSql<diesel::sql_types::Text, Pg>>::from_sql(bytes)?
-            .parse()
-            .map_err(Into::into)
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[cfg_attr(feature = "diesel", derive(diesel::AsExpression, diesel::FromSqlRow))]
@@ -408,19 +325,6 @@ pub struct TrackRipResult {
 mod tests {
     use super::*;
 
-    #[test]
-    fn provider_wire_format_preserves_apple_and_opaque_ids() {
-        assert_eq!(Provider::Apple.as_str(), "apple");
-        assert_eq!("apple".parse::<Provider>(), Ok(Provider::Apple));
-        let provider = "Legacy-Store".parse::<Provider>().unwrap();
-        assert_eq!(provider.as_str(), "Legacy-Store");
-        assert_eq!(
-            serde_json::to_string(&provider).unwrap(),
-            "\"Legacy-Store\""
-        );
-        assert_eq!("Legacy-Store".parse::<Provider>(), Ok(provider));
-        assert!("  ".parse::<Provider>().is_err());
-    }
 
     #[test]
     fn rendition_policy_constrains_atmos_to_an_optional_ec3_unit() {

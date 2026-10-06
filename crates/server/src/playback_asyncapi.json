@@ -373,59 +373,20 @@
                 },
                 "request": {
                   "type": "object",
-                  "required": [
-                    "provider",
-                    "track_id"
-                  ],
                   "properties": {
-                    "provider": {
-                      "type": "string",
-                      "enum": [
-                        "apple"
-                      ]
-                    },
                     "track_id": {
-                      "type": "string",
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "description": "Provider-native track identifier."
                     },
-                    "codec": {
+                    "album_id": {
                       "type": [
                         "string",
                         "null"
                       ],
-                      "description": "Desired Apple Music codec (`alac`, `ec-3`, `flac`, or `aac`). When omitted, accepts any cached codec or resolves to the actual streaming codec (ALAC, Dolby Atmos/EC-3, or AAC). Unsupported values fall back to ALAC."
-                    },
-                    "title": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "artist": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "album": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "duration": {
-                      "type": [
-                        "integer",
-                        "null"
-                      ],
-                      "format": "int32"
-                    },
-                    "artwork_url": {
-                      "type": [
-                        "string",
-                        "null"
-                      ],
-                      "description": "Artwork URL the client already has for this track."
+                      "description": "Provider-native album identifier."
                     }
                   }
                 }
@@ -441,11 +402,7 @@
               "payload": {
                 "request_id": "create-1",
                 "request": {
-                  "provider": "apple",
-                  "track_id": "1440857781",
-                  "codec": "alac",
-                  "title": "Example track",
-                  "artwork_url": "https://example.com/cover.jpg"
+                  "track_id": "1440857781"
                 }
               }
             }
@@ -876,7 +833,6 @@
         "type": "object",
         "required": [
           "task_id",
-          "provider",
           "source_track_id",
           "title",
           "artist",
@@ -895,9 +851,6 @@
         ],
         "properties": {
           "task_id": {
-            "type": "string"
-          },
-          "provider": {
             "type": "string"
           },
           "source_track_id": {

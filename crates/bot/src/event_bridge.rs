@@ -559,7 +559,6 @@ mod tests {
     fn job(id: &str) -> ActiveRipTask {
         ActiveRipTask {
             id: id.into(),
-            provider: music::Provider::Apple,
             source_track_ids: vec!["album_1".into()],
             chat_id: 100,
             delivery_chat_id: 100,

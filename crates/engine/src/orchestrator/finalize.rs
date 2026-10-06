@@ -458,7 +458,7 @@ where
         };
         let thumb_path = match &ctx.zip_artwork_url {
             Some(url) if !url.is_empty() => {
-                let thumb_url = deps.artwork_url_at_size(options.provider.clone(), url, 320);
+                let thumb_url = deps.artwork_url_at_size(url, 320);
                 match deps.fetch_artwork(&thumb_url).await {
                     Some(bytes) if !bytes.is_empty() => {
                         let path = state.dir.join("cover_thumb.jpg");
@@ -527,6 +527,7 @@ where
             if is_cancelled() {
                 return Ok(first_delivery);
             }
+            bus.set_codec(shared, Some(album_codec.as_str().to_string()));
             let build = tokio::task::spawn_blocking(move || {
                 bus_clone.set_upload(
                     &shared_clone,
@@ -631,6 +632,7 @@ where
                     bus.emit_progress(&shared);
                 })
             };
+            bus.set_codec(shared, Some(album_codec.as_str().to_string()));
             bus.set_upload(
                 shared,
                 Some(UploadLane::ArchiveUpload {
@@ -741,7 +743,6 @@ where
                         }
                     }
                     replacement_uploads.push(AlbumUpload {
-                        provider: options.provider.clone(),
                         album_id: ctx.zip_album_id.clone(),
                         codec: album_codec,
                         part_index: plan.part_index as i32,
@@ -783,7 +784,6 @@ where
                 .unwrap_or(AlbumReplacementExpectation::Mixed);
             let replacement = deps
                 .replace_albums(
-                    options.provider.clone(),
                     &ctx.zip_album_id,
                     album_codec,
                     expected,
@@ -802,7 +802,6 @@ where
                     transfer_zip_dump_messages(ctx, &rendition_dump_messages);
                     let winner_rows = match deps
                         .find_albums(
-                            options.provider.clone(),
                             &ctx.zip_album_id,
                             Some(album_codec),
                         )

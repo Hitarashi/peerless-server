@@ -1,4 +1,4 @@
 pub use music::{
-    AlbumTracks, ArtistTracks, Codec, ParsedAlacInput, ParsedTargetItem, Provider, TargetKind,
+    AlbumTracks, ArtistTracks, Codec, ParsedAlacInput, ParsedTargetItem, TargetKind,
     TrackMeta, TrackRipResult,
 };

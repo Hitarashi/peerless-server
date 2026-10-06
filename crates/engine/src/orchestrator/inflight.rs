@@ -4,7 +4,6 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct InflightTargetKey {
-    pub provider: Provider,
     pub kind: TargetKind,
     pub id: String,
     pub storefront: Option<String>,

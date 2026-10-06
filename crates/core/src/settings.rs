@@ -153,15 +153,8 @@ impl BotSettings {
         self.ripping_mode == RippingMode::Live
     }
 
-    pub fn can_rip_provider(&self, provider: &music::Provider, is_admin: bool) -> bool {
-        if !provider.is_apple() {
-            return false;
-        }
-        is_admin || self.apple_rip_enabled
-    }
-
     pub fn can_rip_apple(&self, is_admin: bool) -> bool {
-        self.can_rip_provider(&music::Provider::Apple, is_admin)
+        is_admin || self.apple_rip_enabled
     }
 
     pub fn can_serve_cache(&self, is_admin: bool) -> bool {
@@ -313,9 +306,6 @@ mod tests {
 
         assert!(!s.can_rip_apple(false));
         assert!(s.can_rip_apple(true));
-        let legacy_provider = "legacy-store".parse().unwrap();
-        assert!(!s.can_rip_provider(&legacy_provider, false));
-        assert!(!s.can_rip_provider(&legacy_provider, true));
     }
 
     #[test]

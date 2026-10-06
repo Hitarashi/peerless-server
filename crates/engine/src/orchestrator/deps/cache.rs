@@ -1,4 +1,4 @@
-use music::{Codec, Provider};
+use music::Codec;
 pub use peerless_core::cache::{
     AlbumCacheError, AlbumCacheOperation, AlbumReplacementExpectation, AlbumReplacementResult,
     AlbumUpload, CachedAlbum, CachedTrack, CachedTracksMap, SaveTrackInput, TrackCacheError,
@@ -30,7 +30,6 @@ pub trait AlbumCache: Send + Sync {
 
     fn replace_albums<'a>(
         &'a self,
-        provider: Provider,
         album_id: &'a str,
         codec: Codec,
         expected: AlbumReplacementExpectation,
@@ -39,14 +38,12 @@ pub trait AlbumCache: Send + Sync {
 
     fn find_albums<'a>(
         &'a self,
-        provider: Provider,
         album_id: &'a str,
         codec: Option<Codec>,
     ) -> BoxFuture<'a, Result<Vec<CachedAlbum>, AlbumCacheError>>;
 
     fn delete_albums<'a>(
         &'a self,
-        provider: Provider,
         album_id: &'a str,
         codec: Option<Codec>,
     ) -> BoxFuture<'a, Result<(), AlbumCacheError>>;

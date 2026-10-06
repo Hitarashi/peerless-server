@@ -41,19 +41,13 @@ async fn handle_rpc_as(
 fn create_rip_rpc_request(
     request_id: &str,
     track_id: &str,
-    codec: Option<&str>,
+    _codec: Option<&str>,
 ) -> RipTaskRpcRequest {
     RipTaskRpcRequest::Create {
         request_id: request_id.to_owned(),
         request: server::rip_tasks::RipTaskRequest {
-            provider: "apple".to_owned(),
-            track_id: track_id.to_owned(),
-            codec: codec.map(str::to_owned),
-            title: None,
-            artist: None,
-            album: None,
-            duration: None,
-            artwork_url: None,
+            track_id: Some(track_id.to_owned()),
+            album_id: None,
         },
     }
 }
@@ -853,7 +847,7 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
         assert_eq!(meta.task_id, task_id);
         assert_eq!(meta.owner_id, owner_id);
         assert_eq!(meta.track_id, owner_track_id);
-        assert_eq!(meta.codec.as_deref(), Some("alac"));
+        assert_eq!(meta.codec.as_deref(), None);
         assert!(!meta.controller.is_cancelled());
         meta.controller.clone()
     };
@@ -1025,16 +1019,17 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
         Err(tokio::sync::broadcast::error::TryRecvError::Empty)
     ));
 
-    let different_codec = handle_rpc_as(
+    let distinct_track_id = format!("lifecycle_distinct_{unique_suffix}");
+    let distinct_task = handle_rpc_as(
         &session_mgr,
         state.clone(),
         &owner_token,
         owner_id,
-        create_rip_rpc_request("dedup-aac", &dedup_track_id, Some("aac")),
+        create_rip_rpc_request("distinct-task", &distinct_track_id, None),
     )
     .await
-    .expect("different codec create succeeds");
-    let different_codec_task_id = match different_codec {
+    .expect("distinct track create succeeds");
+    let distinct_task_id = match distinct_task {
         RipTaskRpcSuccess::Created {
             task_id,
             status: RipTaskRpcStatus::Queued,
@@ -1043,20 +1038,20 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
         } => task_id,
         other => panic!("expected distinct queued task, got {other:?}"),
     };
-    assert_ne!(different_codec_task_id, dedup_task_id);
+    assert_ne!(distinct_task_id, dedup_task_id);
     assert_eq!(
         state
             .tasks()
-            .get(&different_codec_task_id)
-            .expect("distinct codec task must be registered")
+            .get(&distinct_task_id)
+            .expect("distinct task must be registered")
             .codec
             .as_deref(),
-        Some("aac")
+        None
     );
     assert!(matches!(
         task_sync_events.recv().await.unwrap(),
         server::rip_tasks::TaskSyncEvent::Updated { task_id: updated_id }
-            if updated_id == different_codec_task_id
+            if updated_id == distinct_task_id
     ));
 
     state.complete_task(&dedup_task_id);
@@ -1066,12 +1061,12 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
         server::rip_tasks::TaskSyncEvent::Dismissed { task_id: dismissed_id }
             if dismissed_id == dedup_task_id
     ));
-    state.complete_task(&different_codec_task_id);
-    assert!(!state.tasks().contains_key(&different_codec_task_id));
+    state.complete_task(&distinct_task_id);
+    assert!(!state.tasks().contains_key(&distinct_task_id));
     assert!(matches!(
         task_sync_events.recv().await.unwrap(),
         server::rip_tasks::TaskSyncEvent::Dismissed { task_id: dismissed_id }
-            if dismissed_id == different_codec_task_id
+            if dismissed_id == distinct_task_id
     ));
 
     let save_input = engine::orchestrator::deps::SaveTrackInput {
