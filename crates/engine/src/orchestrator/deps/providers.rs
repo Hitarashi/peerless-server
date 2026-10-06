@@ -7,12 +7,6 @@ use crate::{
     types::{AlbumTracks, ArtistTracks, Provider, TrackRipResult},
 };
 
-/// A storefront is a **market region** ("in", "us", "gb"), never a provider.
-///
-/// Which adapter runs is decided by [`Provider`]; a region only tells a
-/// *regional* catalog which market to address. Adapters with no notion of a
-/// market-aware adapters ignore it entirely. `None`/empty means "use the adapter's
-/// own configured default", so a caller never has to invent a region.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Storefront<'a>(Option<&'a str>);
 
@@ -21,7 +15,6 @@ impl<'a> Storefront<'a> {
         Self(value)
     }
 
-    /// The requested region, or `None` when the adapter's own default applies.
     pub fn get(self) -> Option<&'a str> {
         self.0.filter(|region| !region.is_empty())
     }
@@ -33,8 +26,6 @@ impl<'a> From<&'a str> for Storefront<'a> {
     }
 }
 
-/// Resolve collections from one specific provider. `provider` is the routing
-/// key; `storefront` is only the market the resolved catalog is addressed in.
 pub trait CollectionResolver: Send + Sync {
     fn fetch_album_tracks(
         &self,
@@ -103,13 +94,6 @@ pub trait ProviderPresentation: Send + Sync {
     fn unavailable_track_log_message(&self) -> &str;
 }
 
-/// Every provider capability the orchestrator needs.
-///
-/// The four leaf traits above are the real seams: the production registry
-/// implements all four and tests wire fakes. This trait adds only the one
-/// question the orchestrator asks before starting a job — is this provider
-/// usable at all? — which previously lived behind a `provider()` accessor
-/// that every adapter had to keep consistent with `supports_provider`.
 pub trait ProviderDeps:
     CollectionResolver
     + TrackAcquisition

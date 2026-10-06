@@ -1,23 +1,8 @@
-/// Escape dynamic text for Telegram HTML.
-///
-/// Delegates to the engine's escaper so the bot and the engine cannot drift
-/// apart: the exact set of replaced characters is a contract with Telegram's
-/// HTML parse mode, and a divergence here would either inject raw markup or
-/// show `&amp;` literally to the user.
 pub fn escape(value: &str) -> String {
     engine::orchestrator::caption::html_escape(value)
 }
 
-/// Prepare the dynamic HTML used by the TypeScript bot for ferogram's parser.
-/// Ferogram's parser understands all the tags the emits, including
-/// `<br>`, `<blockquote>`, and `<blockquote expandable>`, natively, so the
-/// content passes through unchanged. This helper is kept as the single place
-/// where Telegram-HTML dialect differences are reconciled.
 pub fn parse_dynamic_html(content: &str) -> String {
-    // Presentation policy: decorative emoji are not used to carry meaning.
-    // Keep the semantic ASCII markers used by the new renderer (✓, !, ×, …)
-    // and remove legacy pictographs at the final Telegram seam so any
-    // unmigrated administrative handler still follows the UX rule.
     content
         .chars()
         .filter(|ch| {
@@ -78,7 +63,6 @@ pub fn parse_dynamic_html(content: &str) -> String {
         .collect()
 }
 
-/// Unescape HTML entities commonly produced by Telegram / engine escaping.
 pub fn unescape(value: &str) -> String {
     if !value.contains('&') {
         return value.to_string();
@@ -173,9 +157,6 @@ mod tests {
         assert_eq!(parse_dynamic_html("✓ <b>Complete</b>"), "✓ <b>Complete</b>");
     }
 
-    /// The exact replacement set is a contract with Telegram's HTML parse
-    /// mode. Escaping too little injects raw markup; escaping too much shows
-    /// `&amp;` literally to the user.
     #[test]
     fn escape_replaces_exactly_the_five_html_significant_characters() {
         assert_eq!(escape("&"), "&amp;");
@@ -188,7 +169,6 @@ mod tests {
 
     #[test]
     fn escape_ampersand_first_so_entities_are_not_double_escaped() {
-        // The ampersand of a pre-existing entity must itself be escaped.
         assert_eq!(escape("&amp;"), "&amp;amp;");
     }
 

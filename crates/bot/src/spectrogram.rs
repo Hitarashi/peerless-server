@@ -1,8 +1,5 @@
-//! Audio probing and spectrogram generation used by the `/spec` command.
-
 use std::path::Path;
 
-/// Metadata extracted from the first stream in an audio file.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AudioProbeResult {
     pub title: Option<String>,
@@ -16,13 +13,11 @@ pub struct AudioProbeResult {
     pub duration: f64,
 }
 
-/// Extensions accepted as audio documents by the command.
 pub const AUDIO_EXTENSIONS: [&str; 12] = [
     ".m4a", ".flac", ".mp3", ".wav", ".wave", ".aac", ".alac", ".ogg", ".oga", ".opus", ".aiff",
     ".aif",
 ];
 
-/// Probe audio metadata through the native media module.
 pub async fn probe_audio(file: &Path) -> Result<AudioProbeResult, String> {
     let info = media::MediaProcessor::new()
         .inspect(file, &tokio_util::sync::CancellationToken::new())
@@ -41,7 +36,6 @@ pub async fn probe_audio(file: &Path) -> Result<AudioProbeResult, String> {
     })
 }
 
-/// Generate a native spectrogram with the same presentation contract as `/spec`.
 pub async fn generate_native_spectrogram(
     input: &Path,
     output: &Path,
@@ -67,7 +61,6 @@ pub async fn generate_native_spectrogram(
         .map_err(|error| error.to_string())
 }
 
-/// Format a duration like the TypeScript command (`m:ss` or `h:mm:ss`).
 pub fn format_duration(seconds: f64) -> String {
     let mins = (seconds / 60.0).floor() as u64;
     let secs = (seconds % 60.0).floor() as u64;
@@ -98,7 +91,6 @@ pub fn thousands_separator(value: u32) -> String {
     }
 }
 
-/// Build the HTML caption sent with the generated image.
 pub fn build_caption(probe: &AudioProbeResult, song_title: &str, codec: &str) -> String {
     let mut caption = format!(
         "<b>Audio spectrogram analysis</b><br/><br/>• <b>Track:</b> <code>{}</code><br/>",

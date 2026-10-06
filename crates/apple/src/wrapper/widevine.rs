@@ -1,21 +1,3 @@
-//! Widevine CDM: license request generation and key unwrapping for the
-//! CENC (ISO-23001-7) AAC path served by wrapper-lite `/webplayback`.
-//!
-//! Ported from `apple-music-downloader/internal/widevine-rip/{cdm,key}`
-//! (Go). The protobuf wire format is encoded by hand: only a handful of
-//! proto2 messages are involved and the field numbers are frozen by the
-//! Widevine protocol, so a generated-code dependency is not warranted.
-//!
-//! Flow:
-//! 1. Build a `WidevineCencHeader` PSSH from the playlist KID and hand it
-//!    to [`Cdm::new`].
-//! 2. [`Cdm::license_request`] signs a `SignedLicenseRequest` with the
-//!    device private key (RSA-PSS/SHA-1) and base64-encodes it for
-//!    wrapper-lite's `/license` relay.
-//! 3. [`Cdm::content_keys`] unwraps the license response: RSA-OAEP/SHA-1
-//!    session key -> AES-CMAC-derived key -> AES-CBC per-key decrypt ->
-//!    PKCS#7 unpad -> content keys.
-
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
@@ -24,8 +6,6 @@ use cmac::{Cmac, KeyInit, Mac};
 
 use super::client::WrapperError;
 
-/// L3 device private key (PKCS#1 PEM), shared with the Go reference
-/// implementation.
 const DEVICE_PRIVATE_KEY_PEM: &str = "-----BEGIN RSA PRIVATE KEY-----
 MIIEpAIBAAKCAQEA2bO3yvFwNnIHsbDl3MTjKdDsiBWsuZWOGVxInFWAVMp+nffG
 YlquTKpJurEry95yprcRB3hYhvA5ghsACidcWPDEPVqqRZ7YXLevyUA+Sn2Jxpvt
@@ -54,14 +34,10 @@ fSB5coUqR8LBweHE5V8JgFt74fdLBqZV/k2z/dI0r+EQWmpZ2uPEC0Khk/Sb9iRD
 fH7at3PMusrkwZCGZ8beFEAr6icXclV08nPCNGB6WckacfzpAj8Azg==
 -----END RSA PRIVATE KEY-----";
 
-/// L3 device client ID blob (base64), shared with the Go reference
-/// implementation.
 const DEVICE_CLIENT_ID_B64: &str = "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";
 
-/// aes-cbc crate alias for license key unwrapping.
 type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
 
-/// Minimal protobuf writer: each entry is `field_number << 3 | wire_type`.
 struct PbWriter {
     buf: Vec<u8>,
 }
@@ -107,7 +83,6 @@ impl PbWriter {
     }
 }
 
-/// Minimal protobuf reader for the two messages we decode.
 struct PbReader<'a> {
     data: &'a [u8],
     pos: usize,
@@ -118,7 +93,6 @@ impl<'a> PbReader<'a> {
         Self { data, pos: 0 }
     }
 
-    /// Next `(field, wire_type)`, or `None` at the end.
     fn next(&mut self) -> Option<(u32, u8)> {
         if self.pos >= self.data.len() {
             return None;
@@ -167,28 +141,23 @@ impl<'a> PbReader<'a> {
     }
 }
 
-/// A decrypted content key, identified by its key id.
 #[derive(Debug, Clone)]
 pub struct ContentKey {
     pub key_id: Vec<u8>,
     pub value: [u8; 16],
 }
 
-/// One Widevine CDM session bound to a PSSH.
 pub struct Cdm {
     private_key: rsa::RsaPrivateKey,
     client_id: Vec<u8>,
-    /// The CENC header the license is requested for (serialized).
+
     pssh_body: Vec<u8>,
     session_id: [u8; 32],
-    /// Serialized `LicenseRequest` message — needed again for the CMAC
-    /// derivation when unwrapping the license response.
+
     request_body: Vec<u8>,
 }
 
 impl Cdm {
-    /// Build a CDM over the default L3 device and a PSSH built from the
-    /// playlist KID.
     pub fn new(kid: &[u8]) -> Result<Self, WrapperError> {
         use rsa::pkcs1::DecodeRsaPrivateKey;
         let private_key = rsa::RsaPrivateKey::from_pkcs1_pem(DEVICE_PRIVATE_KEY_PEM)
@@ -197,20 +166,12 @@ impl Cdm {
             .decode(DEVICE_CLIENT_ID_B64)
             .map_err(|e| WrapperError::Message(format!("Decode device client id: {e}")))?;
 
-        // WidevineCencHeader (proto2):
-        //   1: algorithm (enum, AESCTR = 1)
-        //   2: key_id (repeated bytes)
-        //   3: provider (string)
-        //   4: content_id (bytes)
-        //   5: policy (string)
-        // The Go flow builds the header with contentId "" (base64 of the
-        // empty string) and empty provider/policy.
         let mut cenc = PbWriter::new();
-        cenc.varint(1, 1); // algorithm = AESCTR
+        cenc.varint(1, 1);
         cenc.bytes(2, kid);
-        cenc.bytes(3, b""); // provider
-        cenc.bytes(4, b""); // content_id (base64 of "")
-        cenc.bytes(5, b""); // policy
+        cenc.bytes(3, b"");
+        cenc.bytes(4, b"");
+        cenc.bytes(5, b"");
         let pssh_body = cenc.into_inner();
 
         let mut session_id = [0u8; 32];
@@ -233,8 +194,6 @@ impl Cdm {
         })
     }
 
-    /// The PSSH we request for: 32 dummy bytes + CENC header, base64 — the
-    /// exact shape wrapper-lite's `/license` expects in `uri`.
     pub fn pssh_b64(&self) -> String {
         let mut w = PbWriter::new();
         w.message(1, &self.pssh_body);
@@ -244,48 +203,34 @@ impl Cdm {
         B64.encode(pssh)
     }
 
-    /// Build and sign the license request; returns the base64 challenge
-    /// for wrapper-lite `/license`.
     pub fn license_request(&mut self) -> Result<String, WrapperError> {
-        // LicenseRequest (proto2):
-        //   1: ClientId        (ClientIdentification message, decoded client id)
-        //   2: ContentId       (ContentIdentification)
-        //   3: Type            (enum, NEW = 1)
-        //   4: RequestTime     (uint32)
-        //   6: ProtocolVersion (enum, CURRENT = 21)
-        //   7: KeyControlNonce (uint32)
         let mut content_cenc = PbWriter::new();
-        content_cenc.message(1, &self.pssh_body); // Pssh
-        content_cenc.varint(2, 1); // LicenseType = DEFAULT
-        content_cenc.bytes(3, &self.session_id); // RequestId
+        content_cenc.message(1, &self.pssh_body);
+        content_cenc.varint(2, 1);
+        content_cenc.bytes(3, &self.session_id);
 
         let mut content_id = PbWriter::new();
-        content_id.message(1, &content_cenc.into_inner()); // CencId
+        content_id.message(1, &content_cenc.into_inner());
 
         let mut request = PbWriter::new();
-        request.bytes(1, &self.client_id); // ClientId (already a ClientIdentification message)
-        request.message(2, &content_id.into_inner()); // ContentId
-        request.varint(3, 1); // Type = NEW
+        request.bytes(1, &self.client_id);
+        request.message(2, &content_id.into_inner());
+        request.varint(3, 1);
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        request.varint(4, now); // RequestTime
-        request.varint(6, 21); // ProtocolVersion = CURRENT
+        request.varint(4, now);
+        request.varint(6, 21);
         let nonce = rand::random::<u32>() as u64;
-        request.varint(7, nonce); // KeyControlNonce
+        request.varint(7, nonce);
         let request_body = request.into_inner();
 
-        // SignedLicenseRequest:
-        //   1: Type      (enum, LICENSE_REQUEST = 1)
-        //   2: Msg       (LicenseRequest)
-        //   3: Signature (bytes, RSA-PSS/SHA-1 over Msg)
         let mut hasher = sha1::Sha1::new();
         use sha1::Digest;
         hasher.update(&request_body);
         let digest = hasher.finalize();
 
-        // RSA-PSS with SHA-1, salt length = hash length (20).
         let signing_key =
             rsa::pss::SigningKey::<sha1::Sha1>::new_with_salt_len(self.private_key.clone(), 20);
         use rsa::signature::{SignatureEncoding, hazmat::PrehashSigner};
@@ -294,7 +239,7 @@ impl Cdm {
             .map_err(|e| WrapperError::Message(format!("Sign license request: {e}")))?
             .to_vec();
         let mut signed = PbWriter::new();
-        signed.varint(1, 1); // Type = LICENSE_REQUEST
+        signed.varint(1, 1);
         signed.bytes(2, &request_body);
         signed.bytes(3, &signature);
         self.request_body = request_body;
@@ -302,15 +247,11 @@ impl Cdm {
         Ok(B64.encode(signed.into_inner()))
     }
 
-    /// Unwrap a license response into content keys.
     pub fn content_keys(&self, license_b64: &str) -> Result<Vec<ContentKey>, WrapperError> {
         let license = B64
             .decode(license_b64)
             .map_err(|e| WrapperError::Message(format!("Decode license: {e}")))?;
 
-        // SignedLicense:
-        //   2: Msg (License)
-        //   4: SessionKey (RSA-OAEP/SHA-1 wrapped)
         let mut session_key_enc = None;
         let mut license_msg = None;
         let mut reader = PbReader::new(&license);
@@ -328,14 +269,11 @@ impl Cdm {
         let session_key_enc = session_key_enc
             .ok_or_else(|| WrapperError::Message("License has no SessionKey".into()))?;
 
-        // Unwrap the session key with RSA-OAEP/SHA-1.
         let session_key = self
             .private_key
             .decrypt(rsa::Oaep::new::<sha1::Sha1>(), &session_key_enc)
             .map_err(|e| WrapperError::Message(format!("Unwrap session key: {e}")))?;
 
-        // Derive the key-encryption key:
-        //   {0x01}"ENCRYPTION"\0 || request_body || {0,0,0,0x80}, AES-CMAC.
         let mut kek_input = Vec::with_capacity(12 + self.request_body.len() + 4);
         kek_input.extend_from_slice(&[
             0x01, b'E', b'N', b'C', b'R', b'Y', b'P', b'T', b'I', b'O', b'N', 0,
@@ -351,13 +289,6 @@ impl Cdm {
             .try_into()
             .map_err(|_| WrapperError::Message("Derived KEK is not 16 bytes".into()))?;
 
-        // License:
-        //   3: Key (repeated KeyContainer)
-        // KeyContainer:
-        //   1: Id (bytes)
-        //   2: Iv (bytes)
-        //   3: Key (bytes, AES-CBC wrapped with the KEK)
-        //   4: Type (enum, CONTENT = 2)
         let mut keys = Vec::new();
         let mut reader = PbReader::new(&license_msg);
         while let Some((field, wire)) = reader.next() {
@@ -379,8 +310,7 @@ impl Cdm {
                         }
                     }
                 }
-                // Only CONTENT keys decrypt audio; SIGNING keys exist to
-                // verify the license itself.
+
                 if key_type == Some(2) {
                     let id = id.ok_or_else(|| WrapperError::Message("Key has no Id".into()))?;
                     let iv = iv.ok_or_else(|| WrapperError::Message("Key has no Iv".into()))?;
@@ -408,7 +338,6 @@ fn malformed(what: &str) -> WrapperError {
     WrapperError::Message(format!("Malformed license message ({what})"))
 }
 
-/// AES-128-CBC decrypt + PKCS#7 unpad of one wrapped license key.
 fn unwrap_key(kek: &[u8; 16], iv: &[u8], wrapped: &[u8]) -> Result<Vec<u8>, WrapperError> {
     if iv.len() != 16 {
         return Err(WrapperError::Message(format!(
@@ -430,17 +359,13 @@ fn unwrap_key(kek: &[u8; 16], iv: &[u8], wrapped: &[u8]) -> Result<Vec<u8>, Wrap
     Ok(plain.to_vec())
 }
 
-/// Recreate the PSSH from a raw KID extracted out of the playlist's
-/// `#EXT-X-KEY` data URI. This mirrors the Go `GetPSSH("", kidBase64)`:
-/// the CENC header carries the KID, an empty provider, an empty
-/// (base64-of-empty) content id and an empty policy.
 pub fn pssh_from_kid(kid: &[u8]) -> Vec<u8> {
     let mut cenc = PbWriter::new();
-    cenc.varint(1, 1); // algorithm = AESCTR
+    cenc.varint(1, 1);
     cenc.bytes(2, kid);
-    cenc.bytes(3, b""); // provider
-    cenc.bytes(4, b""); // content_id
-    cenc.bytes(5, b""); // policy
+    cenc.bytes(3, b"");
+    cenc.bytes(4, b"");
+    cenc.bytes(5, b"");
     let mut pssh = Vec::with_capacity(32 + 16);
     pssh.extend_from_slice(b"0123456789abcdef0123456789abcdef");
     pssh.extend_from_slice(&cenc.into_inner());
@@ -457,10 +382,10 @@ mod tests {
         let mut cdm = Cdm::new(&kid).expect("cdm");
         let challenge = cdm.license_request().expect("challenge");
         let raw = B64.decode(challenge).expect("b64");
-        // SignedLicenseRequest.Type = LICENSE_REQUEST is the first field.
+
         assert_eq!(raw[0] >> 3, 1);
         assert_eq!(raw[0] & 0x7, 0);
-        // Two requests must differ (nonce + timestamp).
+
         let other = cdm.license_request().expect("challenge 2");
         let raw2 = B64.decode(other).expect("b64 2");
         assert_ne!(raw, raw2);
@@ -470,9 +395,9 @@ mod tests {
     fn pssh_from_kid_matches_go_layout() {
         let kid = [7u8; 16];
         let pssh = pssh_from_kid(&kid);
-        // 32-byte widevine magic prefix.
+
         assert_eq!(&pssh[..32], b"0123456789abcdef0123456789abcdef");
-        // Field 1 (algorithm = AESCTR) then field 2 (KID).
+
         assert_eq!(pssh[32], 0x08);
         assert_eq!(pssh[33], 0x01);
         assert_eq!(pssh[34], 0x12);
@@ -482,7 +407,6 @@ mod tests {
 
     #[test]
     fn unwrap_key_round_trips_pkcs7_padded_cbc() {
-        // AES-CBC-encrypt 16 key bytes with PKCS#7 padding, then unwrap.
         use cbc::cipher::{BlockModeEncrypt, KeyIvInit, block_padding::Pkcs7};
         type Enc = cbc::Encryptor<aes::Aes128>;
         let kek = [0x42u8; 16];

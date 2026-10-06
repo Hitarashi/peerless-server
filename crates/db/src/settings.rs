@@ -9,9 +9,6 @@ use serde_json::{Value, json};
 
 use crate::{DbError, DbPool, models::SettingsRow, schema::settings};
 
-/// The settings table is a one-row, JSONB-backed configuration record.
-/// Unknown keys are preserved in `BotSettings.extra` to ensure future settings
-/// require zero database schema migrations.
 pub struct SettingsStore {
     pool: DbPool,
     cached_settings: RwLock<BotSettings>,
@@ -31,8 +28,6 @@ impl SettingsStore {
         self.reload().await
     }
 
-    /// Reload the cache from PostgreSQL. This is intentionally fallible: a
-    /// stale in-memory snapshot is unsafe after a restore or a reconnect.
     pub async fn reload(&self) -> Result<(), DbError> {
         let result = self.load().await?;
         self.lyricsporn_api_endpoint
@@ -61,13 +56,10 @@ impl SettingsStore {
             .clone()
     }
 
-    /// Shared live endpoint used by the bot's Apple metadata and rip clients.
     pub fn lyricsporn_api_endpoint(&self) -> LyricspornApiEndpoint {
         self.lyricsporn_api_endpoint.clone()
     }
 
-    /// Set one externally named setting while persisting the complete typed
-    /// singleton. Unknown keys are preserved into `extra` dynamically.
     pub async fn set_setting(&self, key: &str, value: Value) -> BotSettings {
         let mut next = self.get_settings();
         let canonical = canonical_key(key);
@@ -315,7 +307,6 @@ mod tests {
         let mut settings = default_settings();
         assert_eq!(settings.stream_public_url, None);
 
-        // Apply URL with trailing slash
         assert!(apply_value(
             &mut settings,
             "stream_public_url",
@@ -326,7 +317,6 @@ mod tests {
             Some("http://192.168.0.6:4444".to_string())
         );
 
-        // Clear URL with null
         assert!(apply_value(
             &mut settings,
             "stream_public_url",
@@ -334,7 +324,6 @@ mod tests {
         ));
         assert_eq!(settings.stream_public_url, None);
 
-        // Clear URL with empty string
         assert!(apply_value(
             &mut settings,
             "stream_public_url",
@@ -342,7 +331,6 @@ mod tests {
         ));
         assert_eq!(settings.stream_public_url, None);
 
-        // Apply port
         assert!(apply_value(
             &mut settings,
             "stream_server_port",

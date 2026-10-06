@@ -20,7 +20,6 @@ type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamTicket {
-    /// Local database row id of the track (see `db::Track::id`).
     pub db_track_id: i32,
     pub user_id: i64,
     pub expires_at: i64,
@@ -35,9 +34,6 @@ impl StreamTicket {
         }
     }
 
-    // Positional (not name-based) encoding: the field name is not part of the
-    // signed payload, so renaming `track_id` -> `db_track_id` leaves every
-    // already-issued ticket byte-identical.
     fn payload(&self) -> String {
         format!("{}:{}:{}", self.db_track_id, self.user_id, self.expires_at)
     }
@@ -113,31 +109,29 @@ pub fn verify_stream_ticket(secret: &str, ticket: &str) -> Result<(i32, i64), Se
 pub use create_stream_ticket as create_playback_ticket;
 pub use verify_stream_ticket as verify_playback_ticket;
 
-/// Playback metadata and signed stream URL returned to audio player clients.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PlaybackInfo {
-    /// Signed playback URL pointing to `/api/v1/tracks/{id}/stream?ticket=...`.
     #[schema(example = "/api/v1/tracks/415/stream?ticket=eyJhbGciOi...")]
     pub stream_url: String,
-    /// Number of seconds the stream ticket remains valid (7,200s / 2 hours).
+
     #[schema(example = 7200)]
     pub expires_in: i64,
-    /// MIME type of the lossless audio container (e.g. `audio/mp4` for ALAC, `audio/flac` for FLAC).
+
     #[schema(example = "audio/mp4")]
     pub mime_type: &'static str,
-    /// Audio codec identifier (`alac`, `flac`, `aac`, `ec3`).
+
     #[schema(example = "alac")]
     pub codec: String,
-    /// Duration of the track in seconds.
+
     #[schema(example = 245)]
-    pub duration: i32,
-    /// Audio bit depth (e.g. 16 or 24-bit lossless).
+    pub duration: Option<i32>,
+
     #[schema(example = 24)]
     pub bit_depth: Option<i32>,
-    /// Audio sampling rate in Hz (e.g. 44100, 48000, 96000, 192000).
+
     #[schema(example = 96000)]
     pub sample_rate: Option<i32>,
-    /// Audio file size in bytes; estimated from duration when media metadata cannot be resolved.
+
     #[schema(example = 48920110)]
     pub file_size: i64,
 }
@@ -167,15 +161,11 @@ pub async fn issue_playback_ticket(
     user: AuthedUser,
     axum::extract::Path(db_track_id): axum::extract::Path<i32>,
 ) -> Result<Json<PlaybackInfo>, ServerError> {
-    // Streaming requires *both* scrobbling providers to be connected. Each lookup keeps its
-    // `?` so a genuine database failure propagates as `ServerError::Internal` (never as the
-    // "connect your account" prompt below, which must only describe a missing row).
     let has_lastfm =
         db::integrations::has_integration(&state.db, user.telegram_id, "lastfm").await?;
     let has_listenbrainz =
         db::integrations::has_integration(&state.db, user.telegram_id, "listenbrainz").await?;
 
-    // Name exactly what is missing so the client can prompt for the right provider.
     match (has_lastfm, has_listenbrainz) {
         (true, true) => {}
         (false, true) => {
@@ -202,7 +192,7 @@ pub async fn issue_playback_ticket(
         .map_err(|e| ServerError::Internal(e.to_string()))?
         .ok_or_else(|| ServerError::NotFound(format!("Track {db_track_id} not found")))?;
 
-    let expires_in = 7200; // 2 hours
+    let expires_in = 7200;
     let ticket = create_playback_ticket(&state.app_key, db_track_id, user.telegram_id, expires_in);
     let stream_url = format!("/api/v1/tracks/{db_track_id}/stream?ticket={ticket}");
 
@@ -212,7 +202,7 @@ pub async fn issue_playback_ticket(
         .await
     {
         Ok(meta) => meta.file_size as i64,
-        Err(_) => i64::from(track.duration) * 50_000,
+        Err(_) => 0,
     };
 
     Ok(Json(PlaybackInfo {
@@ -220,17 +210,15 @@ pub async fn issue_playback_ticket(
         expires_in,
         mime_type: track.codec.mime_type(),
         codec: track.codec.as_str().to_string(),
-        duration: track.duration,
-        bit_depth: Some(track.bit_depth),
-        sample_rate: Some(track.sample_rate),
+        duration: None,
+        bit_depth: None,
+        sample_rate: None,
         file_size,
     }))
 }
 
-/// Query parameters for streaming audio chunks.
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct StreamQuery {
-    /// Signed stream ticket generated via `/api/v1/tracks/{id}/playback`.
     pub ticket: Option<String>,
 }
 
@@ -270,7 +258,9 @@ pub async fn stream_handler(
 
     let (db_track_id, _user_id) = verify_playback_ticket(&state.app_key, ticket)?;
     if id != db_track_id {
-        return Err(ServerError::Forbidden("Ticket does not match requested track".into()));
+        return Err(ServerError::Forbidden(
+            "Ticket does not match requested track".into(),
+        ));
     }
 
     stream_audio_internal(&state, db_track_id, method, headers).await

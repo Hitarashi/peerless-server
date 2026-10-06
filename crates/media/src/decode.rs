@@ -1,9 +1,3 @@
-//! Audio inspection and decoding.
-//!
-//! Every entry point here touches the filesystem and blocks. The `_sync`
-//! suffix marks that contract: callers must reach them through
-//! `spawn_blocking`, never directly from an async task.
-
 use std::{fs::File, path::Path};
 
 use symphonia::core::{
@@ -26,7 +20,6 @@ use crate::{AudioInfo, MediaError};
 
 const MAX_DECODED_FRAMES: usize = 30_000_000;
 
-/// Decoded PCM planes plus the probed stream description.
 pub(super) struct DecodedAudio {
     pub(super) info: AudioInfo,
     pub(super) samples: Vec<Vec<f32>>,
@@ -94,9 +87,6 @@ pub(super) fn decode_sync(
                 .map(|frames| frames as f64 / sample_rate as f64)
                 .filter(|secs| *secs > 0.0)
         })
-        // A fragmented MP4 (what Apple's HLS delivers) has no `mvhd` duration,
-        // so symphonia reports neither `duration` nor `num_frames` and both
-        // fallbacks above yield 0. Recover it from the fragments themselves.
         .or_else(|| crate::fragmented::fragmented_duration_secs(source))
         .unwrap_or(0.0);
     let codec = codec_name(params.codec);

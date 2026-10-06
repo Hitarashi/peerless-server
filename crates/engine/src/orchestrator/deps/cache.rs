@@ -1,44 +1,28 @@
 use std::collections::HashMap;
 
 use super::BoxFuture;
-use crate::types::{Codec, Provider, TrackKey, TrackRipResult};
+use crate::types::{Codec, Provider, TrackRipResult};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CachedTrack {
-    pub track_key: TrackKey,
+    pub track_id: String,
     pub codec: Codec,
     pub message_id: i64,
     pub file_id: String,
     pub file_unique_id: String,
-    pub title: String,
-    pub artist: String,
-    pub album: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SaveTrackInput {
-    pub track_key: TrackKey,
+    pub track_id: String,
     pub codec: Codec,
     pub message_id: i64,
     pub file_id: String,
     pub file_unique_id: String,
-    pub title: String,
-    pub artist: String,
-    pub album: String,
-    pub duration: i64,
-    pub bit_depth: u32,
-    pub sample_rate: u32,
-    pub genre: String,
-    pub release_date: String,
-    pub track_number: i64,
-    pub track_count: i64,
-    pub isrc: Option<String>,
-    pub recording_mbid: Option<String>,
 }
 
 impl SaveTrackInput {
     pub fn from_rip_result(
-        provider: Provider,
         track_id: &str,
         rip: &TrackRipResult,
         message_id: i64,
@@ -47,23 +31,11 @@ impl SaveTrackInput {
     ) -> Self {
         let codec = rip.codec.parse::<Codec>().unwrap_or(Codec::Alac);
         Self {
-            track_key: TrackKey::new(provider, track_id).with_codec(codec),
+            track_id: track_id.to_owned(),
             codec,
             message_id,
             file_id: file_id.to_owned(),
             file_unique_id: file_unique_id.to_owned(),
-            title: rip.title.clone(),
-            artist: rip.artist.clone(),
-            album: rip.album.clone(),
-            duration: rip.duration,
-            bit_depth: rip.bit_depth,
-            sample_rate: rip.sample_rate,
-            genre: rip.genre.clone(),
-            release_date: rip.release_date.clone(),
-            track_number: rip.track_number,
-            track_count: rip.track_count,
-            isrc: rip.isrc.clone(),
-            recording_mbid: rip.recording_mbid.clone(),
         }
     }
 }
@@ -79,7 +51,6 @@ pub struct AlbumUpload {
     pub file_id: String,
     pub file_unique_id: String,
     pub file_size: i64,
-    pub file_name: String,
     pub generation_hash: String,
 }
 
@@ -223,11 +194,13 @@ impl AlbumCacheError {
     }
 }
 
+pub type CachedTracksMap = HashMap<(String, Codec), CachedTrack>;
+
 pub trait TrackCache: Send + Sync {
     fn find_cached_tracks<'a>(
         &'a self,
-        keys: &'a [TrackKey],
-    ) -> BoxFuture<'a, Result<HashMap<TrackKey, CachedTrack>, TrackCacheError>>;
+        track_ids: &'a [String],
+    ) -> BoxFuture<'a, Result<CachedTracksMap, TrackCacheError>>;
 
     fn save_track<'a>(
         &'a self,
@@ -236,7 +209,8 @@ pub trait TrackCache: Send + Sync {
 
     fn delete_track<'a>(
         &'a self,
-        track_key: &'a TrackKey,
+        track_id: &'a str,
+        codec: Option<Codec>,
     ) -> BoxFuture<'a, Result<bool, TrackCacheError>>;
 }
 

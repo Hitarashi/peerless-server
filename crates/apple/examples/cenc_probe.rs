@@ -1,10 +1,3 @@
-//! One-off live validation of the Widevine/CENC webplayback path.
-//!
-//! Usage: `cargo run -p apple --example cenc_probe -- <adamId> [out.m4a]`
-//! Rips via wrapper-lite (`ALAC_WRAPPER_URL`, default
-//! `http://localhost:12340`) and writes the decrypted stream to the output
-//! path (default `/tmp/opencode/cenc_probe.m4a`).
-
 use apple::wrapper::{CodecPreference, WrapperEngine};
 use engine::streaming::{ProgressCallback, StreamError};
 

@@ -11,7 +11,6 @@ pub struct AuthedPeer {
     pub created_at: DateTime<Utc>,
 }
 
-/// Authorization service backed by the users table.
 #[derive(Clone)]
 pub struct Auth {
     pool: DbPool,

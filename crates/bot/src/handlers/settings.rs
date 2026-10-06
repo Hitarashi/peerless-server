@@ -1,11 +1,3 @@
-//! `/settings` — admin settings UI .
-//!
-//! `/settings` renders the inline keyboard panel; subcommands mutate a single
-//! setting and `settings:*` callbacks update the panel after each change.
-//!
-//! Authorization is admin-only on both surfaces, re-checked in every
-//! callback (owner id from `BotState::auth`).
-
 use std::sync::Arc;
 
 use ferogram::{
@@ -21,10 +13,8 @@ use crate::{
     interaction::{SettingFeature, SettingsAction},
 };
 
-/// Collection-size limit presets.
 const LIMIT_PRESETS: [u32; 4] = [25, 50, 100, 0];
 
-/// Short label per ripping mode.
 fn mode_button_label(mode: engine::settings::RippingMode) -> &'static str {
     use engine::settings::RippingMode::{CacheOnly, Live, Paused};
     match mode {
@@ -38,7 +28,6 @@ fn toggle_label(label: &str, enabled: bool) -> String {
     format!("{label}: {}", if enabled { "ON" } else { "OFF" })
 }
 
-/// Build the main settings inline keyboard.
 fn settings_keyboard(settings: &engine::settings::BotSettings) -> ferogram::tl::enums::ReplyMarkup {
     let limit_buttons = LIMIT_PRESETS
         .iter()
@@ -98,7 +87,6 @@ fn settings_keyboard(settings: &engine::settings::BotSettings) -> ferogram::tl::
     .into_markup()
 }
 
-/// One-line description per ripping mode.
 fn mode_description(mode: engine::settings::RippingMode) -> &'static str {
     use engine::settings::RippingMode::{CacheOnly, Live, Paused};
     match mode {
@@ -108,7 +96,6 @@ fn mode_description(mode: engine::settings::RippingMode) -> &'static str {
     }
 }
 
-/// Render the settings panel text.
 pub fn render_settings_text(settings: &engine::settings::BotSettings) -> String {
     let limit_text = if settings.max_collection_tracks == 0 {
         "Unlimited".to_owned()
@@ -153,8 +140,6 @@ fn flag(enabled: bool) -> &'static str {
     if enabled { "Enabled" } else { "Disabled" }
 }
 
-/// Edit the settings panel message in place (ignore NOT_MODIFIED),
-/// place when a message id is given, else send fresh (replying when asked).
 pub(crate) async fn render_settings_message(
     state: &BotState,
     peer: &PeerRef,
@@ -179,8 +164,6 @@ pub(crate) async fn render_settings_message(
     }
 }
 
-/// `/settings [subcommand]` — registerSettingsCommands
-/// admin gate, subcommand mutations, else render.
 pub async fn command(state: Arc<BotState>, msg: ferogram::update::IncomingMessage) {
     let sender = msg.sender_user_id().unwrap_or_default();
     if !state.auth.is_admin(sender) {
@@ -210,8 +193,6 @@ pub async fn command(state: Arc<BotState>, msg: ferogram::update::IncomingMessag
     render_settings_message(&state, &peer, None, Some(msg.id())).await;
 }
 
-/// The `/settings <sub> <value>...` mutation arms. Returns the exact
-/// answer text on success (Some), or None to fall through to the panel.
 async fn subcommand_reply(state: Arc<BotState>, sub: &str, raw_value: &str) -> Option<String> {
     let settings_store = state.rip_deps.settings();
     let normalized_value = raw_value.to_ascii_lowercase();
@@ -363,7 +344,6 @@ async fn subcommand_reply(state: Arc<BotState>, sub: &str, raw_value: &str) -> O
     }
 }
 
-/// `settings:*` callback handler.
 pub async fn callback(state: Arc<BotState>, query: CallbackQuery, action: SettingsAction) {
     if !state.auth.is_admin(query.user_id) {
         let _ = query
@@ -455,7 +435,6 @@ pub async fn callback(state: Arc<BotState>, query: CallbackQuery, action: Settin
     }
 }
 
-/// Channel-aware panel deletion, same pattern as the auth-list close button.
 async fn delete_panel_message(state: Arc<BotState>, peer: PeerRef, id: i32) {
     if let Ok(messages) = state.client.get_messages(peer, &[id]).await
         && let Some(message) = messages.first()

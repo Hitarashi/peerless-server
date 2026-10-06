@@ -1,5 +1,3 @@
-//! Provider-neutral HTTP and audio streaming primitives.
-
 mod http;
 mod source_id;
 mod stream_transport;

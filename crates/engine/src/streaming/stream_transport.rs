@@ -1,5 +1,3 @@
-//! Audio stream endpoint validation and body handling.
-
 use std::{fmt, sync::Arc, time::Duration};
 
 use futures_util::StreamExt;
@@ -19,18 +17,12 @@ pub struct FetchEndpointOptions {
     pub timeout: Duration,
 }
 
-// Field names follow the approved design; `source` collides with thiserror's
-// reserved error-source field, so Display is implemented by hand.
 #[derive(Debug, Clone)]
 pub enum StreamError {
     Message(String),
-    /// A provider has confirmed that the requested stream cannot be
-    /// acquired.  Unlike an ordinary technical failure, this must not consume
-    /// retry budget.
+
     Permanent(String),
-    /// The requested optional rendition is known not to exist. This is
-    /// distinct from a transport or provider failure so callers can skip
-    /// the rendition without consuming retry budget.
+
     Unavailable(String),
     Timeout {
         source: SourceId,
@@ -108,8 +100,7 @@ pub struct AudioStreamSource {
     pub codec: String,
     pub bit_depth: u32,
     pub sample_rate: u32,
-    /// Response `content-length`; `None` or `Some(0)` mean "unknown" for
-    /// progress totals.
+
     pub content_length: Option<u64>,
 }
 
@@ -128,7 +119,6 @@ impl fmt::Debug for AudioStreamSource {
 
 pub type ProgressCallback = Arc<dyn Fn(RipActivity) + Send + Sync>;
 
-/// Transport over an injectable streaming adapter.
 pub struct StreamTransport<H: StreamHttp> {
     http: H,
 }
@@ -178,8 +168,7 @@ impl<H: StreamHttp> StreamTransport<H> {
         let body = response
             .body
             .ok_or_else(|| StreamError::message(format!("Empty body from {source}")))?;
-        // Malformed values parse as documented defaults instead of
-        // failing, which only ever happens with misbehaving mirrors.
+
         let bit_depth = response
             .bit_depth
             .as_deref()

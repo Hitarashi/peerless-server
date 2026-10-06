@@ -2309,28 +2309,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "qobuz"
-version = "0.1.0"
-dependencies = [
- "base64 0.23.1",
- "bytes",
- "engine",
- "futures-util",
- "md-5",
- "media",
- "music",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
 name = "quinn"
 version = "0.11.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,9 +1,3 @@
-//! Socket-independent request handling for rip-task RPCs.
-//!
-//! This module owns validation, cache lookup, task deduplication, and cancellation. The
-//! playback transport only authenticates a request, calls [`handle_request`], and writes
-//! the returned typed result to that connection.
-
 use std::{collections::HashMap, sync::Arc};
 
 use serde::{Deserialize, Serialize};
@@ -19,7 +13,6 @@ pub struct AuthenticatedIdentity {
     pub telegram_id: i64,
 }
 
-/// Result classification for a create-rip-task reply. This is also the wire enum.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RipTaskRpcStatus {
@@ -27,7 +20,6 @@ pub enum RipTaskRpcStatus {
     Completed,
 }
 
-/// Protocol error taxonomy. This is also the wire enum.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RipTaskRpcErrorCode {
@@ -44,7 +36,6 @@ impl RipTaskRpcErrorCode {
     }
 }
 
-/// Typed input to the socket-independent request handler.
 #[derive(Debug, Clone)]
 pub enum RipTaskRpcRequest {
     Create {
@@ -57,7 +48,6 @@ pub enum RipTaskRpcRequest {
     },
 }
 
-/// Typed successful response. The transport is responsible for encoding it on its socket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RipTaskRpcSuccess {
     Created {
@@ -72,7 +62,6 @@ pub enum RipTaskRpcSuccess {
     },
 }
 
-/// A sanitized protocol error; its message is safe to send to clients.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RipTaskRpcError {
     pub request_id: Option<String>,
@@ -119,7 +108,6 @@ enum CancelFailure {
     NotAuthorized,
 }
 
-/// Handle a typed request for an already-verified identity without any socket or frame I/O.
 pub async fn handle_request(
     identity: AuthenticatedIdentity,
     request: RipTaskRpcRequest,
@@ -169,23 +157,19 @@ async fn create_task(
         ));
     }
 
-    // Preserve the existing fallback: unknown codec strings request ALAC.
     let codec = request
         .codec
         .as_deref()
         .map(|value| match value.to_lowercase().as_str() {
             "alac" => music::Codec::Alac,
-            "flac" => music::Codec::Flac,
             "aac" | "mp4a.40.2" | "mp4a.40.5" => music::Codec::Aac,
             "ec-3" | "ec3" | "atmos" | "dolby" => music::Codec::Ec3,
             _ => music::Codec::Alac,
         });
 
-    // Cached rows expose their codec, so an explicit request must match it. When no codec
-    // was requested, any cached codec for this provider/track satisfies the request.
     let cached_tracks = match state
         .tracks_repo
-        .find_all_by_provider_track_id(provider.clone(), &request.track_id)
+        .find_all_by_track_id(&request.track_id)
         .await
     {
         Ok(tracks) => tracks,
@@ -199,8 +183,7 @@ async fn create_task(
     {
         return Ok(RipTaskRpcSuccess::Created {
             request_id,
-            // An empty task_id explicitly means the request was satisfied by a cached
-            // result and there is no cancellable task. `result_track_id` carries its id.
+
             task_id: String::new(),
             status: RipTaskRpcStatus::Completed,
             result_track_id: Some(track.id),
@@ -211,7 +194,7 @@ async fn create_task(
     let controller = tokio_util::sync::CancellationToken::new();
     let meta = ServerTaskMeta {
         task_id: task_id.clone(),
-        // Reserved before the engine rip task exists; the bridge fills it in.
+
         rip_task_id: String::new(),
         owner_id: identity.telegram_id,
         provider: provider.clone(),
@@ -240,8 +223,6 @@ async fn create_task(
         is_album: false,
     };
 
-    // The dedup check and insertion share the active-task write lock. This is the
-    // reservation point: only the winner can dispatch work for this provider/track/codec.
     let reserved_task_id = match reserve_task(&state.active_tasks, meta) {
         Ok(task_id) => task_id,
         Err(existing_task_id) => {
@@ -301,8 +282,6 @@ fn cancel_task(
         ));
     }
 
-    // Authorization and removal happen under one write lock so ownership cannot change
-    // between the permission check and cancellation.
     let task = remove_task_if_authorized(
         &state.active_tasks,
         &task_id,
@@ -370,8 +349,7 @@ fn remove_task_if_authorized(
     if user_id != task.owner_id && user_id != admin_id {
         return Err(CancelFailure::NotAuthorized);
     }
-    // The task map cannot change while the guard is held; the removal is the
-    // linearization point shared with completion and cancellation.
+
     Ok(tasks
         .remove(task_id)
         .expect("task was checked while holding write lock"))

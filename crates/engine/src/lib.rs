@@ -1,6 +1,3 @@
-//! Rip orchestration, track ripping, ZIP assembly, streaming, and tagging/filename
-//! policy. Provider implementations live in separate crates.
-
 pub mod filename;
 pub mod limits;
 pub mod orchestrator;
@@ -16,5 +13,5 @@ pub use filename::{ArchiveFilename, BoundedName, StandardFilename, TrackFilename
 pub use music::{Rendition, RenditionPolicy, RenditionWorkPlan, RenditionWorkUnit};
 pub use types::{
     AlbumTracks, ArtistTracks, Codec, ParsedAlacInput, ParsedTargetItem, Provider, TargetKind,
-    TrackKey, TrackMeta,
+    TrackMeta,
 };

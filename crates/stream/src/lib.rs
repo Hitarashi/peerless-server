@@ -1,9 +1,3 @@
-//! Telegram MTProto streaming engine for peerless.
-//!
-//! Provides a dedicated auxiliary worker pool, circuit breaker with FloodWait quarantine,
-//! in-memory LRU chunk cache with byte-weight accounting, and backpressure-regulated
-//! byte-range stream pipes.
-
 pub mod cache;
 pub mod circuit_breaker;
 pub mod engine;
@@ -18,7 +12,6 @@ pub use metrics::{StreamMetrics, StreamMetricsSnapshot};
 pub use pipe::{ByteRange, ChunkStream, LocationRefresher, StreamPipeParams, create_stream_pipe};
 pub use worker_pool::{StreamWorkerPool, hash_bot_token};
 
-/// Streaming engine errors.
 #[derive(Debug, thiserror::Error)]
 pub enum StreamError {
     #[error("File reference expired")]

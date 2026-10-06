@@ -1,9 +1,3 @@
-//! Apple Music audio acquisition and source failover.
-//!
-//! This is the provider boundary used by the generic engine ripper. It owns
-//! the Apple mirror policy, wrapper selection, retry ordering, and the native
-//! wrapper path; the engine only sees one `connect_stream` operation.
-
 use std::time::Duration;
 
 use engine::{
@@ -34,8 +28,6 @@ pub struct AppleStreamAcquisition<S: StreamHttp, M: MirrorHttp> {
     retry_config: AppleAcquisitionConfig,
 }
 
-/// Deployment flavor of the configured wrapper: the native wrapper-lite
-/// relay or plain candidate endpoints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WrapperKind {
     #[default]
@@ -52,9 +44,6 @@ impl WrapperKind {
     }
 }
 
-/// Outcome of one acquisition round. Keeping optional absence separate from
-/// ordinary failures prevents a successful response from an untrusted/direct
-/// endpoint from being mistaken for a provider-confirmed missing rendition.
 enum AcquisitionAttempt {
     Source(AudioStreamSource),
     RenditionAbsent,
@@ -67,17 +56,13 @@ struct TrackRequest<'a> {
     label: &'a TrackLabel,
 }
 
-/// Result of Apple source selection.
 #[derive(Debug)]
 pub enum AcquisitionOutcome {
-    /// A stream was successfully selected from an available source.
     Stream(AudioStreamSource),
-    /// The optional Atmos rendition was confirmed absent; primary requests
-    /// return a stream or an error and never this variant.
+
     RenditionAbsent,
 }
 
-/// Convert an acquisition result to the generic ripper's result type.
 pub fn map_acquisition_outcome(
     result: Result<AcquisitionOutcome, StreamError>,
 ) -> Result<AudioStreamSource, engine::ripper::RipError> {
@@ -92,12 +77,10 @@ pub fn map_acquisition_outcome(
     }
 }
 
-/// Retry settings for one Apple stream acquisition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AppleAcquisitionConfig {
-    /// Total mirror/wrapper rounds, including the initial round.
     pub retry_rounds: u32,
-    /// Delay before the second round; later delays double up to 30 seconds.
+
     pub retry_base_delay_ms: u64,
 }
 
@@ -166,10 +149,7 @@ impl<S: StreamHttp, M: MirrorHttp> AppleStreamAcquisition<S, M> {
         let rounds = self.retry_config.retry_rounds;
         let base_delay = self.retry_config.retry_base_delay_ms;
         let mut all_errors = Vec::new();
-        // Resolve at most once for this acquisition. A failed stream is a
-        // transient request failure, not a reason to re-run endpoint health
-        // discovery and let its circuit cooldown hide the same endpoint from
-        // the next retry round.
+
         let primary = self
             .mirror_policy
             .get_endpoint(false, signal.clone())
@@ -340,10 +320,6 @@ impl<S: StreamHttp, M: MirrorHttp> AppleStreamAcquisition<S, M> {
             });
         }
 
-        // The wrapper flavor is decided once, at construction: the configured
-        // deployment URL either is the native wrapper-lite relay or resolves
-        // through plain candidate endpoints. The chosen flavor fixes the
-        // SourceId for every error and report downstream.
         if self.wrapper_kind == WrapperKind::Native {
             let wrapper_engine = WrapperEngine::new(clean_wrapper, self.wrapper_api_key.as_deref());
             match wrapper_engine
@@ -362,10 +338,7 @@ impl<S: StreamHttp, M: MirrorHttp> AppleStreamAcquisition<S, M> {
                 Ok(WrapperTrackOutcome::Unavailable(reason)) => {
                     Self::rendition_absence(reason, codec_preference)
                 }
-                // Terminal wrapper states surface immediately: a confirmed
-                // offline service or rejected credentials cannot be repaired
-                // by another round, and the ripper must see the typed
-                // failure rather than an aggregated message.
+
                 Err(
                     error
                     @ (StreamError::SourceOffline { .. } | StreamError::Authentication { .. }),
@@ -476,7 +449,6 @@ impl<S: StreamHttp, M: MirrorHttp> AppleStreamAcquisition<S, M> {
     }
 }
 
-/// Production dependencies for the generic engine ripper.
 pub struct AppleRipperDeps {
     catalog: crate::catalog::Catalog<crate::catalog::ReqwestTransport>,
     acquisition: AppleStreamAcquisition<engine::streaming::ReqwestHttp, ReqwestMirrorHttp>,
@@ -502,7 +474,6 @@ impl AppleRipperDeps {
     }
 }
 
-/// Production settings for the complete Apple provider composition.
 #[derive(Debug, Clone)]
 pub struct AppleProductionConfig {
     pub wrapper_url: Option<String>,
@@ -519,7 +490,6 @@ impl Default for AppleProductionConfig {
 }
 
 impl AppleProductionConfig {
-    /// Load Apple-specific production settings from the process environment.
     pub fn from_environment() -> Self {
         Self {
             wrapper_url: Some(
@@ -534,18 +504,12 @@ impl AppleProductionConfig {
     }
 }
 
-/// Fully wired Apple catalog, playlist, mirror, and stream acquisition.
-///
-/// The mirror manager retained by this composition is the owner of the shared
-/// policy state. Clones returned by `mirror_policy()` and the acquisition use
-/// that same state, so dashboard probes and rips observe one circuit/cache.
 pub struct AppleProduction {
     playlist: crate::playlist::PlaylistClient<crate::playlist::ReqwestPlaylistHttp>,
     ripper_deps: AppleRipperDeps,
     mirror_policy: MirrorPolicyManager<ReqwestMirrorHttp>,
 }
 
-/// Apple-owned presentation data used by the provider-neutral orchestrator.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ApplePresentation;
 
@@ -643,9 +607,6 @@ impl engine::ripper::RipStage for AppleRipperDeps {
         kind: engine::ripper::SourceFailureKind,
         detail: &str,
     ) {
-        // Circuit rules: only source-attributed corruption from the primary
-        // mirror trips the circuit. Wrapper-attributed failures and local or
-        // post-tag failures never do.
         if !matches!(source, SourceId::PrimaryMirror) {
             return;
         }

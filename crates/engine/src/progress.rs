@@ -1,7 +1,3 @@
-//! Progress formatting helpers.
-
-/// Render a Unicode block progress bar using `■`, `▤`, `□`,
-/// e.g. `[■■■■■■□□□□□□] 50%` or `[■■■▤□□□□□□□□] 35%`.
 pub fn render_progress_bar(current: u64, total: u64, length: usize) -> String {
     if total == 0 {
         return format!("[{}] 0%", "□".repeat(length));
@@ -26,22 +22,13 @@ pub fn render_progress_bar(current: u64, total: u64, length: usize) -> String {
     format!("[{bar}] {percent}%")
 }
 
-/// Separator between a byte count and its unit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ByteStyle {
-    /// `565.53MB` — no space. For dense progress text where the bar and the
-    /// number compete for horizontal room.
     Compact,
-    /// `565.53 MB` — space. For prose messages where the value stands alone as
-    /// a labelled quantity ("Space reclaimed: 565.53 MB").
+
     Spaced,
 }
 
-/// Format a byte count with 1024-based units (B, KB, MB, GB, TB, PB).
-///
-/// The single workspace byte formatter; the bot crate's `/clean` summary and
-/// `readable_file_size` both route here. Whole bytes render as an integer
-/// (`1023B`); larger units always carry two decimals.
 pub fn format_bytes_with(bytes: u64, style: ByteStyle) -> String {
     const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
 
@@ -57,20 +44,16 @@ pub fn format_bytes_with(bytes: u64, style: ByteStyle) -> String {
         ByteStyle::Spaced => " ",
     };
     if index == 0 {
-        // Print the integer, not the f64, so a byte count is never rendered
-        // with a spurious decimal.
         format!("{bytes}{separator}B")
     } else {
         format!("{value:.2}{separator}{}", UNITS[index])
     }
 }
 
-/// Format bytes into human-readable B, KB, MB, GB, TB, PB string.
 pub fn format_bytes(bytes: u64) -> String {
     format_bytes_with(bytes, ByteStyle::Compact)
 }
 
-/// Format MB progress as `x.x/y.y MB` (or `x.x MB` when total is unknown).
 pub fn format_mb_progress(current_bytes: u64, total_bytes: u64) -> String {
     let current_mb = current_bytes as f64 / (1024.0 * 1024.0);
     if total_bytes > 0 {
@@ -81,7 +64,6 @@ pub fn format_mb_progress(current_bytes: u64, total_bytes: u64) -> String {
     }
 }
 
-/// Format byte progress with bar: `[■■■■■■□□□□□□] 50% (14.5/29.0 MB)`.
 pub fn format_byte_progress(current_bytes: u64, total_bytes: u64, bar_length: usize) -> String {
     let bar = render_progress_bar(current_bytes, total_bytes, bar_length);
     let current_mb = current_bytes as f64 / (1024.0 * 1024.0);
@@ -126,7 +108,7 @@ mod tests {
             format_bytes_with(8_799_493_473, ByteStyle::Spaced),
             "8.20 GB"
         );
-        // Same numbers, same units — the styles differ only by the space.
+
         for bytes in [0, 1, 1023, 1024, 593_000_000, 8_799_493_473] {
             assert_eq!(
                 format_bytes_with(bytes, ByteStyle::Spaced).replace(' ', ""),

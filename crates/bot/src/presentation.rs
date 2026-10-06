@@ -1,9 +1,3 @@
-//! Shared Telegram presentation policy.
-//!
-//! Handlers provide semantic facts; this module owns the small, calm English
-//! surface users see.  The policy deliberately keeps emoji out of neutral
-//! content and routine navigation.
-
 use ferogram::tl::enums::ReplyMarkup;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,7 +15,6 @@ pub struct TelegramMessage {
     pub keyboard: Option<ReplyMarkup>,
 }
 
-/// Semantic job state shared by the detailed card and dashboard adapters.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RipStatusView {
     pub state: &'static str,
@@ -49,8 +42,6 @@ impl TelegramMessage {
     }
 }
 
-/// Render a heading with at most one semantic leading symbol.  Symbols are
-/// intentionally absent from neutral content and all button labels.
 pub fn heading(kind: FeedbackKind, title: &str) -> String {
     let symbol = match kind {
         FeedbackKind::Neutral => "",
@@ -73,28 +64,19 @@ pub fn action_label(action: &str, target: Option<&str>) -> String {
     }
 }
 
-/// Human-readable label for a delivered rendition.  Album delivery metadata
-/// stores the canonical codec string so the bot can keep labels stable even
-/// when the primary rendition falls back from ALAC to AAC.
 pub fn rendition_label(codec: Option<&str>) -> &'static str {
     match codec {
         Some("ec-3") => "Dolby Atmos",
         Some("aac") | Some("mp4a.40.2") | Some("mp4a.40.5") => "AAC",
-        Some("flac") => "FLAC",
         Some("alac") | None => "ALAC",
         Some(_) => "Audio",
     }
 }
 
-/// Humanize a byte count the way mirror-leech does: two decimals, 1024-based
-/// units (B, KB, MB, GB, TB, PB). The single workspace byte formatter lives in
-/// `engine::progress`; this is the compact (no-separator) style.
 pub fn readable_file_size(bytes: u64) -> String {
     engine::progress::format_bytes(bytes)
 }
 
-/// Compact elapsed time like "1d11h47m30s", "3m36s", "45s". Only periods
-/// that fit are emitted, mirror-leech style.
 pub fn readable_time_compact(seconds: u64) -> String {
     const PERIODS: [(&str, u64); 4] = [("d", 86_400), ("h", 3_600), ("m", 60), ("s", 1)];
     let mut remaining = seconds;
@@ -109,8 +91,6 @@ pub fn readable_time_compact(seconds: u64) -> String {
     if out.is_empty() { "0s".to_owned() } else { out }
 }
 
-/// The 12-cell box progress bar with a two-decimal percent using `■`, `▤`, `□`:
-/// `[■■■■■■□□□□□□] 50.00%` or `[▤□□□□□□□□□□□] 4.17%`.
 pub fn box_progress_bar(pct: f64) -> String {
     let pct = pct.clamp(0.0, 100.0);
     const LENGTH: usize = 12;
@@ -133,9 +113,6 @@ pub fn box_progress_bar(pct: f64) -> String {
     )
 }
 
-/// Resolve a user display name or username for mentions.
-/// Prefers `@username` if present, then display name ("First Last" or "First"),
-/// falling back to "User {user_id}".
 pub async fn resolve_user_display_name(client: &ferogram::Client, user_id: i64) -> String {
     if user_id <= 0 {
         return "User".to_string();
@@ -175,9 +152,6 @@ mod tests {
         assert_eq!(heading(FeedbackKind::Warning, "Paused"), "! <b>Paused</b>");
     }
 
-    /// `presentation::escape` is a re-export of the one workspace escaper, so
-    /// it must produce byte-identical output to `html::escape` and to the
-    /// engine's `html_escape`.
     #[test]
     fn escape_matches_the_single_workspace_escaper() {
         for input in ["&", "<b>", "a&b", "\"'&<>", "", "plain — 文字"] {
@@ -194,7 +168,6 @@ mod tests {
     #[test]
     fn rendition_labels_keep_codec_fallbacks_visible() {
         assert_eq!(rendition_label(Some("alac")), "ALAC");
-        assert_eq!(rendition_label(Some("flac")), "FLAC");
         assert_eq!(rendition_label(Some("aac")), "AAC");
         assert_eq!(rendition_label(Some("ec-3")), "Dolby Atmos");
         assert_eq!(rendition_label(None), "ALAC");

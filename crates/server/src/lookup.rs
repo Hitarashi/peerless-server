@@ -7,79 +7,67 @@ use utoipa::ToSchema;
 
 use crate::{ServerState, auth::AuthedUser, error::ServerError};
 
-/// Batch lookup request for cached Apple Music tracks and album ZIPs.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct LookupRequest {
-    /// Apple Music track IDs to check. At least one track or album ID is required.
     #[serde(default)]
     pub track_ids: Option<Vec<String>>,
-    /// Apple Music album IDs whose cached ZIP archives should be checked.
+
     #[serde(default)]
     pub album_ids: Option<Vec<String>>,
 }
 
-/// One format available for a cached Apple Music track.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct TrackFormatResult {
-    /// Database track ID to pass to `/api/v1/tracks/{id}/playback` for this format.
     #[schema(example = 123)]
     pub id: i32,
-    /// Cached Apple format (`alac`, `aac`, or `ec-3`).
+
     #[schema(example = "alac")]
     pub format: String,
-    /// Exact Telegram document size in bytes, or `null` if media metadata could not be resolved.
+
     #[schema(example = 123456789_u64)]
     pub file_size_bytes: Option<u64>,
 }
 
-/// A cached Apple Music track and its available local formats.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct TrackLookupResult {
-    /// Apple Music track ID.
     #[schema(example = "1440832410")]
     pub apple_track_id: String,
-    /// Cached formats and their Telegram file sizes.
+
     pub formats: Vec<TrackFormatResult>,
 }
 
-/// One cached part of a complete ZIP rendition for an Apple Music album.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct AlbumZipPartResult {
-    /// Database row ID for this cached archive part.
     #[schema(example = 223)]
     pub id: i32,
-    /// Cached Apple format (`alac`, `aac`, or `ec-3`).
+
     #[schema(example = "alac")]
     pub format: String,
-    /// Size of this archive part in bytes.
+
     #[schema(example = 34343_u64)]
     pub file_size_bytes: u64,
-    /// One-based index of this part within the archive.
+
     #[schema(example = 1)]
     pub part: i32,
-    /// Total number of parts in this archive rendition.
+
     #[schema(example = 1)]
     pub total_parts: i32,
 }
 
-/// Cached ZIP availability for one Apple Music album.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct AlbumLookupResult {
-    /// Apple Music album ID.
     #[schema(example = "1451234567")]
     pub apple_album_id: String,
-    /// True when every archive part for at least one rendition is cached.
+
     pub zip_available: bool,
-    /// Parts of complete ZIP renditions, grouped by `format` and ordered by part number.
+
     pub zip_formats: Vec<AlbumZipPartResult>,
 }
 
-/// Results for a batch Apple Music cache lookup.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct LookupResponse {
-    /// Only tracks found in the local Apple Music cache are returned.
     pub tracks: Vec<TrackLookupResult>,
-    /// Every requested album is returned, including albums without a complete ZIP.
+
     pub albums: Vec<AlbumLookupResult>,
 }
 
@@ -192,7 +180,6 @@ fn apple_format(codec: Codec) -> Option<&'static str> {
         Codec::Alac => Some("alac"),
         Codec::Aac => Some("aac"),
         Codec::Ec3 => Some("ec-3"),
-        Codec::Flac => None,
     }
 }
 

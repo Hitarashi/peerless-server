@@ -1,9 +1,3 @@
-//! Album ZIP planning and creation.
-//!
-//! This module owns archive details. Callers provide source files and receive
-//! a completed, atomically published archive; partial files are never treated
-//! as successful output.
-
 use std::{
     fs::{self, File, OpenOptions},
     io::{BufReader, BufWriter, Read, Write},
@@ -18,11 +12,9 @@ use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 pub use crate::filename::MAX_ZIP_ENTRY_FILENAME_BYTES;
 use crate::filename::{ArchiveFilename, StandardFilename, ZipEntryName};
 
-/// Conservative ceiling for the current bot-only uploader.
 pub const TELEGRAM_SPLIT_THRESHOLD_BYTES: u64 = 1_900_000_000;
 const ENTRY_OVERHEAD_BYTES: u64 = 512;
 const ARCHIVE_HEADROOM_BYTES: u64 = 64 * 1024;
-/// Keep generated ZIP entry names below the existing validation ceiling.
 
 #[derive(Debug, Clone)]
 pub struct ZipTrackEntry {
@@ -65,7 +57,6 @@ pub enum ZipError {
     Writer(String),
 }
 
-/// Sanitizes a display name for use as an archive filename.
 pub fn sanitize_archive_filename(name: &str) -> String {
     let sanitized: String = name
         .chars()
@@ -82,7 +73,6 @@ pub fn sanitize_archive_filename(name: &str) -> String {
     }
 }
 
-/// Builds a bounded ZIP entry filename, safely formatted with track number, track ID, and codec extension.
 pub fn build_zip_entry_filename_with_codec(
     track_number: Option<i64>,
     title: &str,
@@ -103,7 +93,6 @@ pub fn build_zip_entry_filename_with_codec(
     ZipEntryName::sanitize_and_bound(&name, Some(&suffix))
 }
 
-/// Builds a bounded ZIP entry filename, safely formatted with track number and track ID.
 pub fn build_zip_entry_filename(
     track_number: Option<i64>,
     title: &str,
@@ -113,7 +102,6 @@ pub fn build_zip_entry_filename(
     build_zip_entry_filename_with_codec(track_number, title, artist, track_id, "alac")
 }
 
-/// Builds the base archive filename without the `.zip` extension.
 pub fn build_album_archive_base_name(
     artist: &str,
     album: &str,
@@ -122,8 +110,6 @@ pub fn build_album_archive_base_name(
     build_album_archive_base_name_with_codec(artist, album, release_date, "alac")
 }
 
-/// Same as [`build_album_archive_base_name`], labeled with the highest
-/// codec delivered in the archive (`alac`, `aac`, `mp4a.40.2`, `ec-3`, `flac`).
 pub fn build_album_archive_base_name_with_codec(
     artist: &str,
     album: &str,
@@ -151,9 +137,6 @@ fn archive_codec_label(codec: &str) -> &'static str {
     }
 }
 
-/// Deterministic identity of the resolved track set a ZIP was built from.
-/// Inputs are NUL-delimited; none of them may contain NUL, so the framing is
-/// unambiguous.
 pub fn album_generation_hash(provider: &str, album_id: &str, ordered_track_ids: &[&str]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"alac-zip-gen-v1");
@@ -177,8 +160,6 @@ fn hex_digest(hasher: Sha256) -> String {
     hex
 }
 
-/// Streams a file's contents through SHA-256, returning the lowercase hex
-/// digest. Sync I/O is deliberate: callers run this inside `spawn_blocking`.
 fn hash_file(path: &Path) -> Result<String, ZipError> {
     let mut source = BufReader::with_capacity(
         64 * 1024,
@@ -221,7 +202,6 @@ fn validate_entry_name(name: &str) -> Result<(), ZipError> {
     Ok(())
 }
 
-/// Plans sequential ZIP partitions with checked size accounting.
 pub fn plan_zip_parts(
     artist: &str,
     album: &str,
@@ -241,7 +221,6 @@ pub fn plan_zip_parts(
     )
 }
 
-/// Codec-aware [`plan_zip_parts`]; the label lands in the archive name.
 pub fn plan_zip_parts_with_codec(
     artist: &str,
     album: &str,
@@ -355,7 +334,6 @@ pub fn plan_zip_parts_with_codec(
         .collect())
 }
 
-/// Creates one archive atomically. `cancel` is checked between source chunks.
 pub fn create_zip_archive(
     output_path: &Path,
     plan: &ZipPartPlan,
@@ -387,10 +365,7 @@ pub fn create_zip_archive(
             source,
         })?
         .unwrap_or(0);
-    // The manifest is the first archive entry, so content hashes must be
-    // computed before any bytes are written. An unreadable source fails
-    // here exactly as it would in the copy loop below — no half-hashed
-    // archive is ever published.
+
     let cover_sha256 = match &plan.cover_path {
         Some(path) => Some(hash_file(path)?),
         None => None,
@@ -438,8 +413,7 @@ pub fn create_zip_archive(
             .open(&temp_path)?;
         let writer = BufWriter::with_capacity(1024 * 1024, file);
         let mut zip = ZipWriter::new(writer);
-        // ALAC/M4A is already compressed; storing avoids CPU spent on a
-        // second compression pass and keeps size accounting predictable.
+
         let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
         let mut written = 0u64;
         let mut buffer = [0u8; 64 * 1024];
@@ -668,16 +642,16 @@ mod tests {
     fn generation_hash_is_deterministic_and_sensitive() {
         let ids = ["1", "2", "3"];
         let base = album_generation_hash("apple", "alb.1", &ids);
-        // Deterministic.
+
         assert_eq!(base, album_generation_hash("apple", "alb.1", &ids));
-        // Order-sensitive.
+
         let swapped = ["2", "1", "3"];
         assert_ne!(base, album_generation_hash("apple", "alb.1", &swapped));
-        // Provider-sensitive.
+
         assert_ne!(base, album_generation_hash("spotify", "alb.1", &ids));
-        // Album-sensitive.
+
         assert_ne!(base, album_generation_hash("apple", "alb.2", &ids));
-        // Pinned framing: exact digest for a fixed input.
+
         let mut expected = Sha256::new();
         expected.update(b"alac-zip-gen-v1\x00apple\x00alb.1\x001\x002\x003");
         assert_eq!(base, hex_digest(expected));

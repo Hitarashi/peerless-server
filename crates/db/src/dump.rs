@@ -1,33 +1,24 @@
-//! Versioned, typed database archive export/import.
-//!
-//! The wire format is JSON compressed with gzip.  JSON's explicit null and
-//! string escaping rules make this safe for names, error messages, and other
-//! values containing newlines or SQL punctuation; no SQL is generated or
-//! parsed during restore.
-
 use std::{io::Write, time::Instant};
 
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use engine::limits::MAX_DOCUMENT_BYTES;
 use flate2::{Compression, write::GzEncoder};
-use music::{Codec, Provider};
+use music::Codec;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Album, DbError, DbPool, Request, SettingsRow, Track, User,
-    schema::{albums, requests, settings, tracks, users},
+    Album, DbError, DbPool, SettingsRow, Track, User,
+    schema::{albums, settings, tracks, users},
 };
 
-const ARCHIVE_VERSION: u32 = 3;
+const ARCHIVE_VERSION: u32 = 1;
 const MAX_ARCHIVE_ROWS: usize = 1_000_000;
-const MAX_ARCHIVE_STRING_BYTES: usize = 1 << 20;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DumpStats {
     pub users_count: i64,
     pub tracks_count: i64,
-    pub requests_count: i64,
     pub bytes: usize,
 }
 
@@ -35,7 +26,6 @@ pub struct DumpStats {
 pub struct RestoreStats {
     pub users_merged: u64,
     pub tracks_merged: u64,
-    pub requests_merged: u64,
     pub duration_ms: u128,
 }
 
@@ -43,14 +33,11 @@ pub struct RestoreStats {
 struct Archive {
     format_version: u32,
     generated_at: String,
-    /// The Telegram dump channel this archive belongs to.  Unbound archives
-    /// are retained for the low-level API, but the bot always exports and
-    /// imports channel-bound archives.
+
     #[serde(default)]
     dump_channel_id: Option<i64>,
     users: Vec<UserArchive>,
     tracks: Vec<TrackArchive>,
-    requests: Vec<RequestArchive>,
     #[serde(default, alias = "album_zips")]
     albums: Vec<AlbumArchive>,
     settings: SettingsArchive,
@@ -67,47 +54,19 @@ struct UserArchive {
 #[derive(Debug, Serialize, Deserialize, Insertable)]
 #[diesel(table_name = tracks)]
 struct TrackArchive {
-    provider: Provider,
     track_id: String,
     #[serde(default)]
     codec: Codec,
     message_id: i32,
     file_id: String,
     file_unique_id: String,
-    title: String,
-    artist: String,
-    album: String,
-    duration: i32,
-    bit_depth: i32,
-    sample_rate: i32,
-    genre: String,
-    release_date: String,
-    track_number: i32,
-    track_count: i32,
-    #[serde(default)]
-    recording_mbid: Option<String>,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Insertable)]
-#[diesel(table_name = requests)]
-struct RequestArchive {
-    telegram_id: i64,
-    chat_id: i64,
-    provider: Provider,
-    track_id: String,
-    is_cache_hit: bool,
-    duration_ms: Option<i32>,
-    status: String,
-    error_reason: Option<String>,
-    created_at: chrono::DateTime<chrono::Utc>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Insertable)]
 #[diesel(table_name = albums)]
 struct AlbumArchive {
-    provider: Provider,
     album_id: String,
     #[serde(default)]
     codec: Codec,
@@ -117,30 +76,16 @@ struct AlbumArchive {
     file_id: String,
     file_unique_id: String,
     file_size: i64,
-    file_name: String,
-    /// Empty string = unknown generation; never reused, forces one rebuild.
+
     #[serde(default)]
     generation_hash: String,
     created_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(untagged)]
-enum SettingsArchive {
-    Modern {
-        data: serde_json::Value,
-        updated_at: chrono::DateTime<chrono::Utc>,
-    },
-    Legacy {
-        ripping_mode: String,
-        album_rip_enabled: bool,
-        playlist_rip_enabled: bool,
-        artist_rip_enabled: bool,
-        txt_rip_enabled: bool,
-        multi_link_rip_enabled: bool,
-        max_collection_tracks: i32,
-        updated_at: chrono::DateTime<chrono::Utc>,
-    },
+struct SettingsArchive {
+    data: serde_json::Value,
+    updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl From<User> for UserArchive {
@@ -156,41 +101,13 @@ impl From<User> for UserArchive {
 impl From<Track> for TrackArchive {
     fn from(row: Track) -> Self {
         Self {
-            provider: row.provider,
             track_id: row.track_id,
             codec: row.codec,
             message_id: row.message_id,
             file_id: row.file_id,
             file_unique_id: row.file_unique_id,
-            title: row.title,
-            artist: row.artist,
-            album: row.album,
-            duration: row.duration,
-            bit_depth: row.bit_depth,
-            sample_rate: row.sample_rate,
-            genre: row.genre,
-            release_date: row.release_date,
-            track_number: row.track_number,
-            track_count: row.track_count,
-            recording_mbid: row.recording_mbid,
             created_at: row.created_at,
             updated_at: row.updated_at,
-        }
-    }
-}
-
-impl From<Request> for RequestArchive {
-    fn from(row: Request) -> Self {
-        Self {
-            telegram_id: row.telegram_id,
-            chat_id: row.chat_id,
-            provider: row.provider,
-            track_id: row.track_id,
-            is_cache_hit: row.is_cache_hit,
-            duration_ms: row.duration_ms,
-            status: row.status,
-            error_reason: row.error_reason,
-            created_at: row.created_at,
         }
     }
 }
@@ -198,7 +115,6 @@ impl From<Request> for RequestArchive {
 impl From<Album> for AlbumArchive {
     fn from(row: Album) -> Self {
         Self {
-            provider: row.provider,
             album_id: row.album_id,
             codec: row.codec,
             part_index: row.part_index,
@@ -207,7 +123,6 @@ impl From<Album> for AlbumArchive {
             file_id: row.file_id,
             file_unique_id: row.file_unique_id,
             file_size: row.file_size,
-            file_name: row.file_name,
             generation_hash: row.generation_hash,
             created_at: row.created_at,
         }
@@ -216,14 +131,13 @@ impl From<Album> for AlbumArchive {
 
 impl From<SettingsRow> for SettingsArchive {
     fn from(row: SettingsRow) -> Self {
-        Self::Modern {
+        Self {
             data: row.data,
             updated_at: row.updated_at,
         }
     }
 }
 
-/// Backup and restore operations.
 pub struct DbDumpService {
     pool: DbPool,
 }
@@ -233,7 +147,6 @@ impl DbDumpService {
         Self { pool }
     }
 
-    /// Export the entire database as a gzip-compressed JSON archive.
     pub async fn export_dump(&self) -> Result<(Vec<u8>, DumpStats, String), DbError> {
         self.export_dump_with_channel(None).await
     }
@@ -259,10 +172,6 @@ impl DbDumpService {
             .select(Track::as_select())
             .load::<Track>(&mut *connection)
             .await?;
-        let requests = requests::table
-            .select(Request::as_select())
-            .load::<Request>(&mut *connection)
-            .await?;
         let albums = albums::table
             .select(Album::as_select())
             .load::<Album>(&mut *connection)
@@ -277,7 +186,6 @@ impl DbDumpService {
             dump_channel_id,
             users: users.into_iter().map(UserArchive::from).collect(),
             tracks: tracks.into_iter().map(TrackArchive::from).collect(),
-            requests: requests.into_iter().map(RequestArchive::from).collect(),
             albums: albums.into_iter().map(AlbumArchive::from).collect(),
             settings: SettingsArchive::from(settings),
         };
@@ -297,22 +205,17 @@ impl DbDumpService {
         let stats = DumpStats {
             users_count: archive.users.len() as i64,
             tracks_count: archive.tracks.len() as i64,
-            requests_count: archive.requests.len() as i64,
             bytes: compressed.len(),
         };
         tracing::info!(
             users = stats.users_count,
             tracks = stats.tracks_count,
-            requests = stats.requests_count,
             elapsed_ms = started.elapsed().as_millis(),
             "database archive exported"
         );
         Ok((compressed, stats, filename))
     }
 
-    /// Restore a typed archive inside one transaction. Every row is decoded
-    /// before the transaction starts, so malformed input cannot partially
-    /// modify the database.
     pub async fn import_dump(&self, gzip_bytes: &[u8]) -> Result<RestoreStats, DbError> {
         self.import_dump_with_channel(gzip_bytes, None).await
     }
@@ -339,7 +242,7 @@ impl DbDumpService {
         }
         let archive: Archive = serde_json::from_slice(&gunzip(gzip_bytes)?)
             .map_err(|error| DbError::Row(format!("invalid archive: {error}")))?;
-        if !matches!(archive.format_version, 2 | ARCHIVE_VERSION) {
+        if archive.format_version != ARCHIVE_VERSION {
             return Err(DbError::Row(format!(
                 "unsupported archive version {}",
                 archive.format_version
@@ -355,14 +258,10 @@ impl DbDumpService {
         validate_archive_limits(&archive)?;
         let users_merged = archive.users.len() as u64;
         let tracks_merged = archive.tracks.len() as u64;
-        let requests_merged = archive.requests.len() as u64;
         let mut connection = self.pool.connection().await?;
         connection
             .build_transaction()
             .run(async |transaction| {
-                diesel::delete(requests::table)
-                    .execute(&mut *transaction)
-                    .await?;
                 diesel::delete(tracks::table)
                     .execute(&mut *transaction)
                     .await?;
@@ -391,40 +290,11 @@ impl DbDumpService {
                         .execute(&mut *transaction)
                         .await?;
                 }
-                for row in archive.requests {
-                    diesel::insert_into(requests::table)
-                        .values(row)
-                        .execute(&mut *transaction)
-                        .await?;
-                }
-                let (data, updated_at) = match archive.settings {
-                    SettingsArchive::Modern { data, updated_at } => (data, updated_at),
-                    SettingsArchive::Legacy {
-                        ripping_mode,
-                        album_rip_enabled,
-                        playlist_rip_enabled,
-                        artist_rip_enabled,
-                        txt_rip_enabled,
-                        multi_link_rip_enabled,
-                        max_collection_tracks,
-                        updated_at,
-                    } => {
-                        let json_val = serde_json::json!({
-                            "ripping_mode": ripping_mode,
-                            "album_rip_enabled": album_rip_enabled,
-                            "playlist_rip_enabled": playlist_rip_enabled,
-                            "artist_rip_enabled": artist_rip_enabled,
-                            "txt_rip_enabled": txt_rip_enabled,
-                            "multi_link_rip_enabled": multi_link_rip_enabled,
-                            "max_collection_tracks": max_collection_tracks,
-                            "apple_rip_enabled": true,
-                            "qobuz_rip_enabled": true,
-                        });
-                        (json_val, updated_at)
-                    }
-                };
                 diesel::update(settings::table.filter(settings::id.eq(1_i16)))
-                    .set((settings::data.eq(data), settings::updated_at.eq(updated_at)))
+                    .set((
+                        settings::data.eq(archive.settings.data),
+                        settings::updated_at.eq(archive.settings.updated_at),
+                    ))
                     .execute(&mut *transaction)
                     .await?;
                 Ok::<(), DbError>(())
@@ -434,14 +304,12 @@ impl DbDumpService {
         tracing::info!(
             users = users_merged,
             tracks = tracks_merged,
-            requests = requests_merged,
             elapsed_ms = started.elapsed().as_millis(),
             "database archive restored"
         );
         Ok(RestoreStats {
             users_merged,
             tracks_merged,
-            requests_merged,
             duration_ms: started.elapsed().as_millis(),
         })
     }
@@ -458,24 +326,9 @@ fn gunzip(bytes: &[u8]) -> Result<Vec<u8>, DbError> {
 }
 
 fn validate_archive_limits(archive: &Archive) -> Result<(), DbError> {
-    let row_count = archive.users.len()
-        + archive.tracks.len()
-        + archive.requests.len()
-        + archive.albums.len()
-        + 1;
+    let row_count = archive.users.len() + archive.tracks.len() + archive.albums.len() + 1;
     if row_count > MAX_ARCHIVE_ROWS {
         return Err(DbError::Row("archive exceeds maximum row limit".to_owned()));
-    }
-    for track in &archive.tracks {
-        if track.title.len() > MAX_ARCHIVE_STRING_BYTES
-            || track.artist.len() > MAX_ARCHIVE_STRING_BYTES
-            || track.album.len() > MAX_ARCHIVE_STRING_BYTES
-            || track.genre.len() > MAX_ARCHIVE_STRING_BYTES
-        {
-            return Err(DbError::Row(
-                "archive contains string field exceeding limit".to_owned(),
-            ));
-        }
     }
     Ok(())
 }

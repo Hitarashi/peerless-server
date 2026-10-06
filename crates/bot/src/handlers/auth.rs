@@ -7,8 +7,6 @@ use crate::{
     html::{escape, parse_dynamic_html},
 };
 
-/// Resolve a TL peer to the Bot-API "marked" id the stores
-/// (users positive, basic groups -chat_id, channels -1e12 - channel_id).
 fn peer_id(peer: &tl::enums::Peer) -> (i64, bool) {
     match peer {
         tl::enums::Peer::User(p) => (p.user_id, true),
@@ -77,7 +75,6 @@ pub(crate) async fn resolve_target(
     let is_reply = reply_header.is_some() || msg.reply_to_message_id().is_some();
 
     if is_reply {
-        // Fast path: check reply_from on the MessageReplyHeader.
         if let Some(tl::enums::MessageReplyHeader::MessageReplyHeader(h)) = reply_header {
             if let Some(tl::enums::MessageFwdHeader::MessageFwdHeader(fwd)) = &h.reply_from
                 && let Some(peer) = &fwd.from_id
@@ -117,9 +114,6 @@ pub(crate) async fn resolve_target(
             };
         }
 
-        // Fetch the replied-to message if reply_from was absent or omitted from_id.
-        // Prime the peer cache first so channels.getMessages has a valid access_hash.
-        // PeerRef::Id resolves from cache if available, or does one cheap RPC on miss.
         if let Some(chat_peer) = msg.peer_id() {
             let marked = match chat_peer {
                 tl::enums::Peer::Chat(c) => -c.chat_id,
@@ -194,12 +188,9 @@ pub(crate) async fn resolve_target(
             }
         }
 
-        // A message intended as a reply must NEVER fall through to group authorization!
         return TargetResult::UnresolvedReply;
     }
 
-    // 2. Explicit argument: numeric id or @username. Keep the argument
-    // optional so a bare command in a group can target the group itself.
     if let Some(text) = msg.text().and_then(|text| text.split_whitespace().nth(1)) {
         if let Ok(id) = text.parse::<i64>() {
             return TargetResult::Ok {
@@ -221,13 +212,10 @@ pub(crate) async fn resolve_target(
                 is_user: user,
             };
         }
-        // An invalid explicit argument must never fall through to group
-        // authorization. Report invalid argument.
+
         return TargetResult::InvalidArg;
     }
 
-    // 3. Bare command inside a group (not a reply, no argument): authorize
-    // the group chat itself, using the marked id form the stores.
     if msg.is_any_group() {
         let marked = match msg.peer_id() {
             Some(tl::enums::Peer::Chat(c)) => -c.chat_id,

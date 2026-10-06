@@ -1,8 +1,3 @@
-//! `/authlist` — renders the paginated list of authorized users and groups.
-//!
-//! Admin-only. Paging is driven by the inline keyboard returned here; the
-//! callback path for `TelegramAction::AuthPage` / `AuthClose` lives below.
-
 use std::sync::Arc;
 
 use ferogram::{
@@ -98,7 +93,6 @@ pub(crate) async fn render(
     );
     let input = InputMessage::html(parse_dynamic_html(&text)).reply_markup(keyboard(page, pages));
     if let Some(message_id) = message_id {
-        // Edit: swallow "message not modified" style errors.
         let _ = state.client.edit_message(peer, message_id, input).await;
     } else if let Some(msg) = reply {
         let _ = msg.reply(input).await;
@@ -135,7 +129,7 @@ pub async fn callback(state: Arc<BotState>, query: CallbackQuery, action: Telegr
             .await;
         return;
     }
-    // The peer the button was pressed in, used for edits/deletes.
+
     let peer = query.chat_peer.clone().map(PeerRef::Peer);
     match action {
         TelegramAction::Noop => {
@@ -143,16 +137,11 @@ pub async fn callback(state: Arc<BotState>, query: CallbackQuery, action: Telegr
         }
         TelegramAction::AuthClose => {
             let _ = query.answer().send(&state.client).await;
-            if let (Some(peer), Some(id)) = (peer, query.message_id) {
-                // Channel-aware deletion: IncomingMessage::delete
-                // dispatches to channels.deleteMessages for supergroups,
-                // messages.deleteMessages otherwise. Fetch first, then
-                // delete through the message's own peer context.
-                if let Ok(messages) = state.client.get_messages(peer, &[id]).await
-                    && let Some(message) = messages.first()
-                {
-                    let _ = message.delete().await;
-                }
+            if let (Some(peer), Some(id)) = (peer, query.message_id)
+                && let Ok(messages) = state.client.get_messages(peer, &[id]).await
+                && let Some(message) = messages.first()
+            {
+                let _ = message.delete().await;
             }
         }
         TelegramAction::AuthPage { page } => {

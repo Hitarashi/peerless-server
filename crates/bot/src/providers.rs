@@ -1,5 +1,3 @@
-//! Statically compiled provider registry for the bot.
-
 use apple::{ApplePresentation, AppleProduction};
 use engine::{
     orchestrator::deps::{
@@ -11,14 +9,10 @@ use engine::{
 };
 use music::PlaylistData;
 
-/// The bot's provider registry is deliberately closed and compiled in. A job
-/// names the provider it wants; this is the only place that maps a
-/// [`Provider`] onto an adapter, and the match is exhaustive, so a new
-/// provider cannot be silently routed to the wrong catalog.
 pub struct ProviderRegistry {
     apple: AppleProduction,
     ripper: AlacTrackRipper,
-    /// Market used when a caller did not name one. A region, never a provider.
+
     default_storefront: String,
 }
 
@@ -43,8 +37,6 @@ impl ProviderRegistry {
         self.apple.playlist()
     }
 
-    /// Resolve the market for one catalog call. A caller that named a region
-    /// wins; everyone else gets the configured default.
     fn storefront<'a>(&'a self, requested: Storefront<'a>) -> &'a str {
         requested.get().unwrap_or(self.default_storefront.as_str())
     }

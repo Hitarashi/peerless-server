@@ -1,8 +1,3 @@
-//! Native media operations used by the bot.
-//!
-//! This crate owns decoder, FFT, image, and container implementation details.
-//! Callers receive domain values and committed output paths only.
-
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, OnceLock},
@@ -39,9 +34,7 @@ pub enum MediaError {
     Render(String),
     #[error("invalid media: {0}")]
     Invalid(String),
-    /// Decode/structure failure while validating the original downloaded
-    /// source, before any metadata is written. This provenance lets callers
-    /// distinguish source corruption from a later finalization failure.
+
     #[error(transparent)]
     SourceValidation(SourceValidationError),
     #[error("metadata update failed: {0}")]
@@ -50,7 +43,6 @@ pub enum MediaError {
     Io(#[from] std::io::Error),
 }
 
-/// Failures that prove the original downloaded media is corrupt.
 #[derive(Debug, thiserror::Error)]
 pub enum SourceValidationError {
     #[error("audio decode failed: {0}")]
@@ -100,10 +92,6 @@ pub struct SpectrogramReport {
     pub output: PathBuf,
 }
 
-/// Semantic metadata accepted by native M4A/FLAC/MP3 finalization.
-///
-/// The fields intentionally mirror the useful metadata fields while
-/// remaining provider-neutral. Empty strings are ignored.
 #[derive(Clone, Debug, Default)]
 pub struct TrackTags {
     pub title: Option<String>,
@@ -123,7 +111,7 @@ pub struct TrackTags {
     pub disc_number: Option<u16>,
     pub disc_count: Option<u16>,
     pub lyrics: Option<String>,
-    /// Embedded cover bytes. JPEG and PNG are detected automatically.
+
     pub artwork_jpeg: Option<Vec<u8>>,
     pub isrc: Option<String>,
     pub label: Option<String>,
@@ -147,7 +135,6 @@ pub struct TrackTags {
     pub description: Option<String>,
 }
 
-/// Parental-control rating represented by the iTunes `rtng` atom.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AdvisoryKind {
     Explicit,
@@ -155,8 +142,6 @@ pub enum AdvisoryKind {
     Inoffensive,
 }
 
-/// Media type written to the iTunes `stik` atom without exposing
-/// `mp4ameta`'s representation through the media seam.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MediaKind {
     Music,
@@ -181,7 +166,6 @@ impl ValidatedM4a {
     }
 }
 
-/// Deep native media interface. Decoder and renderer details remain private.
 #[derive(Clone, Default)]
 pub struct MediaProcessor;
 
@@ -232,10 +216,6 @@ impl MediaProcessor {
         result
     }
 
-    /// Validate, tag, and commit an audio rip. The pipeline selects the
-    /// best available codec (ALAC, ec-3, AAC, FLAC, MP3); finalize never gates on the
-    /// codec itself — it validates container integrity and packet boundaries
-    /// end-to-end before and after tagging.
     pub async fn finalize_m4a(
         &self,
         source: &Path,

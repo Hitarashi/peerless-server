@@ -1,10 +1,3 @@
-//! Bounded Telegram flood-wait policy used by the bot client.
-//!
-//! Ferogram's built-in policy is deliberately general-purpose and can keep
-//! retrying short waits forever. A bot needs a finite budget so one stalled
-//! request cannot consume the worker indefinitely or amplify a rate-limit
-//! episode across the rest of the application.
-
 use std::{ops::ControlFlow, time::Duration};
 
 use ferogram::{InvocationError, RetryContext, RetryPolicy};

@@ -12,7 +12,6 @@ use crate::{
     worker_pool::StreamWorkerPool,
 };
 
-/// Track media document location and attributes cached in memory.
 #[derive(Debug, Clone)]
 pub struct TrackMediaMetadata {
     pub document_id: i64,
@@ -25,7 +24,6 @@ pub struct TrackMediaMetadata {
 }
 
 impl TrackMediaMetadata {
-    /// Build `InputFileLocation` required for `upload.getFile`.
     pub fn input_location(&self) -> tl::enums::InputFileLocation {
         tl::enums::InputFileLocation::InputDocumentFileLocation(
             tl::types::InputDocumentFileLocation {
@@ -38,7 +36,6 @@ impl TrackMediaMetadata {
     }
 }
 
-/// HTTP streaming response payload.
 pub struct AudioStreamResponse {
     pub status: u16,
     pub content_type: String,
@@ -48,7 +45,6 @@ pub struct AudioStreamResponse {
     pub stream: ChunkStream,
 }
 
-/// HTTP headers for a stream or HEAD request, without starting chunk transfer.
 #[derive(Debug, Clone)]
 pub struct AudioStreamHeaders {
     pub status: u16,
@@ -58,7 +54,6 @@ pub struct AudioStreamHeaders {
     pub accept_ranges: &'static str,
 }
 
-/// Deep streaming module coordinating MTProto workers, chunk cache, and HTTP range translation.
 #[derive(Clone)]
 pub struct StreamEngine {
     worker_pool: Arc<StreamWorkerPool>,
@@ -98,20 +93,14 @@ impl StreamEngine {
         }
     }
 
-    /// Access the underlying MTProto worker pool.
     pub fn worker_pool(&self) -> &Arc<StreamWorkerPool> {
         &self.worker_pool
     }
 
-    /// Access the chunk cache.
     pub fn cache(&self) -> &Arc<ChunkCache> {
         &self.cache
     }
 
-    /// Resolve track document metadata from Dump Channel, with caching and on-demand refresh.
-    ///
-    /// `db_track_id` is the local database row id (`db::Track::id`), not a
-    /// provider-native track id.
     pub async fn resolve_track_media(
         &self,
         db_track_id: i32,
@@ -214,9 +203,6 @@ impl StreamEngine {
         self.load_track_media(db_track_id, worker_id).await
     }
 
-    /// Open an audio byte stream for the given track and HTTP Range header.
-    ///
-    /// `db_track_id` is the local database row id (`db::Track::id`).
     async fn prepare_stream(
         &self,
         db_track_id: i32,
@@ -252,7 +238,6 @@ impl StreamEngine {
         Ok((meta, headers, range))
     }
 
-    /// Resolve playback headers without creating a background chunk-transfer task.
     pub async fn open_stream_headers(
         &self,
         db_track_id: i32,
@@ -264,9 +249,6 @@ impl StreamEngine {
         Ok(headers)
     }
 
-    /// Open an audio byte stream for the given track and HTTP Range header.
-    ///
-    /// `db_track_id` is the local database row id (`db::Track::id`).
     pub async fn open_stream(
         &self,
         db_track_id: i32,

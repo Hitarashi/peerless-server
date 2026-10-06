@@ -1,5 +1,3 @@
-//! The live status dashboard.  This module deliberately knows nothing about
-//! ferogram; the small sink makes it usable by both Telegram and tests.
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use engine::orchestrator::types::{
@@ -62,16 +60,15 @@ pub struct DashboardJob {
 pub struct DashboardSnapshot {
     pub ripping_mode: String,
     pub mirror_health: Option<String>,
-    /// First active job's independent job activity, hidden when idle.
+
     pub current_job_activity: Option<TaskActivity>,
-    /// First active lane-1 job's download facts, hidden when idle.
+
     pub current_download: Option<DownloadLane>,
-    /// First active lane-2 job's upload facts, hidden when idle.
+
     pub current_upload: Option<UploadLane>,
     pub jobs: Vec<DashboardJob>,
 }
 
-/// Maximum active download jobs rendered per dashboard page.
 pub const DASHBOARD_PAGE_SIZE: usize = 2;
 
 pub fn render(
@@ -307,26 +304,17 @@ struct Entry {
     viewer_is_admin: bool,
     snapshot: DashboardSnapshot,
     empty_rendered: bool,
-    /// Earliest time this entry's message may be edited again by a
-    /// non-forced refresh (flood/coalescing per dashboard message).
+
     next_refresh_at: Option<tokio::time::Instant>,
-    /// Telegram flood deadline. Unlike the normal coalescing window this
-    /// deadline is never bypassed by a forced refresh.
+
     flood_until: Option<tokio::time::Instant>,
 }
 pub struct DashboardManager {
     entries: Mutex<HashMap<i64, Entry>>,
 }
 
-/// Progress events can arrive many times per second; dashboards coalesce
-/// them into at most one edit per interval per message. Ten seconds is the
-/// default safety floor for Telegram traffic; terminal transitions still use
-/// forced edits when they are not inside a flood-wait window.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 
-/// Recompute per-row cancel permission for a specific viewer. A shared group
-/// dashboard renders only the actions that viewer is allowed to take
-/// (requester or admin); actual authorization is re-checked on callback.
 pub fn apply_viewer(snapshot: &mut DashboardSnapshot, viewer_id: i64, viewer_is_admin: bool) {
     for job in &mut snapshot.jobs {
         job.is_cancel_allowed_for_viewer = viewer_is_admin || viewer_id == job.requester_id;
@@ -345,14 +333,10 @@ impl DashboardManager {
         }
     }
 
-    /// Whether this chat already has the single managed dashboard message.
     pub async fn contains(&self, chat: i64) -> bool {
         self.entries.lock().await.contains_key(&chat)
     }
 
-    /// Sends the replacement before removing the previous dashboard. The
-    /// snapshot is stored viewer-scoped so callbacks (page/refresh) render
-    /// exactly what this viewer may act on.
     pub async fn open(
         &self,
         chat: i64,
@@ -386,8 +370,6 @@ impl DashboardManager {
         Ok(new_id)
     }
 
-    /// Immediately sync a dashboard to an engine snapshot, then coalesce
-    /// background progress edits for the standard refresh interval.
     pub async fn refresh_entry_from(&self, chat: i64, snapshot: DashboardSnapshot) {
         let work = {
             let mut entries = self.entries.lock().await;
@@ -407,8 +389,6 @@ impl DashboardManager {
             })
         };
         if let Some((sink, id, text, keyboard)) = work {
-            // User-driven refreshes use the same flood deadline as background
-            // edits, so a Refresh tap cannot create a second flood episode.
             match sink.edit(id, &text, keyboard).await {
                 Ok(()) | Err(EditError::NotModified) => {
                     if let Some(entry) = self.entries.lock().await.get_mut(&chat) {
@@ -430,28 +410,19 @@ impl DashboardManager {
         self.refresh(snapshot, false).await;
     }
 
-    /// Refresh every open dashboard. Terminal events pass `force = true` so
-    /// queue changes (job finished/cancelled) are never suppressed by the
-    /// coalescing window.
     pub async fn refresh(&self, snapshot: DashboardSnapshot, force: bool) {
-        // Never retain the manager mutex across Telegram I/O: an edit can
-        // block for a flood wait and callers must still be able to replace or
-        // page a dashboard meanwhile.
         let work = {
             let mut entries = self.entries.lock().await;
             entries
                 .iter_mut()
                 .filter_map(|(chat, entry)| {
-                    // A flood deadline is stronger than `force`: terminal
-                    // events must not immediately repeat a request Telegram
-                    // has already rejected.
                     if entry
                         .flood_until
                         .is_some_and(|at| at > tokio::time::Instant::now())
                     {
                         return None;
                     }
-                    // Coalesce high-frequency progress events per message.
+
                     if !force
                         && entry
                             .next_refresh_at
@@ -485,15 +456,12 @@ impl DashboardManager {
                     }
                 }
                 Err(EditError::NotModified) => {
-                    // Telegram treats an identical edit as a benign
-                    // condition, not a dashboard failure.
                     if let Some(entry) = self.entries.lock().await.get_mut(&chat) {
                         entry.flood_until = None;
                     }
                 }
                 Err(EditError::FloodWait(wait)) => {
                     if let Some(entry) = self.entries.lock().await.get_mut(&chat) {
-                        // Suppress further edits until the flood deadline.
                         let until = tokio::time::Instant::now() + wait;
                         entry.flood_until = Some(until);
                         entry.next_refresh_at = Some(until);
@@ -508,8 +476,6 @@ impl DashboardManager {
         let work = {
             let mut entries = self.entries.lock().await;
             entries.get_mut(&chat).and_then(|entry| {
-                // Clamp to the real page range so repeated Next taps from
-                // the last page stay on the last page.
                 if entry
                     .flood_until
                     .is_some_and(|at| at > tokio::time::Instant::now())
@@ -529,9 +495,6 @@ impl DashboardManager {
             })
         };
         if let Some((sink, id, text, keyboard)) = work {
-            // Successful user-driven edits close a flood episode, matching
-            // refresh_entry_from. Flood failures set the same deadline so
-            // repeated page taps remain cheap and bounded.
             match sink.edit(id, &text, keyboard).await {
                 Ok(()) | Err(EditError::NotModified) => {
                     if let Some(entry) = self.entries.lock().await.get_mut(&chat) {

@@ -41,7 +41,6 @@ impl<'a> Drop for InFlightGuard<'a> {
     }
 }
 
-/// A single worker instance in the pool.
 pub struct WorkerInstance {
     pub id: usize,
     pub client: ferogram::Client,
@@ -50,7 +49,6 @@ pub struct WorkerInstance {
     pub dc_lock: Arc<Mutex<()>>,
 }
 
-/// Manages a pool of auxiliary Telegram bot clients for high-throughput media streaming.
 pub struct StreamWorkerPool {
     workers: Vec<WorkerInstance>,
     circuit_breaker: CircuitBreaker,
@@ -61,7 +59,6 @@ pub struct StreamWorkerPool {
 }
 
 impl StreamWorkerPool {
-    /// Create an empty worker pool (e.g. for testing environments).
     pub fn empty() -> Arc<Self> {
         Arc::new(Self {
             workers: Vec::new(),
@@ -73,8 +70,6 @@ impl StreamWorkerPool {
         })
     }
 
-    ///
-    /// If `tokens` is empty or all blank, falls back to wrapping `primary_fallback` if provided.
     pub async fn new(
         primary_fallback: Option<ferogram::Client>,
         tokens: &[String],
@@ -232,23 +227,18 @@ impl StreamWorkerPool {
         }))
     }
 
-    /// Total number of auxiliary workers configured in the pool.
     pub fn worker_count(&self) -> usize {
         self.workers.len()
     }
 
-    /// Number of healthy workers currently available in the pool.
     pub fn available_worker_count(&self) -> usize {
         self.circuit_breaker.healthy_worker_count()
     }
 
-    /// Access process-local streaming counters and latency summaries.
     pub fn metrics(&self) -> &Arc<StreamMetrics> {
         &self.metrics
     }
 
-    /// Select the healthy worker with the fewest active in-flight chunk downloads,
-    /// breaking ties using a round-robin cursor.
     pub fn pick_least_loaded(&self) -> Result<usize, StreamError> {
         let n = self.workers.len();
         if n == 0 {
@@ -274,7 +264,6 @@ impl StreamWorkerPool {
         best_worker.ok_or(StreamError::AllWorkersUnavailable)
     }
 
-    /// Pick one healthy worker for the lifetime of an HTTP audio stream.
     pub fn select_worker_for_stream(&self) -> Result<usize, StreamError> {
         self.pick_least_loaded().or_else(|error| {
             if self.primary_fallback.is_some() {
@@ -285,9 +274,6 @@ impl StreamWorkerPool {
         })
     }
 
-    /// Fetch a source message using the same Telegram login that will download
-    /// its file. A worker may need its own peer cache populated before resolving
-    /// a private dump channel by ID, so load its dialogs once on a cache miss.
     pub async fn get_messages_for_worker(
         &self,
         worker_id: usize,
@@ -325,7 +311,6 @@ impl StreamWorkerPool {
             })
     }
 
-    /// Fetch a single MTProto file chunk with least-loaded dispatch and failover retries.
     pub async fn fetch_chunk(
         &self,
         location: &tl::enums::InputFileLocation,
@@ -638,7 +623,6 @@ impl StreamWorkerPool {
             }
         }
 
-        // Reserve the final attempt for the primary client when it was not already used.
         if pinned_worker_id.is_none()
             && let Some(ref primary) = self.primary_fallback
             && !primary_attempted

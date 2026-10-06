@@ -1,9 +1,3 @@
-//! Apple Music provider implementation.
-//!
-//! The crate owns all Apple-specific network protocols and acquisition policy.
-//! The engine only supplies provider-neutral rip, streaming, and orchestration
-//! primitives.
-
 pub mod acquisition;
 pub mod catalog;
 mod mirror_http;

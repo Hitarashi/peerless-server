@@ -1,7 +1,6 @@
 use std::{fmt, path::Path, sync::Arc};
 
 use super::BoxFuture;
-use crate::types::{Codec, Provider, TrackKey};
 
 pub type UploadProgressCallback = Arc<dyn Fn(u64, u64) + Send + Sync>;
 
@@ -311,12 +310,4 @@ pub fn photo_delivery(
         image_bytes,
         caption_html: caption_html.into(),
     }
-}
-
-pub fn dump_track_key(provider: Provider, track_id: impl Into<String>) -> TrackKey {
-    TrackKey::new(provider, track_id.into())
-}
-
-pub fn codec_for_dump_track(key: TrackKey, codec: Codec) -> TrackKey {
-    key.with_codec(codec)
 }

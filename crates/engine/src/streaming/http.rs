@@ -1,8 +1,3 @@
-//! HTTP seam used by the audio stream transport.
-//!
-//! Keeping reqwest behind these two traits makes all streaming behavior
-//! testable without a network connection.
-
 use std::{
     future::Future,
     pin::Pin,
@@ -13,10 +8,8 @@ use bytes::Bytes;
 use futures_util::{Stream, StreamExt};
 use tokio_util::sync::CancellationToken;
 
-/// Chrome user-agent used by the original implementation.
 pub const CHROME_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/145.0.0.0";
 
-/// An audio response whose body remains a live stream.
 pub struct StreamHttpResponse {
     pub status: u16,
     pub codec: Option<String>,
@@ -44,8 +37,6 @@ pub enum StreamHttpError {
     Network(String),
 }
 
-/// Streaming GET for an audio endpoint. The timeout covers headers (the
-/// handshake) only; it must not terminate a long-running audio body.
 pub trait StreamHttp: Send + Sync {
     fn fetch(
         &self,
@@ -56,7 +47,6 @@ pub trait StreamHttp: Send + Sync {
     ) -> impl Future<Output = Result<StreamHttpResponse, StreamHttpError>> + Send;
 }
 
-/// Production reqwest adapter.
 #[derive(Clone)]
 pub struct ReqwestHttp {
     client: reqwest::Client,
@@ -88,8 +78,7 @@ impl StreamHttp for ReqwestHttp {
         if let Some(api_key) = api_key {
             request = request.header("X-API-Key", api_key);
         }
-        // Deliberately do not use reqwest's per-request timeout here: it also
-        // applies while the body is being consumed.
+
         let started = Instant::now();
         let send_future = tokio::time::timeout(handshake_timeout, request.send());
         let response = if let Some(signal) = signal {

@@ -1,6 +1,3 @@
-//! Callback dispatcher for list pagination, dashboard paging, and get
-//! cancellation.
-
 use std::sync::Arc;
 
 use ferogram::update::CallbackQuery;
@@ -26,8 +23,6 @@ pub async fn dispatch_dashboard(
     };
 
     if action == DashboardAction::Refresh {
-        // Re-pull the latest engine snapshot rather than trusting the
-        // message-local copy.
         let snapshot = crate::event_bridge::current_snapshot(&state).await;
         crate::dashboard_manager()
             .refresh_entry_from(chat, snapshot)
@@ -55,7 +50,6 @@ pub async fn dispatch_cancel(state: Arc<BotState>, query: CallbackQuery, job_id:
     };
     let _ = answer.send(&state.client).await;
 
-    // Refresh dashboards so the row disappears promptly.
     let snapshot = crate::event_bridge::current_snapshot(&state).await;
     crate::dashboard_manager().refresh(snapshot, true).await;
 }

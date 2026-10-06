@@ -1,8 +1,3 @@
-//! Axum HTTP streaming server and REST API.
-//!
-//! Provides a deep module interface (`run_server`, `create_router`, `ServerState`, `ServerConfig`)
-//! encapsulating all routing, middleware, range streaming, and authentication.
-
 pub mod auth;
 pub mod docs;
 pub mod error;
@@ -32,15 +27,11 @@ use tower_http::trace::TraceLayer;
 pub struct ServerConfig {
     pub host: IpAddr,
     pub port: u16,
-    /// REQUIRED. Signs stream tickets and derives the at-rest encryption key for
-    /// provider session tokens. Must be supplied from the `APP_KEY` environment
-    /// variable; there is deliberately no built-in default.
+
     pub app_key: String,
 }
 
 impl Default for ServerConfig {
-    /// Leaves `app_key` empty on purpose; callers must set it, and `run_server`
-    /// refuses to start without one.
     fn default() -> Self {
         Self {
             host: [0, 0, 0, 0].into(),
@@ -167,17 +158,14 @@ impl ServerState {
         Some(task)
     }
 
-    /// Marks a task as successfully completed.
     pub fn complete_task(&self, task_id: &str) {
         let _ = self.remove_active_task(task_id);
     }
 
-    /// Marks a task as failed with an error description.
     pub fn fail_task(&self, task_id: &str, _error: &str) {
         let _ = self.remove_active_task(task_id);
     }
 
-    /// Cancels an in-flight task and notifies all listeners.
     pub fn cancel_task(&self, task_id: &str, _reason: &str) {
         let Some(task) = self.remove_active_task(task_id) else {
             return;
@@ -189,12 +177,10 @@ impl ServerState {
         }
     }
 
-    /// Updates current progress for an active task and broadcasts it over the playback WebSocket.
     pub fn update_task_progress(&self, task_id: &str, progress: rip_tasks::RipTaskProgress) {
         self.update_task_progress_extended(task_id, progress);
     }
 
-    /// Extended task progress update including both independent lanes and album context.
     pub fn update_task_progress_extended(
         &self,
         task_id: &str,
@@ -249,37 +235,28 @@ impl ServerState {
 
 pub fn create_router(state: Arc<ServerState>) -> Router {
     Router::new()
-        // Auth
         .route("/api/v1/auth/exchange", post(auth::exchange))
         .route("/api/v1/auth/refresh", post(auth::refresh))
         .route("/api/v1/auth/logout", post(auth::logout))
         .route("/api/v1/auth/me", get(auth::me))
         .route("/api/v1/auth/me/avatar", get(auth::me_avatar))
-        // Streaming & Playback
         .route(
             "/api/v1/tracks/{id}/playback",
             get(streaming::issue_playback_ticket),
         )
-        .route(
-            "/api/v1/tracks/{id}/stream",
-            get(streaming::stream_handler),
-        )
+        .route("/api/v1/tracks/{id}/stream", get(streaming::stream_handler))
         .route("/api/v1/ws/sync", get(playback_sync::ws_handler))
-        // TODO: Switch to QUERY once Axum releases QUERY method routing.
         .route("/api/v1/lookup", post(lookup::lookup))
         .nest("/api/v1/integrations/lastfm", integrations::lastfm_router())
         .nest(
             "/api/v1/integrations/listenbrainz",
             integrations::listenbrainz_router(),
         )
-        // Scalar UI & OpenAPI Docs
         .route("/api/v1/docs", get(docs::scalar_html))
         .route("/api/v1/docs.json", get(docs::openapi_json))
         .route("/api/v1/docs.yaml", get(docs::openapi_yaml))
         .route("/api/v1/docs-ws.json", get(docs::asyncapi_json))
-        // Intent Gateway
         .route("/open", get(gateway::open_gateway))
-        // Health & Telemetry
         .route("/api/v1/health", get(health::health_check))
         .route("/api/v1/status", get(health::status_report))
         .layer(TraceLayer::new_for_http())

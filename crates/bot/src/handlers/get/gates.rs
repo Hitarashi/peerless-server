@@ -1,6 +1,3 @@
-//! `/get` policy gates. Strings intentionally remain literals: they are part
-//! of the Telegram API of the bot .
-
 use engine::{settings::BotSettings, types::ParsedTargetItem};
 
 pub const CACHE_RESTRICTED: &str = "! <b>Access restricted</b><br/>Caching directly to the dump channel is restricted to the bot owner.";
@@ -23,7 +20,6 @@ pub fn force_gate(force: bool, is_admin: bool) -> Option<&'static str> {
     (force && !is_admin).then_some(FORCE_RESTRICTED)
 }
 
-/// Returns the first feature gate which fails, preserving the ordering.
 pub fn feature_gate(
     settings: &BotSettings,
     items: &[ParsedTargetItem],

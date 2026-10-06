@@ -1,5 +1,3 @@
-//! Mirror discovery, health verification, caching, and circuit breaking.
-
 use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -10,7 +8,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::mirror_http::{CHROME_USER_AGENT, MirrorHttp, MirrorHttpError};
 
-/// The decoded manifest URL used by the TypeScript implementation.
 pub const MANIFEST_URL: &str =
     "https://gist.githubusercontent.com/ManOfInfinity/ec6db79f031d58640c84b225c4c78cab/raw";
 
@@ -30,7 +27,6 @@ pub enum MirrorError {
     Json(#[from] serde_json::Error),
 }
 
-/// The synchronous part of mirror policy used by stream failover.
 pub trait MirrorPolicy: Send + Sync {
     fn record_failure(&self, error: &str);
     fn record_success(&self);
@@ -51,21 +47,17 @@ struct Failure {
     error: String,
 }
 
-/// Mirror policy over an injectable text HTTP adapter.
 pub struct MirrorPolicyManager<H: MirrorHttp> {
     http: H,
     env_override: Option<(String, String)>,
     failure_cooldown: Duration,
     cache_ttl: Duration,
     health_timeout: Duration,
-    /// Cloned managers share circuit/cache state: a health probe observes
-    /// the same endpoint the ripper resolves (and vice versa).
+
     state: Arc<Mutex<PolicyState>>,
 }
 
 impl<H: MirrorHttp> MirrorPolicyManager<H> {
-    /// Clone that shares circuit/cache state with the original. Config and
-    /// the HTTP adapter are copied; they are immutable after construction.
     pub fn shared(&self) -> Self
     where
         H: Clone,
@@ -110,7 +102,6 @@ impl<H: MirrorHttp> MirrorPolicyManager<H> {
         }
     }
 
-    /// The adapter is exposed for offline tests and diagnostics.
     pub fn http(&self) -> &H {
         &self.http
     }
@@ -147,7 +138,6 @@ impl<H: MirrorHttp> MirrorPolicyManager<H> {
         force_refresh: bool,
         signal: Option<CancellationToken>,
     ) -> Result<MirrorEndpoint, MirrorError> {
-        // An empty mirror URL or key means "not configured".
         if let Some((mirror_url, api_key)) = &self.env_override
             && !mirror_url.is_empty()
             && !api_key.is_empty()
@@ -200,8 +190,6 @@ impl<H: MirrorHttp> MirrorPolicyManager<H> {
             }
         };
 
-        // Deliberately outside the request error mapping: malformed manifest
-        // JSON propagates and, as in TS, does not open the circuit.
         let manifest: Manifest = serde_json::from_str(&manifest_body)?;
         let mirror = manifest
             .source
@@ -263,8 +251,6 @@ impl<H: MirrorHttp> MirrorPolicyManager<H> {
             }
         };
 
-        // /status has the opposite JSON behavior from the manifest: malformed
-        // JSON is treated exactly like an empty object.
         let status: Status = serde_json::from_str(&status_body).unwrap_or_default();
         if status.wrapper_lossless_available == Some(false)
             || status.wrapper_instances.as_ref().is_some_and(Vec::is_empty)

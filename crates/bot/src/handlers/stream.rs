@@ -1,5 +1,3 @@
-//! `/stream` command — generates single-use OTP and native app connection links.
-
 use std::sync::Arc;
 
 use ferogram::{
@@ -51,8 +49,6 @@ pub async fn stream_command(state: Arc<BotState>, msg: ferogram::update::Incomin
         return;
     }
 
-    // Warm Telegram's peer cache so the authenticated profile API can resolve
-    // this user's current name and profile photo after the OTP is exchanged.
     if let Err(error) = msg.sender_user().await {
         tracing::warn!(user_id = sender, error = %error, "could not resolve Telegram profile for /stream");
     }
@@ -184,7 +180,6 @@ pub async fn handle_admin_url_config(
         );
     }
 
-    // Immediately invoke stream_command to deliver the login button!
     stream_command(state, msg).await;
     true
 }

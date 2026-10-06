@@ -1,7 +1,3 @@
-//! Input handling for the `/get` command.
-//!
-//! Parses Apple Music links, Telegram replies, and text documents.
-
 use std::{
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
@@ -30,7 +26,6 @@ pub fn has_force_token(text: &str) -> bool {
 }
 
 pub fn parse_text(text: &str, reply: Option<&str>, force_override: bool) -> Option<ParsedCommand> {
-    // Check for direct Apple Music links.
     if let Some(direct) = parse_alac_input(text, None)
         && !direct.items.is_empty()
     {
@@ -47,7 +42,6 @@ pub fn parse_text(text: &str, reply: Option<&str>, force_override: bool) -> Opti
         });
     }
 
-    // Check the replied-to message for an Apple Music link.
     if let Some(reply_text) = reply
         && let Some(parsed) = parse_alac_input(text, Some(reply_text))
     {
@@ -74,22 +68,12 @@ fn temp_path() -> PathBuf {
     std::env::temp_dir().join(format!("batch_{stamp}.txt"))
 }
 
-/// Parse a command, resolving a replied-to message and an attached `.txt`
-/// document. Failed document downloads deliberately fall back to normal text,
-/// just as the live bot does.
-///
-/// `chat_id` is the Bot-API marked chat id (negative for channels/supergroups).
-/// It is used to prime the peer cache before fetching the reply message, so
-/// `channels.getMessages` works even immediately after a fresh bot start.
 pub async fn parse_message(
     client: &ferogram::Client,
     message: &IncomingMessage,
     chat_id: i64,
     force_override: bool,
 ) -> ParsedCommand {
-    // Prime the peer cache for this chat so channels.getMessages has a valid
-    // access_hash. On a cache hit this is a no-op (just a local map read);
-    // on a cache miss (fresh start) it does one cheap RPC to fetch the chat.
     if message.reply_to_message_id().is_some()
         && let Err(e) = client.resolve(ferogram::PeerRef::Id(chat_id)).await
     {

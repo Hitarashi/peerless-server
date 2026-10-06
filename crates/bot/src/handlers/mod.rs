@@ -30,8 +30,6 @@ use ferogram::{
 
 use crate::{BotState, interaction::TelegramAction};
 
-/// Bot-API marked group id (-100...) -> t.me/c/ link segment, matching the
-/// string-slice semantics.
 pub(crate) fn group_link_segment(marked_id: i64) -> String {
     let s = marked_id.to_string();
     s.strip_prefix("-100")
@@ -39,10 +37,6 @@ pub(crate) fn group_link_segment(marked_id: i64) -> String {
         .to_owned()
 }
 
-/// Bot-API "marked" peer id for storage and lookups: users stay positive,
-/// basic groups are -chat_id, channels/supergroups are -(1e12 + channel_id).
-/// Matches the id the Telegram library reports as chat.id, which is what the
-/// users table stores.
 pub(crate) fn marked_peer_id(peer: &ferogram::tl::enums::Peer) -> i64 {
     use ferogram::tl::enums::Peer;
     match peer {
@@ -52,28 +46,16 @@ pub(crate) fn marked_peer_id(peer: &ferogram::tl::enums::Peer) -> i64 {
     }
 }
 
-/// Marked chat id for a message's chat, in the storage/DB format.
-/// `msg.chat_id()` returns RAW TL ids (positive for channels), which is a
-/// different format — never mix the two.
 pub(crate) fn marked_chat_id(msg: &ferogram::update::IncomingMessage) -> i64 {
-    msg.peer_id()
-        .map(marked_peer_id)
-        // Peerless updates have no chat; 0 preserves prior behavior.
-        .unwrap_or_default()
+    msg.peer_id().map(marked_peer_id).unwrap_or_default()
 }
 
-/// Chat peer for sends/edits, derived from the message's TL peer so channel
-/// and group ids resolve correctly (PeerRef::from(i64) expects marked ids).
 pub(crate) fn chat_peer_ref(msg: &ferogram::update::IncomingMessage) -> ferogram::PeerRef {
     msg.peer_id()
         .map(|peer| ferogram::PeerRef::Peer(peer.clone()))
-        // Fallback mirrors prior behavior for peerless updates.
         .unwrap_or(ferogram::PeerRef::from(msg.chat_id()))
 }
 
-/// Open or refresh the single status dashboard owned by a chat. Get commands
-/// and callback-driven deliveries share this helper so neither path can
-/// accidentally create a per-job progress message or deliver into a group.
 pub(crate) async fn ensure_dashboard(
     state: &Arc<BotState>,
     chat: i64,
@@ -96,7 +78,6 @@ pub(crate) async fn ensure_dashboard(
     }
 }
 
-/// Shared dashboard sink factory for event-driven recovery paths.
 pub(crate) fn dashboard_sink(
     client: ferogram::Client,
     peer: ferogram::PeerRef,
@@ -104,8 +85,6 @@ pub(crate) fn dashboard_sink(
     status::dashboard_sink(client, peer)
 }
 
-/// Peer link: @name -> t.me link,
-/// user id -> tg://user, group/channel id -> t.me/c/ link.
 pub(crate) fn peer_link(name: &str, id: i64) -> String {
     if let Some(username) = name.strip_prefix('@') {
         format!("https://t.me/{username}")

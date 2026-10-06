@@ -1,8 +1,3 @@
-//! `/stats` — renders the Peerless analytics dashboard.
-//!
-//! Bot-owner only. Aggregates cache/storage counters, average retrieval and
-//! rip latencies, and the most-requested tracks.
-
 use std::sync::Arc;
 
 use ferogram::{InputMessage, filters, filters::Dispatcher};
@@ -12,68 +7,10 @@ use crate::{BotState, html::parse_dynamic_html};
 const RESTRICTED: &str =
     "🔒 <b>Access Restricted:</b> This command is restricted to the bot owner.";
 
-fn format_duration_ms(ms: i64) -> String {
-    if ms <= 0 {
-        return "0ms".to_owned();
-    }
-    if ms < 1_000 {
-        return format!("{ms}ms");
-    }
-    if ms < 60_000 {
-        let tenths = (ms + 50) / 100;
-        return format!("{}.{:01}s", tenths / 10, tenths % 10);
-    }
-    let minutes = ms / 60_000;
-    let seconds = ((ms % 60_000) as f64 / 1_000.0).round() as i64;
-    format!("{minutes}m {seconds}s")
-}
-
 fn format_stats_html(stats: &db::AlacStats) -> String {
-    let top_tracks = if stats.top_tracks.is_empty() {
-        "<i>No completed requests yet</i>".to_owned()
-    } else {
-        stats
-            .top_tracks
-            .iter()
-            .filter(|track| track.track_key.provider == music::Provider::Apple)
-            .enumerate()
-            .map(|(index, track)| {
-                let url = format!("https://music.apple.com/song/{}", track.track_key.track_id);
-                let display_text = match (&track.title, &track.artist) {
-                    (Some(title), Some(artist)) if !title.is_empty() && !artist.is_empty() => {
-                        format!(
-                            "{} — {}",
-                            crate::html::escape(title),
-                            crate::html::escape(artist)
-                        )
-                    }
-                    (Some(title), _) if !title.is_empty() => crate::html::escape(title),
-                    _ => format!(
-                        "<code>{}</code>",
-                        crate::html::escape(&track.track_key.track_id)
-                    ),
-                };
-                format!(
-                    "{}. <a href=\"{url}\">{display_text}</a> — <b>{}</b> request{}",
-                    index + 1,
-                    track.request_count,
-                    if track.request_count > 1 { "s" } else { "" }
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("<br/>")
-    };
-
     format!(
-        "<b>📊 Peerless Analytics</b><br/><br/><blockquote><b>📦 Storage & Caching</b><br/>• Cached Apple Tracks: <code>{}</code><br/>• Total Apple Requests: <code>{}</code><br/>• Cache Hit Ratio: <b>{}%</b> (<code>{}</code> hits / <code>{}</code> misses)<br/>• Failed Requests: <code>{}</code></blockquote><br/><blockquote><b>⚡ Latency Averages</b><br/>• Cache Retrieval: <code>{}</code><br/>• Mirror Rip Time: <code>{}</code></blockquote><br/><blockquote><b>🔥 Top Requested Tracks</b><br/>{top_tracks}</blockquote>",
+        "<b>📊 Peerless Analytics</b><br/><br/><blockquote><b>📦 Storage & Caching</b><br/>• Cached Apple Tracks: <code>{}</code></blockquote>",
         stats.total_cached_tracks,
-        stats.total_requests,
-        stats.cache_hit_ratio,
-        stats.cache_hits,
-        stats.cache_misses,
-        stats.total_failed_requests,
-        format_duration_ms(stats.avg_cache_duration_ms),
-        format_duration_ms(stats.avg_rip_duration_ms),
     )
 }
 
@@ -110,41 +47,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn duration_renders_zero_as_empty() {
-        assert_eq!(format_duration_ms(0), "0ms");
-    }
-
-    #[test]
-    fn duration_renders_seconds() {
-        assert_eq!(format_duration_ms(1_250), "1.3s");
-    }
-
-    #[test]
-    fn duration_renders_minutes() {
-        assert_eq!(format_duration_ms(61_500), "1m 2s");
-    }
-
-    #[test]
     fn stats_card_renders_expected_text() {
         let stats = db::AlacStats {
             total_cached_tracks: 2,
-            total_requests: 2,
-            cache_hits: 1,
-            cache_misses: 1,
-            cache_hit_ratio: 50.0,
-            avg_rip_duration_ms: 1_250,
-            avg_cache_duration_ms: 12,
-            total_failed_requests: 1,
-            top_tracks: vec![db::TopTrackStat {
-                track_key: engine::TrackKey::apple("123"),
-                title: Some("Song Title".to_owned()),
-                artist: Some("Artist Name".to_owned()),
-                request_count: 2,
-            }],
         };
         assert_eq!(
             format_stats_html(&stats),
-            "<b>📊 Peerless Analytics</b><br/><br/><blockquote><b>📦 Storage & Caching</b><br/>• Cached Apple Tracks: <code>2</code><br/>• Total Apple Requests: <code>2</code><br/>• Cache Hit Ratio: <b>50%</b> (<code>1</code> hits / <code>1</code> misses)<br/>• Failed Requests: <code>1</code></blockquote><br/><blockquote><b>⚡ Latency Averages</b><br/>• Cache Retrieval: <code>12ms</code><br/>• Mirror Rip Time: <code>1.3s</code></blockquote><br/><blockquote><b>🔥 Top Requested Tracks</b><br/>1. <a href=\"https://music.apple.com/song/123\">Song Title — Artist Name</a> — <b>2</b> requests</blockquote>"
+            "<b>📊 Peerless Analytics</b><br/><br/><blockquote><b>📦 Storage & Caching</b><br/>• Cached Apple Tracks: <code>2</code></blockquote>"
         );
     }
 }

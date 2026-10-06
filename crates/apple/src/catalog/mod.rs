@@ -1,9 +1,3 @@
-//! Lyricsporn-backed Apple Music catalog client.
-//!
-//! Audio acquisition remains in the Apple wrapper and mirror modules. All
-//! catalog metadata and search requests go through Lyricsporn, so this crate
-//! never scrapes an Apple developer token or calls Apple's catalog endpoints.
-
 mod cache;
 mod transport;
 
@@ -24,11 +18,8 @@ const COLLECTION_TIMEOUT: Duration = Duration::from_secs(30);
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(15);
 const COLLECTION_PAGE_SIZE: usize = 100;
 
-/// Regional storefronts tried after `us` in the fallback chain, in order.
 pub const REGIONAL_STOREFRONTS: [&str; 7] = ["jp", "gb", "in", "ca", "de", "fr", "au"];
 
-/// Catalog lookup failures. `Message` carries user-facing text from the
-/// provider boundary; transport and JSON errors retain their source.
 #[derive(Debug, thiserror::Error)]
 pub enum CatalogError {
     #[error("{0}")]
@@ -39,7 +30,6 @@ pub enum CatalogError {
     Json(#[from] serde_json::Error),
 }
 
-/// Re-point an artwork URL at a different square size.
 pub fn artwork_url_at_size(url: &str, size: u16) -> String {
     format_artwork_url(url, size)
 }
@@ -170,7 +160,6 @@ impl TrackContext {
     }
 }
 
-/// Catalog client over Lyricsporn, with a TTL cache and storefront fallback.
 pub struct Catalog<T: Transport> {
     transport: T,
     api_endpoint: engine::settings::LyricspornApiEndpoint,
@@ -216,7 +205,6 @@ impl<T: Transport> Catalog<T> {
         }
     }
 
-    /// Cache capacity.
     pub fn capacity(&self) -> usize {
         self.max_cache
     }
@@ -225,7 +213,6 @@ impl<T: Transport> Catalog<T> {
         self.cache.lock().expect("cache mutex poisoned").clear();
     }
 
-    /// Shared handle to the transport — useful to inspect requests.
     pub fn transport(&self) -> &T {
         &self.transport
     }
@@ -291,8 +278,7 @@ impl<T: Transport> Catalog<T> {
             COLLECTION_PAGE_SIZE
         );
         let mut items = Vec::new();
-        // The API caps collection offsets at 10,000. The page count bound also
-        // protects against a malformed `next` link repeating forever.
+
         for _ in 0..101 {
             let body = self
                 .get_json(&url, COLLECTION_TIMEOUT, "catalog collection")
@@ -493,7 +479,6 @@ impl<T: Transport> Catalog<T> {
         })
     }
 
-    /// Resolve one Apple Music track ID through Lyricsporn.
     pub async fn fetch_track_meta(
         &self,
         track_id: &str,
@@ -539,7 +524,6 @@ impl<T: Transport> Catalog<T> {
         )))
     }
 
-    /// Resolve an album and its ordered track list through Lyricsporn.
     pub async fn fetch_album_tracks(
         &self,
         album_id: &str,
@@ -574,7 +558,6 @@ impl<T: Transport> Catalog<T> {
         }))
     }
 
-    /// Resolve all album tracks for an artist through Lyricsporn.
     pub async fn fetch_artist_tracks(
         &self,
         artist_id: &str,
@@ -611,7 +594,6 @@ impl<T: Transport> Catalog<T> {
         }))
     }
 
-    /// Resolve an artist's album IDs through Lyricsporn.
     pub async fn fetch_artist_album_ids(
         &self,
         artist_id: &str,
@@ -680,8 +662,6 @@ impl<T: Transport> Catalog<T> {
             .collect())
     }
 
-    /// Search songs through Lyricsporn. Provider/network failures degrade to
-    /// an empty result so the Telegram command can still show cached tracks.
     pub async fn search_catalog(
         &self,
         term: &str,
@@ -909,5 +889,4 @@ fn map_album(
     }
 }
 
-/// Production catalog handle shared across handlers/worker tasks.
 pub type SharedCatalog = Arc<Catalog<ReqwestTransport>>;

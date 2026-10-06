@@ -1,21 +1,3 @@
-//! Listening test: rip a real track through every quality path and save
-//! each as a separate file so they can be auditioned side by side.
-//!
-//! For each track ID this downloads:
-//!   - `<id>_default_<codec>.m4a` — highest available quality
-//!     (FairPlay ALAC when lossless exists, else Widevine CENC AAC)
-//!   - `<id>_atmos_<codec>.m4a`  — Dolby Atmos (ec-3) when offered,
-//!     otherwise the same highest-quality fallback (skipped as a
-//!     duplicate when it matches the default rip's codec)
-//!
-//! Usage:
-//!   cargo run -p apple --example listen_test -- [outdir] [trackId...]
-//!
-//! Defaults: outdir `/tmp/opencode/listen`, tracks `1499378607`
-//! (ALAC + Atmos capable) and `1561413895` (no lossless → CENC AAC).
-//! Wrapper URL comes from `ALAC_WRAPPER_URL` (default
-//! `http://localhost:12340`).
-
 use apple::wrapper::{CodecPreference, WrapperEngine};
 use engine::streaming::{ProgressCallback, StreamError};
 
@@ -26,10 +8,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let track_ids: Vec<String> = {
         let ids: Vec<String> = args.collect();
         if ids.is_empty() {
-            vec![
-                "1499378607".to_owned(), // lossless + Atmos (ec-3)
-                "1561413895".to_owned(), // no lossless → CENC AAC
-            ]
+            vec!["1499378607".to_owned(), "1561413895".to_owned()]
         } else {
             ids
         }
@@ -57,18 +36,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match default {
             Ok(Some((path, codec))) => {
                 results.push(format!("{track_id}  default  {codec:<10} {path}"));
-                // Atmos preference only produces a new file when the track
-                // actually offers an ec-3 variant; otherwise the fallback
-                // duplicates the default rip.
+
                 if codec != "ec-3" {
                     match rip_one(&engine, track_id, CodecPreference::Atmos, "atmos", &out_dir)
                         .await
                     {
                         Ok(Some((atmos_path, atmos_codec))) => {
-                            // A track with no Atmos variant falls back to the
-                            // same stream the default rip produced (equal
-                            // codec); drop the duplicate instead of keeping
-                            // two identical files.
                             if atmos_codec == codec {
                                 let _ = std::fs::remove_file(&atmos_path);
                             } else {
@@ -95,8 +68,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Rip one preference and write it out. `Ok(None)` means the stream was
-/// empty (nothing written).
 async fn rip_one(
     engine: &WrapperEngine,
     track_id: &str,

@@ -1,34 +1,29 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-/// Request payload to trigger an on-demand provider ripping job.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct RipTaskRequest {
-    /// Music provider name. This server accepts Apple Music only.
     #[schema(example = "apple")]
     pub provider: String,
-    /// Provider-native track identifier.
+
     #[schema(example = "1440857781")]
     pub track_id: String,
-    /// Desired codec (`alac`, `ec-3`, `flac`, or `aac`); unsupported values fall back to `alac`.
+
     #[schema(example = "alac")]
     pub codec: Option<String>,
-    /// Display metadata retained by the server for task recovery.
+
     pub title: Option<String>,
     pub artist: Option<String>,
     pub album: Option<String>,
     pub duration: Option<i32>,
-    /// Artwork URL supplied by the client, when it already has one.
+
     pub artwork_url: Option<String>,
 }
 
-/// Thread-safe active task metadata stored in `ServerState::active_tasks`.
 #[derive(Debug, Clone)]
 pub struct ServerTaskMeta {
     pub task_id: String,
-    /// Id of the engine rip task backing this record. Empty until the
-    /// orchestrator assigns one; `task_id` and this are minted separately
-    /// because an app request is reserved before its rip task exists.
+
     pub rip_task_id: String,
     pub owner_id: i64,
     pub provider: music::Provider,
@@ -79,7 +74,6 @@ impl ServerTaskMeta {
     }
 }
 
-/// Server-owned active task state returned to clients on reconnect and app startup.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct RipTaskSnapshot {
     pub task_id: String,
@@ -89,16 +83,16 @@ pub struct RipTaskSnapshot {
     pub artist: Option<String>,
     pub album: Option<String>,
     pub duration: Option<i32>,
-    /// Latest known task artwork, initially from request metadata and then from rip progress.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artwork_url: Option<String>,
-    /// Optional orchestration activity that may coexist with either lane.
+
     pub job_stage: Option<RipTaskJobStage>,
-    /// Download/materialization progress, independent of the upload lane.
+
     pub download: Option<RipTaskDownloadLane>,
-    /// The single upload lane; uploads are serialized by the orchestrator.
+
     pub upload: Option<RipTaskUploadLane>,
-    /// Overall album/task progress. Lane percentages are the phase-local progress values.
+
     pub percent: Option<f32>,
     pub result_track_id: Option<i32>,
     pub is_cached: Option<bool>,
@@ -125,112 +119,102 @@ pub struct RipTaskSnapshot {
     pub failed_tracks: Option<u32>,
 }
 
-/// Orchestration activity that may coexist with either byte-oriented lane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RipTaskJobStage {
-    /// Resolving the requested job or its track metadata.
     Resolving,
-    /// Looking up requested tracks in the local cache before media work begins.
+
     CheckingCache,
-    /// Waiting for a position in the orchestrator's work queue.
+
     Queued,
-    /// Skipping a requested track because it is unavailable in cache-only mode.
+
     SkippingUncached,
-    /// Reusing and delivering a track that was already cached.
+
     CachedDelivered,
-    /// Advancing to the next item in a multi-track job.
+
     ProcessingNext,
-    /// Waiting for another in-flight job that owns the same requested work.
+
     WaitingDuplicate,
 }
 
-/// Stable download-lane stage vocabulary, serialized in snake_case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RipTaskDownloadStage {
-    /// Resolve provider metadata needed to identify the source track.
     ResolvingMetadata,
-    /// Establish the provider connection before receiving source bytes.
+
     Connecting,
-    /// Receive source audio bytes from the provider.
+
     Downloading,
-    /// Decrypt the downloaded source audio after transfer completes.
+
     Decrypting,
-    /// Write metadata/tags into the downloaded audio file.
+
     Tagging,
-    /// Reuse a cached track for the current delivery or archive item.
+
     CachedDelivery,
-    /// Download an already-cached Telegram media object into the local archive workspace.
+
     MaterializingCachedMedia,
 }
 
-/// Stable upload-lane stage vocabulary, serialized in snake_case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RipTaskUploadStage {
-    /// Send one processed track to Telegram.
     UploadingTrack,
-    /// Build the album ZIP archive from its processed track files.
+
     BuildingArchive,
-    /// Send the completed album ZIP archive to Telegram.
+
     UploadingArchive,
 }
 
-/// Structured progress for the independent download lane.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct RipTaskDownloadLane {
-    /// Current phase in the download/cache-materialization pipeline.
     pub stage: RipTaskDownloadStage,
-    /// Track title associated with this lane, when known.
+
     pub title: Option<String>,
-    /// Track artist associated with this lane, when known.
+
     pub artist: Option<String>,
-    /// Artwork URL associated with this lane's track, when known.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artwork_url: Option<String>,
-    /// Bytes processed so far. Null when the activity has no byte counter.
+
     pub bytes_done: Option<u64>,
-    /// Expected byte total. Null when the total is unknown or the activity has no byte counter.
+
     pub bytes_total: Option<u64>,
-    /// Percentage within this lane's current phase; null when the total is unknown.
+
     pub percent: Option<f32>,
-    /// Audio codec associated with this lane, when known.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codec: Option<String>,
-    /// 1-based index of the track within the album currently being processed in this lane.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub track_index: Option<u32>,
-    /// Total tracks in the album being processed in this lane.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_tracks: Option<u32>,
 }
 
-/// Structured progress for the one serialized upload lane.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct RipTaskUploadLane {
-    /// Current phase in the Telegram upload/archive pipeline.
     pub stage: RipTaskUploadStage,
-    /// Track or archive title associated with this lane, when known.
+
     pub title: Option<String>,
-    /// Track artist associated with this lane, when known.
+
     pub artist: Option<String>,
-    /// Artwork URL associated with this lane's track, when known.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artwork_url: Option<String>,
-    /// Bytes processed so far. Null when the activity has no byte counter.
+
     pub bytes_done: Option<u64>,
-    /// Expected byte total. Null when the total is unknown or the activity has no byte counter.
+
     pub bytes_total: Option<u64>,
-    /// Percentage within this lane's current phase; null when the total is unknown.
+
     pub percent: Option<f32>,
-    /// Audio codec associated with this lane, when known.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codec: Option<String>,
-    /// 1-based index of the track within the album currently being processed in this lane.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub track_index: Option<u32>,
-    /// Total tracks in the album being processed in this lane.
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_tracks: Option<u32>,
 }
@@ -250,7 +234,6 @@ pub struct RipTaskProgress {
     pub failed_tracks: Option<u32>,
 }
 
-/// Derive a phase-local percentage without inventing a value for an unknown or zero total.
 pub fn lane_percent(bytes_done: Option<u64>, bytes_total: Option<u64>) -> Option<f32> {
     let (Some(done), Some(total)) = (bytes_done, bytes_total.filter(|total| *total > 0)) else {
         return None;
@@ -258,7 +241,6 @@ pub fn lane_percent(bytes_done: Option<u64>, bytes_total: Option<u64>) -> Option
     Some((done as f32 / total as f32) * 100.0)
 }
 
-/// Internal notification forwarded to authenticated playback WebSocket clients.
 #[derive(Debug, Clone)]
 pub enum TaskSyncEvent {
     Updated { task_id: String },

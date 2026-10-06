@@ -1,15 +1,3 @@
-//! Mirror health for the status dashboard .
-//!
-//! The dashboard header shows the *last known* mirror state. Probing is
-//! explicit (`/status` open/refresh and terminal job refreshes); there is no
-//! background poller, so an unreachable mirror never floods the transport.
-//!
-//! The probe reuses Apple's `MirrorPolicyManager` endpoint resolution
-//! (manifest + `/status` + wrapper availability) and adds a lightweight HEAD
-//! reachability check against the resolved mirror URL, mirroring the TS
-//! `HEAD mirrorUrl` probe. Both layers are behind one trait so tests run
-//! offline.
-
 use std::{
     sync::{Arc, OnceLock, RwLock},
     time::{Duration, Instant},
@@ -17,14 +5,12 @@ use std::{
 
 use apple::{MirrorEndpoint, MirrorError, MirrorHttp, MirrorPolicyManager};
 
-/// One health observation. `label` matches the mirrorStatus strings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MirrorHealth {
     Online,
     Unreachable,
     Unavailable,
-    /// Mirror is not configured (no manifest env override and resolution
-    /// failed before any endpoint was known).
+
     NotConfigured,
 }
 
@@ -39,23 +25,16 @@ impl MirrorHealth {
     }
 }
 
-/// Result of one probe: health + latency in milliseconds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HealthReport {
     pub health: MirrorHealth,
     pub latency_ms: u64,
 }
 
-/// The transport seam: resolve the mirror endpoint and HEAD it. Production
-/// uses the engine's real policy manager + reqwest; tests use fakes.
 pub trait MirrorHealthProbe: Send + Sync {
-    /// Resolve + probe. `Ok(report)` always — health is data, not an error.
     fn probe(&self) -> futures_util::future::BoxFuture<'_, HealthReport>;
 }
 
-/// Production probe over the engine policy manager shared with the ripper.
-/// The 4s ceiling is the policy manager's health timeout (the oracles
-/// HEAD probe timeout), so no separate field is needed.
 pub struct PolicyProbe<H: MirrorHttp> {
     policy: MirrorPolicyManager<H>,
 }
@@ -75,9 +54,6 @@ impl<H: MirrorHttp> MirrorHealthProbe for PolicyProbe<H> {
             let resolve_ms = started.elapsed().as_millis() as u64;
             match endpoint {
                 Ok(_) => {
-                    // The policy manager already verified manifest + /status
-                    // + wrapper availability; a successful resolution IS the
-                    // health signal (equivalent to the HEAD probe).
                     self.policy.record_success();
                     HealthReport {
                         health: MirrorHealth::Online,
@@ -90,11 +66,7 @@ impl<H: MirrorHttp> MirrorHealthProbe for PolicyProbe<H> {
                         MirrorError::Message(message) if message.contains("not configured") => {
                             MirrorHealth::NotConfigured
                         }
-                        // distinguishes fetch-failure (Unreachable) from
-                        // thrown errors (Unavailable); the engine folds both
-                        // into Message/Json — a resolved endpoint that fails
-                        // its status check is Unavailable, transport noise is
-                        // Unreachable.
+
                         MirrorError::Message(message)
                             if message.contains("timed out")
                                 || message.contains("HTTP")
@@ -114,17 +86,12 @@ impl<H: MirrorHttp> MirrorHealthProbe for PolicyProbe<H> {
     }
 }
 
-/// Last-known cache feeding the dashboard header. Probes update it; renders
-/// only read it. `None` renders as `unknown`.
 #[derive(Debug, Default)]
 pub struct LastKnownHealth {
     report: RwLock<Option<HealthReport>>,
     probed_at: RwLock<Option<Instant>>,
 }
 
-/// Observations older than this fall back to the last-known value anyway
-/// (there is no background refresh), so the TTL only guards against a
-/// stale-but-successful probe racing a render.
 const FRESH_WINDOW: Duration = Duration::from_secs(30);
 
 impl LastKnownHealth {
@@ -137,9 +104,6 @@ impl LastKnownHealth {
         *self.probed_at.write().expect("health poisoned") = Some(Instant::now());
     }
 
-    /// Last-known label for the dashboard header: `None` before the first
-    /// probe (renders `unknown`), otherwise the most recent observation
-    /// regardless of age (a "last-known only" contract).
     pub fn label(&self) -> Option<&'static str> {
         self.report
             .read()
@@ -148,8 +112,6 @@ impl LastKnownHealth {
             .map(|report| report.health.label())
     }
 
-    /// Whether the last observation is recent enough to reuse without a
-    /// fresh probe (dashboard renders call this before probing).
     pub fn is_fresh(&self) -> bool {
         self.probed_at
             .read()

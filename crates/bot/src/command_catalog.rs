@@ -1,5 +1,3 @@
-//! Single source of truth for command discovery.
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandRole {
     User,

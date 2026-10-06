@@ -12,11 +12,11 @@ Pipeline:
   5. Print backend URLs / API keys. Optionally health-test the backends (--test).
 
 Usage (run from the repository root):
-  python3 tools/lastwave.py                    # download latest release APK
-  python3 tools/lastwave.py path/to/app.apk    # use local APK
-  python3 tools/lastwave.py --test             # after extraction, GET each backend root
-  python3 tools/lastwave.py --smali dir/       # skip apktool, use existing decompile
-  python3 tools/lastwave.py --keep             # keep temp working dir
+  python3 tools/lastwave.py
+  python3 tools/lastwave.py path/to/app.apk
+  python3 tools/lastwave.py --test
+  python3 tools/lastwave.py --smali dir/
+  python3 tools/lastwave.py --keep
 """
 
 import argparse
@@ -31,17 +31,14 @@ import urllib.request
 
 GITHUB_API = "https://api.github.com/repos/Clash-Projects/LastWave-native/releases/latest"
 MASK_FIELD = "SECRET_MASK_BYTES"
-# Known meaningful field name fragments (informational only; all [B fields are decoded)
 PAIRS = [
     ("LOSSLESS_BACKEND_URL_BYTES", "LOSSLESS_API_KEY_BYTES"),
     ("BACKEND_B_URL_BYTES", "BACKEND_B_KEY_BYTES"),
 ]
 
-
 def fail(msg: str) -> None:
     print(f"error: {msg}", file=sys.stderr)
     sys.exit(1)
-
 
 def http_get(url: str, dest: str | None = None, timeout: int = 60) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": "extract-backend/1.0"})
@@ -52,12 +49,10 @@ def http_get(url: str, dest: str | None = None, timeout: int = 60) -> bytes:
             f.write(data)
     return data
 
-
 def download_latest_apk(workdir: str) -> str:
     print(f"[1/4] fetching latest release info\n      {GITHUB_API}")
     rel = json.loads(http_get(GITHUB_API))
     assets = rel.get("assets", [])
-    # Prefer the plain "release" variant; skip android7 / raw builds.
     apks = [a for a in assets if a["name"].lower().endswith(".apk")]
     if not apks:
         fail("no .apk assets in latest release")
@@ -69,7 +64,6 @@ def download_latest_apk(workdir: str) -> str:
     print(f"      downloading {chosen['name']} ({chosen['size'] // 1_000_000} MB)")
     http_get(chosen["browser_download_url"], dest, timeout=300)
     return dest
-
 
 def decompile(apk: str, workdir: str) -> str:
     if not shutil.which("apktool"):
@@ -85,9 +79,7 @@ def decompile(apk: str, workdir: str) -> str:
         fail(f"apktool failed:\n{r.stderr[-2000:]}")
     return out
 
-
 def find_buildconfig(smali_dir: str) -> str:
-    # Locate the app's BuildConfig.smali that carries the secret mask.
     for root, _dirs, files in os.walk(smali_dir):
         for fn in files:
             if fn != "BuildConfig.smali":
@@ -101,8 +93,7 @@ def find_buildconfig(smali_dir: str) -> str:
             if MASK_FIELD in head:
                 return path
     fail(f"BuildConfig containing {MASK_FIELD} not found under {smali_dir}")
-    return ""  # unreachable
-
+    return ""
 
 def parse_array_bytes(smali: str, label: str) -> list[int]:
     m = re.search(
@@ -113,13 +104,12 @@ def parse_array_bytes(smali: str, label: str) -> list[int]:
         fail(f"array data for :{label} not found")
     vals = []
     for tok in m.group(1).split():
-        tok = tok.rstrip(",").rstrip("t")  # tolerate trailing commas / 't' byte suffix
+        tok = tok.rstrip(",").rstrip("t")
         try:
             vals.append(int(tok, 16) if "x" in tok.lower() else int(tok))
         except ValueError:
             continue
     return [v & 0xFF for v in vals]
-
 
 def parse_buildconfig(path: str) -> dict[str, object]:
     print(f"[3/4] parsing {path}")
@@ -128,11 +118,9 @@ def parse_buildconfig(path: str) -> dict[str, object]:
 
     fields: dict[str, object] = {}
 
-    # Constant field initializers: .field ... NAME:TYPE = "value"
     for m in re.finditer(r'^\.field\s+[^=]*?(\w+):[^=]*=\s*"([^"]*)"', smali, re.M):
         fields[m.group(1)] = m.group(2)
 
-    # <clinit>: track register -> array label, bind on sput-object
     clinit = re.search(r"\.method[^}]*<clinit>.*?\.end method", smali, re.S)
     if not clinit:
         fail("no <clinit> in BuildConfig")
@@ -161,10 +149,8 @@ def parse_buildconfig(path: str) -> dict[str, object]:
 
     return fields
 
-
 def xor_decode(arr: list[int], mask: list[int]) -> bytes:
     return bytes((b ^ mask[i % len(mask)]) & 0xFF for i, b in enumerate(arr))
-
 
 def display(value: object) -> str:
     if isinstance(value, bytes):
@@ -176,7 +162,6 @@ def display(value: object) -> str:
             pass
         return value.hex()
     return str(value)
-
 
 def extract(workdir_fields: dict[str, object]) -> dict[str, bytes]:
     mask_raw = workdir_fields.get(MASK_FIELD)
@@ -199,13 +184,11 @@ def extract(workdir_fields: dict[str, object]) -> dict[str, bytes]:
             print(f"  {name:32} {val}")
     return decoded
 
-
 def fields_sorted(fields: dict[str, object]):
     byte_fields = [k for k in fields if isinstance(fields[k], list)]
     other = [k for k in fields if not isinstance(fields[k], list)]
     for k in sorted(other) + sorted(byte_fields):
         yield k, fields[k]
-
 
 def test_backends(decoded: dict[str, bytes]) -> None:
     print("\n=== endpoint tests ===")
@@ -223,7 +206,6 @@ def test_backends(decoded: dict[str, bytes]) -> None:
             status = get_status(f"{base}/search/?s=test", headers={"X-API-Key": k})
             print(f"  {label:32} /search (key)   -> {status}")
 
-
 def get_status(url: str, headers: dict | None = None, timeout: int = 15) -> str:
     hdr = {"User-Agent": "extract-backend/1.0"}
     hdr.update(headers or {})
@@ -233,9 +215,8 @@ def get_status(url: str, headers: dict | None = None, timeout: int = 15) -> str:
             return f"HTTP {r.status}"
     except urllib.error.HTTPError as e:
         return f"HTTP {e.code}"
-    except Exception as e:  # timeout, DNS, TLS...
+    except Exception as e:
         return f"FAIL ({type(e).__name__})"
-
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Extract LastWave backend URLs/keys from an APK")
@@ -274,7 +255,6 @@ def main() -> None:
             print(f"\nworking dir kept: {workdir}")
         else:
             shutil.rmtree(workdir, ignore_errors=True)
-
 
 if __name__ == "__main__":
     main()

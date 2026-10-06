@@ -1,13 +1,3 @@
-//! High-level native wrapper-lite engine.
-//!
-//! Coordinates:
-//! 1. Fetching HLS playlist from wrapper-lite
-//! 2. Parsing ALAC stream variant and segment byte ranges
-//! 3. Fetching FairPlay key templates from wrapper-lite
-//! 4. Downloading fragmented MP4 from Apple CDN
-//! 5. Decrypting audio samples using Temari
-//! 6. Returning an `AudioStreamSource` compatible with the ripper pipeline.
-
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use bytes::Bytes;
@@ -31,8 +21,6 @@ pub struct WrapperEngine {
     source: SourceId,
 }
 
-/// Result of wrapper acquisition while retaining the only provenance that can
-/// justify an optional-unavailable outcome.
 #[derive(Debug)]
 pub enum WrapperTrackOutcome {
     Source(AudioStreamSource),
@@ -60,10 +48,6 @@ impl WrapperEngine {
         &self.client
     }
 
-    /// Primary entry point: rips/decrypts track from wrapper-lite, returning an `AudioStreamSource`.
-    ///
-    /// `preference` selects the variant when the master playlist offers
-    /// several (ALAC vs AAC vs Atmos).
     pub async fn rip_track(
         &self,
         track_id: &str,
@@ -83,7 +67,6 @@ impl WrapperEngine {
         }
     }
 
-    /// Acquire a stream without erasing playlist-selection provenance.
     pub(crate) async fn rip_track_with_outcome(
         &self,
         track_id: &str,
@@ -125,9 +108,7 @@ impl WrapperEngine {
             .and_then(|value| value.to_str().ok())
             .unwrap_or_default()
             .to_owned();
-        // Some music-video catalog entries resolve to a protected direct
-        // media file rather than a playlist. Resolve their web playback audio
-        // stream; the normal HLS decryption path handles it.
+
         let (stream_info, direct_media_info) =
             if is_direct_media_response(&content_type, &master_url) {
                 self.webplayback_fallback(track_id, track, signal.as_ref(), on_progress.as_ref())
@@ -138,9 +119,6 @@ impl WrapperEngine {
                     .await
                     .map_err(|e| self.map_reqwest_error("Read master playlist", e))?;
 
-                // Stores with no lossless HLS may return a direct file or a
-                // non-master response from /m3u8. Resolve the web playback
-                // audio stream in those cases.
                 match parse_master_playlist(&master_text, &master_url, preference) {
                     Ok(info) => (info, None),
                     Err(WrapperError::Unavailable(reason)) => {
@@ -201,8 +179,6 @@ impl WrapperEngine {
             })?
         };
 
-        // 5b. CENC (Widevine) playlists — the webplayback AAC path — take a
-        // different decryption route than the FairPlay master variants.
         if media_info.key_method.as_deref() == Some("ISO-23001-7") {
             let kid_b64 =
                 media_info
@@ -258,7 +234,6 @@ impl WrapperEngine {
             },
         );
 
-        // In Apple Music, media_info.single_file_url is almost always present
         let (decrypted_bytes, sample_rate) = if let Some(single_url) = &media_info.single_file_url {
             let resp = self
                 .http_client
@@ -280,7 +255,6 @@ impl WrapperEngine {
 
             self.decrypt_single_file_stream(&raw_data, &media_info, &key_templates, track_id)?
         } else {
-            // Segment-by-segment download fallback
             self.decrypt_multi_segment_stream(
                 &media_info,
                 &key_templates,
@@ -316,8 +290,6 @@ impl WrapperEngine {
                     };
                 }
                 if error.is_connect() {
-                    // The wrapper-lite relay itself is unreachable: the
-                    // service is offline, not flaky.
                     return StreamError::SourceOffline {
                         source: self.source.clone(),
                     };
@@ -355,9 +327,6 @@ impl WrapperEngine {
         StreamError::Message(format!("{what}: {error}"))
     }
 
-    /// Resolve the web playback audio when `/m3u8` returns a protected direct
-    /// file or no usable audio master. Web playback may return either a master
-    /// playlist or the selected AAC media playlist directly.
     async fn webplayback_fallback(
         &self,
         track_id: &str,
@@ -431,9 +400,6 @@ impl WrapperEngine {
         }
     }
 
-    /// The CENC (Widevine) route: fetch a license from wrapper-lite,
-    /// unwrap the content key, download the whole media file, decrypt each
-    /// fragment with AES-CTR and return the reassembled stream.
     async fn rip_cenc_stream(
         &self,
         track_id: &str,
@@ -465,9 +431,6 @@ impl WrapperEngine {
             detail: format!("build license request: {e}"),
         })?;
 
-        // wrapper-lite forwards the playlist's original EXT-X-KEY URI
-        // ("data:;base64,<kid>") verbatim to Apple; the PSSH built above
-        // travels only inside the challenge.
         let key_uri = media_info
             .segments
             .iter()
@@ -508,8 +471,6 @@ impl WrapperEngine {
             },
         );
 
-        // Whole-file layout: init (EXT-X-MAP byterange) + fragments
-        // (EXT-X-BYTERANGE) all reference one file.
         let single_url = media_info
             .single_file_url
             .as_deref()
@@ -596,10 +557,7 @@ impl WrapperEngine {
 
         let stamped = stamp_fragment_duration(&mut output, track_id);
         let total_size = output.len() as u64;
-        // Diagnostics: the size of the assembled stream, how it compares to the
-        // source and to the sum of the playlist's declared segment ranges. A
-        // mismatch here is the earliest signal that assembly dropped or
-        // duplicated audio, well before tagging reports a missing duration.
+
         tracing::debug!(
             track_id,
             source_bytes = raw_data.len(),
@@ -661,7 +619,6 @@ impl WrapperEngine {
         key_templates: &HashMap<String, Arc<temari::rounds::Template>>,
         track_id: &str,
     ) -> Result<(Vec<u8>, Option<u32>), StreamError> {
-        // Extract and transform init segment
         let (init_offset, init_len) = media_info.init_byte_range.unwrap_or((0, 1037));
         if raw_data.len() < (init_offset + init_len) as usize {
             return Err(StreamError::Decrypt {
@@ -678,7 +635,6 @@ impl WrapperEngine {
         let mut output = Vec::with_capacity(raw_data.len());
         output.extend_from_slice(&transformed_init);
 
-        // Track default template if available
         let default_template = key_templates
             .iter()
             .find(|(k, _)| !k.contains("P000000000"))
@@ -688,7 +644,6 @@ impl WrapperEngine {
                 detail: "no FairPlay decryption template available".to_owned(),
             })?;
 
-        // Process each media fragment
         for (i, seg) in media_info.segments.iter().enumerate() {
             let (off, len) = seg.byte_range.ok_or_else(|| StreamError::Decrypt {
                 detail: format!("segment {i} missing byte range"),
@@ -826,28 +781,11 @@ fn is_direct_media_response(content_type: &str, media_url: &str) -> bool {
         .any(|extension| path.ends_with(extension))
 }
 
-/// True when the response is a master playlist rather than a direct
-/// media file. A master starts with `#EXTM3U` and carries
-/// `#EXT-X-STREAM-INF` lines.
 fn looks_like_master_playlist(text: &str) -> bool {
     let head = text.trim_start();
     head.starts_with("#EXTM3U") && text.contains("#EXT-X-STREAM-INF")
 }
 
-/// Give the assembled stream a real duration, in place.
-///
-/// Apple's HLS output is a *fragmented* MP4: an initial `moov` followed by
-/// many `moof`/`mdat` pairs. A fragmented container carries no duration — the
-/// `mvhd` and `mdhd` fields are present but zero — so every reader reports a
-/// track of length zero, and the rip pipeline rejects it as having no duration
-/// even though the audio is perfect.
-///
-/// This used to shell out to MP4Box or ffmpeg to remux, and fell back to
-/// returning the fragmented bytes untouched when neither was installed. That
-/// fallback was silent at `debug` level and is what made this failure so hard
-/// to see: the pipeline produced a file it could not itself read. Recovering
-/// the duration from the fragments is exact, needs no external binary, and
-/// fixes the container header rather than papering over it.
 fn stamp_fragment_duration(assembled: &mut [u8], track_id: &str) -> Option<f64> {
     match media::stamp_fragmented_duration(assembled) {
         Some(duration) => {

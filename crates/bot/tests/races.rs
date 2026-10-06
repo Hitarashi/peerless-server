@@ -1,6 +1,3 @@
-//! M5c hardening tests: the bot-level cancel-vs-complete race and mirror
-//! health mapping.
-
 use std::{
     collections::HashMap,
     sync::{
@@ -18,14 +15,13 @@ use engine::{
             AlbumUpload, ArtworkProvider, BoxFuture, CachedAlbum, CachedTrack, ChatDelivery,
             CollectionResolver, Delivery, DeliveryError, DeliveryReceipt, DumpMessageRef,
             DumpPublication, DumpPublish, OrchestratorConfig, ProviderDeps, ProviderPresentation,
-            RequestLog, SaveTrackInput, StorageRetryPolicy, Storefront, TaskBookkeeping,
-            TaskBookkeepingError, TrackAcquisition, TrackCache, TrackCacheError,
-            UploadProgressCallback,
+            SaveTrackInput, StorageRetryPolicy, Storefront, TaskBookkeeping, TrackAcquisition,
+            TrackCache, TrackCacheError, UploadProgressCallback,
         },
         types::{OrchestratorEvent, RipTaskOptions, TaskPhase},
     },
     settings::BotSettings,
-    types::{AlbumTracks, ArtistTracks, ParsedTargetItem, Provider, TargetKind, TrackKey},
+    types::{AlbumTracks, ArtistTracks, ParsedTargetItem, Provider, TargetKind},
 };
 use music::PlaylistData;
 
@@ -55,7 +51,6 @@ impl ProviderPresentation for RacePresentation {
     }
 }
 
-/// Fake deps whose rip can be held mid-flight from the test.
 #[derive(Clone)]
 struct RaceDeps {
     settings: BotSettings,
@@ -66,9 +61,9 @@ struct RaceDeps {
 impl TrackCache for RaceDeps {
     fn find_cached_tracks<'a>(
         &'a self,
-        keys: &'a [TrackKey],
-    ) -> BoxFuture<'a, Result<HashMap<TrackKey, CachedTrack>, TrackCacheError>> {
-        let _ = keys;
+        track_ids: &'a [String],
+    ) -> BoxFuture<'a, Result<HashMap<(String, engine::Codec), CachedTrack>, TrackCacheError>> {
+        let _ = track_ids;
         Box::pin(async { Ok(HashMap::new()) })
     }
 
@@ -82,9 +77,10 @@ impl TrackCache for RaceDeps {
 
     fn delete_track<'a>(
         &'a self,
-        key: &'a TrackKey,
+        track_id: &'a str,
+        codec: Option<engine::Codec>,
     ) -> BoxFuture<'a, Result<bool, TrackCacheError>> {
-        let _ = key;
+        let _ = (track_id, codec);
         Box::pin(async { Ok(true) })
     }
 }
@@ -92,14 +88,6 @@ impl TrackCache for RaceDeps {
 impl TaskBookkeeping for RaceDeps {
     fn settings_snapshot(&self) -> BotSettings {
         self.settings.clone()
-    }
-
-    fn log_request<'a>(
-        &'a self,
-        log: RequestLog,
-    ) -> BoxFuture<'a, Result<(), TaskBookkeepingError>> {
-        let _ = log;
-        Box::pin(async { Ok(()) })
     }
 }
 
@@ -217,9 +205,7 @@ impl TrackAcquisition for RaceDeps {
         assert_eq!(options.provider, Provider::Apple);
         let _ = id;
         self.rip_calls.fetch_add(1, Ordering::SeqCst);
-        // Hold until the test flips the gate or the safety deadline passes.
-        // The signal is deliberately NOT observed: the race under test is
-        // what the engine does when the pipeline settles AFTER a cancel.
+
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         while *self.rip_hold.lock().await && tokio::time::Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -294,7 +280,6 @@ fn race_options() -> RipTaskOptions {
     }
 }
 
-/// Collect terminal events across the whole test.
 fn terminal_recorder(orch: &RipOrchestrator) -> Arc<Mutex<Vec<(&'static str, String)>>> {
     let events: Arc<Mutex<Vec<(&'static str, String)>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&events);
@@ -310,7 +295,6 @@ fn terminal_recorder(orch: &RipOrchestrator) -> Arc<Mutex<Vec<(&'static str, Str
     events
 }
 
-/// Wait until the job reaches the given phase.
 async fn wait_for_phase(
     orch: &RipOrchestrator,
     phase: TaskPhase,
@@ -353,14 +337,10 @@ async fn cancel_during_active_rip_emits_exactly_one_cancelled_terminal() {
 
     let job = wait_for_phase(&orch, TaskPhase::Processing).await;
     assert!(orch.cancel_task(&job.id, Some("tester")));
-    // Let the held rip settle AFTER the cancellation — the race condition.
-    // The queued task's result is intentionally not asserted: the terminal
-    // event stream is the contract under test.
+
     *deps.rip_hold.lock().await = false;
     let _ = task.await.unwrap();
 
-    // Exactly one terminal event, and it is the cancellation: the late
-    // pipeline error cannot manufacture a second terminal.
     let terminals = terminals.lock().unwrap();
     assert_eq!(terminals.len(), 1, "exactly one terminal event");
     assert_eq!(terminals[0].0, "cancelled");
@@ -387,23 +367,16 @@ async fn settled_failed_job_is_no_longer_cancellable() {
     let task = tokio::spawn(async move { run_orch.start_task(run_deps, &options).await });
     let result = task.await.unwrap();
 
-    // The fake rip fails with a mirror-offline error, which this port records
-    // as a failed track and completes the job with a summary — exactly one
-    // terminal event, and it is Completed (not Failed). The batch no longer
-    // stops on mirror-down, so no synthetic "Remaining tracks" row appears.
     let terminals = terminals.lock().unwrap();
     assert_eq!(terminals.len(), 1);
     assert_eq!(terminals[0].0, "completed");
     assert!(result.is_ok(), "recorded failure + continue settles Ok");
-    // Only the single failed track is recorded.
+
     assert_eq!(result.as_ref().unwrap().failed_count, 1);
-    // Late cancel is a no-op on a settled job.
+
     assert!(!orch.cancel_task(&terminals[0].1, Some("late")));
 }
 
-/// The event bridge skips progress edits while total_tracks == 0 (the
-/// keeps the "Resolving..." message untouched until the tracklist is
-/// known). This pins the guard's field shape.
 #[test]
 fn unresolved_progress_has_zero_total_tracks() {
     let progress = engine::orchestrator::types::RipTaskProgress {
@@ -423,7 +396,6 @@ fn unresolved_progress_has_zero_total_tracks() {
     assert_eq!(progress.total_tracks, 0);
 }
 
-/// Mirror health cache is last-known-only.
 #[test]
 fn mirror_health_labels_render_expected_text() {
     use bot::mirror_health::{HealthReport, LastKnownHealth, MirrorHealth};

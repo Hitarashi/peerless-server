@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use apple::parse_alac_input;
-use engine::{Provider, TrackKey};
 use ferogram::{InputMessage, PeerRef, filters, filters::Dispatcher, tl};
 
 use crate::{
@@ -72,33 +71,14 @@ async fn info(msg: ferogram::update::IncomingMessage, state: Arc<BotState>) {
             )
             .await
             .map_err(|error| error.to_string())?;
-        let track_key = TrackKey::new(Provider::Apple, track_id.clone());
         let cached = state
             .rip_deps
             .tracks()
-            .find_cached_tracks(std::slice::from_ref(&track_key))
+            .find_cached_tracks(std::slice::from_ref(&track_id))
             .await
             .map_err(|error| error.to_string())?
-            .remove(&track_key);
-        // The orchestration projection contains the dump id and display
-        // fields; fetch the full row only to render the quality columns that
-        // the info command exposes.
-        let cached_row = if cached.is_some() {
-            state
-                .rip_deps
-                .tracks()
-                .search_cached_tracks(&track_id, 1)
-                .await
-                .ok()
-                .and_then(|tracks| {
-                    tracks
-                        .into_iter()
-                        .find(|track| track.provider == track_key.provider && track.track_id == track_key.track_id)
-                })
-        } else {
-            None
-        };
-
+            .into_values()
+            .next();
         let title = escape(&meta.title);
         let artist = escape(&meta.artist);
         let album = escape(&meta.album);
@@ -113,23 +93,11 @@ async fn info(msg: ferogram::update::IncomingMessage, state: Arc<BotState>) {
         let (cache_status, cache_details) = match cached {
             Some(cached) => (
                 "✓ <b>Cached in database</b>".to_owned(),
-                {
-                    let mut quality = vec!["ALAC".to_owned()];
-                    if let Some(row) = cached_row.as_ref() {
-                        if row.bit_depth != 0 {
-                            quality.push(format!("{}-bit", row.bit_depth));
-                        }
-                        if row.sample_rate != 0 {
-                            let tenths = (row.sample_rate + 50) / 100;
-                            quality.push(format!("{}.{:01} kHz", tenths / 10, tenths % 10));
-                        }
-                    }
-                    format!(
-                        "Quality: <code>{}</code><br/>Dump Message: <code>#{}</code>",
-                        quality.join(" • "),
-                        cached.message_id
-                    )
-                },
+                format!(
+                    "Quality: <code>{}</code><br/>Dump Message: <code>#{}</code>",
+                    cached.codec.display_name(),
+                    cached.message_id
+                ),
             ),
             None => (
                 "! <b>Not cached</b>".to_owned(),

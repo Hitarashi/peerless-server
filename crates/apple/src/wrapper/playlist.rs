@@ -1,16 +1,12 @@
-//! HLS M3U8 playlist parsing for Apple Music audio streams.
-
 use music::CodecPreference;
 
 use super::client::{WrapperError, WrapperUnavailableReason};
 
-/// One audio variant offered by a master playlist.
 #[derive(Debug, Clone)]
 pub struct StreamVariant {
     pub uri: String,
     pub codec: String,
-    /// Audio group id, e.g. `audio-alac-stereo-96000-24`,
-    /// `audio-stereo-256`, `audio-atmos-2768`.
+
     pub group_id: String,
     pub bandwidth: u64,
 }
@@ -26,25 +22,22 @@ pub struct AlacStreamInfo {
 #[derive(Debug, Clone)]
 pub struct MediaSegmentRef {
     pub uri: String,
-    pub byte_range: Option<(u64, u64)>, // (offset, length)
+    pub byte_range: Option<(u64, u64)>,
     pub key_uri: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct MediaPlaylistInfo {
     pub init_uri: String,
-    pub init_byte_range: Option<(u64, u64)>, // (offset, length)
+    pub init_byte_range: Option<(u64, u64)>,
     pub segments: Vec<MediaSegmentRef>,
     pub single_file_url: Option<String>,
-    /// `METHOD` of the active `#EXT-X-KEY` (`SAMPLE-AES` or
-    /// `ISO-23001-7`); `None` when the playlist carries no key.
+
     pub key_method: Option<String>,
-    /// For CENC playlists: the base64 KID from the `data:;base64,...`
-    /// key URI (the part after the comma).
+
     pub cenc_kid_b64: Option<String>,
 }
 
-/// Resolve a possibly relative URI against a base URL.
 pub fn resolve_url(base: &str, uri: &str) -> String {
     if uri.starts_with("http://") || uri.starts_with("https://") {
         return uri.to_owned();
@@ -57,7 +50,6 @@ pub fn resolve_url(base: &str, uri: &str) -> String {
     }
 }
 
-/// Parse byte range string like "1037@0" -> (offset: 0, length: 1037).
 fn parse_byte_range(val: &str) -> Option<(u64, u64)> {
     let val = val.trim_matches('"').trim();
     if let Some((len_str, off_str)) = val.split_once('@') {
@@ -71,11 +63,6 @@ fn parse_byte_range(val: &str) -> Option<(u64, u64)> {
     }
 }
 
-/// Split comma-separated HLS tag attributes, ignoring commas within quotes.
-///
-/// Attribute components are validated here rather than by individual callers
-/// so a malformed component cannot be skipped and later mistaken for a valid
-/// playlist with no matching variant.
 fn split_attributes(s: &str) -> Result<Vec<&str>, WrapperError> {
     if s.trim().is_empty() {
         return Err(malformed_attribute_error());
@@ -133,11 +120,6 @@ fn validate_attribute_component(part: &str) -> Result<(), WrapperError> {
     Ok(())
 }
 
-/// Parse master HLS playlist and select the variant per `preference`.
-///
-/// ALAC variants carry `SAMPLE-RATE`/`BIT-DEPTH` on their `#EXT-X-MEDIA`
-/// line; lossy variants encode their bitrate in the group id
-/// (`audio-stereo-256`, `audio-atmos-2768`, `audio-HE-stereo-64`).
 pub fn parse_master_playlist(
     content: &str,
     master_url: &str,
@@ -160,9 +142,6 @@ pub fn parse_master_playlist(
     select_variant(&variants, preference, content)
 }
 
-/// Collect standalone AAC/Atmos audio groups. Video masters advertise their
-/// audio as `#EXT-X-MEDIA` entries while the `#EXT-X-STREAM-INF` URI points to
-/// a video playlist, so selecting the stream variant would download video.
 fn collect_audio_renditions(
     content: &str,
     master_url: &str,
@@ -211,7 +190,6 @@ fn collect_audio_renditions(
     Ok(renditions)
 }
 
-/// Extract every `#EXT-X-STREAM-INF` variant with its audio group.
 fn collect_variants(content: &str, master_url: &str) -> Result<Vec<StreamVariant>, WrapperError> {
     let mut variants = Vec::new();
     let mut pending: Option<StreamVariant> = None;
@@ -256,8 +234,7 @@ fn collect_variants(content: &str, master_url: &str) -> Result<Vec<StreamVariant
                     bandwidth = Some(parse_positive_u64(v, "BANDWIDTH")?);
                 } else if k == "AVERAGE-BANDWIDTH" {
                     let average = parse_positive_u64(v, "AVERAGE-BANDWIDTH")?;
-                    // `BANDWIDTH` wins when present; the average is a
-                    // stand-in only for variants missing the peak.
+
                     if bandwidth.is_none() {
                         bandwidth = Some(average);
                     }
@@ -287,9 +264,6 @@ fn collect_variants(content: &str, master_url: &str) -> Result<Vec<StreamVariant
     Ok(variants)
 }
 
-/// A master playlist has the HLS header and at least one stream-inf tag.
-/// Variant collection performs the remaining structural validation, including
-/// requiring each stream-inf tag to be followed by a URI.
 fn is_master_playlist(content: &str) -> bool {
     content.lines().map(str::trim).find(|line| !line.is_empty()) == Some("#EXTM3U")
         && content
@@ -297,9 +271,6 @@ fn is_master_playlist(content: &str) -> bool {
             .any(|line| line.trim().starts_with("#EXT-X-STREAM-INF:"))
 }
 
-/// Validate numeric attributes even when the corresponding audio group is not
-/// selected. Otherwise a malformed Atmos line could be ignored and a valid
-/// no-Atmos result would incorrectly become typed absence.
 fn validate_media_numeric_attributes(content: &str) -> Result<(), WrapperError> {
     for line in content.lines() {
         let Some(attrs) = line.trim().strip_prefix("#EXT-X-MEDIA:") else {
@@ -341,10 +312,6 @@ fn validate_variant_group(variant: &StreamVariant) -> Result<(), WrapperError> {
     Ok(())
 }
 
-/// Quality rank of a group id. Higher is better; `None` = unusable.
-/// Within a codec class the rank encodes bitrate so the group alone
-/// disambiguates (`audio-atmos-2768` beats `audio-atmos-2448`,
-/// `audio-stereo-256` beats `audio-stereo-128`, 24/192 ALAC beats 24/96).
 fn group_rank(
     group_id: &str,
     codec: &str,
@@ -352,8 +319,6 @@ fn group_rank(
 ) -> Result<Option<i64>, WrapperError> {
     let is_atmos_group = group_id.starts_with("audio-atmos");
     match (codec, preference) {
-        // Atmos mode wants the atmos group; lossless mode wants ALAC and
-        // must not silently take an ec-3 stream.
         ("ec-3", CodecPreference::Atmos) if is_atmos_group => {
             Ok(Some(20_000 + group_bitrate(group_id, "audio-atmos-")?))
         }
@@ -370,16 +335,13 @@ fn group_rank(
     }
 }
 
-/// Numeric bitrate prefix of `prefix + number` in a group id, e.g.
-/// `audio-atmos-2768` -> 2768 and `audio-stereo-256-binaural` -> 256.
 fn group_bitrate(group_id: &str, prefix: &str) -> Result<i64, WrapperError> {
     let rest = group_id.strip_prefix(prefix).ok_or_else(|| {
         WrapperError::Message(format!(
             "Master playlist has invalid audio group: {group_id}"
         ))
     })?;
-    // Apple appends provider metadata such as `-binaural` to some group ids;
-    // only the numeric bitrate component participates in variant ranking.
+
     let bitrate_token = rest.split_once('-').map_or(rest, |(bitrate, _)| bitrate);
     let bitrate = parse_positive_u64(bitrate_token, "audio group bitrate")?;
     i64::try_from(bitrate).map_err(|_| {
@@ -413,7 +375,6 @@ fn parse_positive_u32(value: &str, attribute: &str) -> Result<u32, WrapperError>
     Ok(parsed)
 }
 
-/// Decode `audio-alac-stereo-96000-24` -> (96000, 24).
 fn alac_group_specs(group_id: &str) -> Result<(u32, u32), WrapperError> {
     let parts: Vec<&str> = group_id.split('-').collect();
     if parts.len() >= 2 {
@@ -426,7 +387,6 @@ fn alac_group_specs(group_id: &str) -> Result<(u32, u32), WrapperError> {
     )))
 }
 
-/// Pick the best variant per `preference`.
 fn select_variant(
     variants: &[StreamVariant],
     preference: CodecPreference,
@@ -472,8 +432,6 @@ fn select_variant(
     })
 }
 
-/// `SAMPLE-RATE`/`BIT-DEPTH` from the `#EXT-X-MEDIA` line of `group_id`.
-/// AAC defaults to 44.1/16; Atmos to 48/16 (16-channel JOC).
 fn media_line_specs(content: &str, group_id: &str) -> Result<(u32, u32), WrapperError> {
     let is_atmos = group_id.starts_with("audio-atmos");
     let mut sample_rate = None;
@@ -509,7 +467,6 @@ fn media_line_specs(content: &str, group_id: &str) -> Result<(u32, u32), Wrapper
     }
 }
 
-/// Parse media HLS playlist to extract init segment and media segments.
 pub fn parse_media_playlist(
     content: &str,
     media_url: &str,
@@ -545,10 +502,6 @@ pub fn parse_media_playlist(
                 }
             }
             match method.as_deref() {
-                // FairPlay: URI is a skd:// template ref. Apple also lists
-                // PlayReady and Widevine key tags for the same segments;
-                // keep the FairPlay key instead of overwriting it with a
-                // data: URI that the FairPlay template endpoint cannot use.
                 Some("SAMPLE-AES")
                     if key_format
                         .as_deref()
@@ -556,7 +509,7 @@ pub fn parse_media_playlist(
                 {
                     current_key_uri = key_uri;
                 }
-                // CENC: URI is "data:;base64,<kid>"; keep the KID.
+
                 Some("ISO-23001-7") => {
                     current_key_uri = key_uri.clone();
                     if let Some(uri) = &key_uri {
@@ -602,7 +555,6 @@ pub fn parse_media_playlist(
         WrapperError::Message("No #EXT-X-MAP init segment found in media playlist".into())
     })?;
 
-    // In Apple Music, typically all segments and the map point to the same single file
     let single_file = if segments.iter().all(|s| s.uri == init_uri) {
         Some(init_uri.clone())
     } else {
@@ -677,8 +629,6 @@ audio.mp4"#;
         );
     }
 
-    /// A full store master with ALAC 24/96 + 24/48, AAC-256/128,
-    /// HE-AAC-64 and Atmos variants (live Apple shapes).
     fn full_master() -> String {
         r#"#EXTM3U
 #EXT-X-VERSION:7

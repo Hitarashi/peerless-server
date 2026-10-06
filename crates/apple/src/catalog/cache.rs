@@ -1,9 +1,3 @@
-//! TTL + capacity cache (insertion-ordered map with a counter):
-//! - `get`: expired → drop + miss; hit → drop + reinsert (recency refresh)
-//! - `set`: when `len >= max`, evict the FRONT entry first — even when
-//!   updating an existing key, so `max = 0` degenerates to
-//!   capacity 1.
-
 use std::time::{Duration, Instant};
 
 use indexmap::IndexMap;
@@ -31,7 +25,7 @@ impl<T: Clone> Cache<T> {
     pub(crate) fn get(&mut self, key: &str, now: Instant) -> Option<T> {
         let entry = self.map.shift_remove(key)?;
         if now > entry.expires_at {
-            return None; // expired (already removed)
+            return None;
         }
         let Entry { value, expires_at } = entry;
         self.map.insert(
@@ -50,9 +44,6 @@ impl<T: Clone> Cache<T> {
     }
 
     pub(crate) fn set_with_ttl(&mut self, key: &str, value: T, ttl: Duration, now: Instant) {
-        // Eviction check runs before every insert, even when the
-        // key already exists (and even with max_size == 0, which degenerates
-        // the cache to capacity 1).
         if self.map.len() >= self.max_size {
             self.map.shift_remove_index(0);
         }
@@ -102,11 +93,10 @@ mod tests {
         let now = Instant::now();
         cache.set("a", 1, now);
         cache.set("b", 2, now);
-        cache.set("a", 10, now); // full: evicts front ("a"), reinserts at back → [b, a]
+        cache.set("a", 10, now);
         assert_eq!(cache.get("a", now), Some(10));
         assert_eq!(cache.get("b", now), Some(2));
-        // get("b") refreshed b to the back → front is "a" again → "a" is
-        // the eviction victim on the next full set.
+
         cache.set("c", 3, now);
         assert_eq!(cache.get("a", now), None, "a was front after b's refresh");
         assert_eq!(cache.get("b", now), Some(2));

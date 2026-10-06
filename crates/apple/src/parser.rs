@@ -1,9 +1,3 @@
-//! Apple Music link/id parser.
-//!
-//! Order of regex checks matters: playlist URL → artist URL → album URL with
-//! `?i=` → direct song URL → album URL. Storefronts are lowercased when
-//! captured.
-
 use std::sync::OnceLock;
 
 use music::{ParsedAlacInput, ParsedTargetItem, TargetKind};
@@ -12,25 +6,25 @@ use regex::Regex;
 fn regexes() -> &'static [Regex; 6] {
     static RE: OnceLock<[Regex; 6]> = OnceLock::new();
     RE.get_or_init(|| {
-        // 1. music.apple.com/…/playlist/<slug>/pl.xxx or pl.u-xxx
+
         let playlist = Regex::new(
             r"(?i)(?:music|itunes)\.apple\.com/(?:([a-z]{2})/)?playlist/(?:[^/]+/)?(pl\.(?:u-[a-zA-Z0-9]+|[a-zA-Z0-9]+))",
         )
         .expect("playlist regex");
-        // 2. music.apple.com/…/artist/<slug>/<id> (also itunes.apple.com)
+
         let artist = Regex::new(r"(?i)(?:music|itunes)\.apple\.com/(?:([a-z]{2})/)?artist/(?:[^/]+/)?(\d+)")
             .expect("artist regex");
-        // 3. album URL with ?i=<track id>
+
         let song_with_album = Regex::new(r"(?i)(?:music|itunes)\.apple\.com/(?:([a-z]{2})/)?album/(?:[^/]+/)?\d+\?i=(\d+)")
             .expect("song with album regex");
-        // 4. direct song URL
+
         let song_direct = Regex::new(r"(?i)(?:music|itunes)\.apple\.com/(?:([a-z]{2})/)?song/(?:[^/]+/)?(\d+)").expect("song direct regex");
-        // 5. direct music video URL
+
         let music_video = Regex::new(
             r"(?i)(?:music|itunes)\.apple\.com/(?:([a-z]{2})/)?music-video/(?:[^/]+/)?(\d+)",
         )
         .expect("music video regex");
-        // 6. album URL
+
         let album = Regex::new(r"(?i)(?:music|itunes)\.apple\.com/(?:([a-z]{2})/)?album/(?:[^/]+/)?(\d+)").expect("album regex");
         [playlist, artist, song_with_album, song_direct, music_video, album]
     })
@@ -47,7 +41,6 @@ fn item(id: impl Into<String>, kind: TargetKind, caps: &regex::Captures<'_>) -> 
     }
 }
 
-/// Parse a single token into a target item, or `None` when unrecognized.
 pub fn parse_single_item(raw_token: &str) -> Option<ParsedTargetItem> {
     let token = raw_token.trim();
     if token.is_empty() {
@@ -95,9 +88,6 @@ pub fn parse_single_item(raw_token: &str) -> Option<ParsedTargetItem> {
     None
 }
 
-/// Extract items from a `.txt` batch file's content: lines split on
-/// newlines, tokens split on whitespace; `#` or `//` stops the line's
-/// remaining tokens. Dedup by `{kind}:{id}` preserving first-seen order.
 pub fn extract_batch_items(content: &str) -> Vec<ParsedTargetItem> {
     let mut results = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -117,8 +107,6 @@ pub fn extract_batch_items(content: &str) -> Vec<ParsedTargetItem> {
     results
 }
 
-/// Parse a full command text (with optional reply text fallback) into a
-/// structured input. Returns `None` when nothing parseable was found.
 pub fn parse_alac_input(raw_text: &str, reply_text: Option<&str>) -> Option<ParsedAlacInput> {
     let text = raw_text.trim();
     let mut tokens = text.split_whitespace().peekable();

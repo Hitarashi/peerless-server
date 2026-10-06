@@ -10,10 +10,6 @@ use crate::{
 const RESTRICTED: &str =
     "🔒 <b>Access Restricted:</b> This command is restricted to the bot owner.";
 
-/// Remove the contents of the bot's downloads directory without following
-/// symlinks or deleting its repository marker files.  The caller supplies the
-/// already-authorized downloads root; this helper never derives a parent or a
-/// system temporary directory from it.
 fn clean_downloads_dir(downloads_dir: &Path) -> io::Result<(usize, u64)> {
     let root_type = std::fs::symlink_metadata(downloads_dir)?.file_type();
     if !root_type.is_dir() {
@@ -22,8 +18,7 @@ fn clean_downloads_dir(downloads_dir: &Path) -> io::Result<(usize, u64)> {
             "downloads path must be a real directory",
         ));
     }
-    // In production this prevents `bot-data -> /tmp/...` from turning the
-    // fixed relative target into an arbitrary cleanup root.
+
     if let Some(parent) = downloads_dir.parent()
         && std::fs::symlink_metadata(parent)?.file_type().is_symlink()
     {
@@ -49,8 +44,6 @@ fn clean_downloads_dir(downloads_dir: &Path) -> io::Result<(usize, u64)> {
                 bytes_freed += bytes;
             }
 
-            // A directory containing a preserved marker is intentionally left
-            // in place.  Other removal errors still surface to the command.
             match std::fs::remove_dir(path) {
                 Ok(()) => {}
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -105,7 +98,6 @@ async fn clean(msg: ferogram::update::IncomingMessage, state: Arc<BotState>) {
         Ok((files_removed, bytes_freed)) => {
             let text = format!(
                 "✓ <b>Temporary storage cleaned</b><br/><br/><blockquote>• Files removed: <code>{files_removed}</code><br/>• Space reclaimed: <code>{}</code><br/>• Target: <code>bot-data/downloads/</code></blockquote>",
-                // Prose, not a progress bar: the spaced byte style.
                 engine::progress::format_bytes_with(
                     bytes_freed,
                     engine::progress::ByteStyle::Spaced,

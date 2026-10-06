@@ -1,5 +1,3 @@
-//! Production composition of the engine's orchestration capabilities.
-
 use std::{collections::HashMap, sync::Arc};
 
 use diesel::result::{DatabaseErrorKind, Error as DieselError};
@@ -9,19 +7,17 @@ use engine::{
         AlbumCache, AlbumCacheError, AlbumCacheOperation, AlbumReplacementExpectation,
         AlbumReplacementResult, AlbumUpload, ArtworkProvider, BoxFuture, CachedAlbum, CachedTrack,
         ChatDelivery, CollectionResolver, Delivery, DeliveryError, DumpMessageRef, DumpPublish,
-        OrchestratorConfig, ProviderDeps, ProviderPresentation, RequestLog, SaveTrackInput,
-        Storefront, TaskBookkeeping, TaskBookkeepingError, TaskBookkeepingOperation,
-        TrackAcquisition, TrackCache, TrackCacheError, TrackCacheOperation,
+        OrchestratorConfig, ProviderDeps, ProviderPresentation, SaveTrackInput, Storefront,
+        TaskBookkeeping, TrackAcquisition, TrackCache, TrackCacheError, TrackCacheOperation,
     },
     ripper::{RipError, RipperConfig},
     settings::BotSettings,
-    types::{AlbumTracks, ArtistTracks, TrackKey, TrackRipResult},
+    types::{AlbumTracks, ArtistTracks, TrackRipResult},
 };
 use music::PlaylistData;
 
 use crate::{providers::ProviderRegistry, telegram_sink::FerogramTelegramSink};
 
-/// Read the retry settings shared by the ripper and the upload lane.
 fn retry_values() -> (u64, u32) {
     let retry_base_ms = std::env::var("ALAC_RETRY_BASE_MS")
         .ok()
@@ -36,7 +32,6 @@ fn retry_values() -> (u64, u32) {
     (retry_base_ms, max_retries)
 }
 
-/// Build the engine-owned orchestrator configuration from production settings.
 pub fn orchestrator_config() -> OrchestratorConfig {
     let (upload_retry_base_ms, upload_max_retries) = retry_values();
     OrchestratorConfig {
@@ -51,22 +46,10 @@ fn db_is_unavailable(error: &db::DbError) -> bool {
         error,
         db::DbError::Pool(_)
             | db::DbError::Database(DieselError::DatabaseError(
-                DatabaseErrorKind::ClosedConnection,
-                _,
+                DatabaseErrorKind::ClosedConnection | DatabaseErrorKind::UnableToSendCommand,
+                _
             ))
     )
-}
-
-fn map_album_replacement(
-    result: AlbumReplacementResult,
-) -> Result<AlbumReplacementResult, AlbumCacheError> {
-    match result {
-        AlbumReplacementResult::Stale => Err(AlbumCacheError::conflict(
-            AlbumCacheOperation::Replace,
-            "album replacement lost compare-and-swap race",
-        )),
-        committed => Ok(committed),
-    }
 }
 
 fn track_cache_error(operation: TrackCacheOperation, error: db::DbError) -> TrackCacheError {
@@ -87,39 +70,21 @@ fn album_cache_error(operation: AlbumCacheOperation, error: db::DbError) -> Albu
     }
 }
 
-fn bookkeeping_error(
-    operation: TaskBookkeepingOperation,
-    error: db::DbError,
-) -> TaskBookkeepingError {
-    let detail = error.to_string();
-    if db_is_unavailable(&error) {
-        TaskBookkeepingError::unavailable(operation, detail)
-    } else {
-        TaskBookkeepingError::failed(operation, detail)
-    }
-}
-
-/// All environment-owned production dependencies used by the orchestrator.
 pub struct RipDeps {
     sink: FerogramTelegramSink,
     albums: db::AlbumsRepository,
     tracks: db::TracksRepository,
-    requests: db::RequestLogRepository,
     settings: Arc<db::SettingsStore>,
     providers: ProviderRegistry,
-    recording_mbid_resolver: crate::musicbrainz::RecordingMbidResolver,
-    /// Shared with `ripper_deps` so health probes observe the same circuit
-    /// and cache state the ripper uses.
+
     mirror_policy: apple::MirrorPolicyManager<apple::ReqwestMirrorHttp>,
 }
 
 impl RipDeps {
-    /// Build the production dependency graph and load the settings snapshot.
     pub async fn new(
         client: Arc<ferogram::Client>,
         dump_peer: ferogram::PeerRef,
         tracks: db::TracksRepository,
-        requests: db::RequestLogRepository,
         settings: Arc<db::SettingsStore>,
         database: db::DbPool,
     ) -> Result<Self, DeliveryError> {
@@ -138,71 +103,43 @@ impl RipDeps {
         let ripper_config = RipperConfig {
             base_delay_ms: retry_base_ms,
             max_retries,
-            lyricsporn_api_endpoint,
-            ..Default::default()
+            ..RipperConfig::default()
         };
-
-        let albums = db::AlbumsRepository::new(database);
+        let bot_settings = settings.get_settings();
+        let default_storefront = engine::settings::resolve_default_storefront(&bot_settings);
         let sink = FerogramTelegramSink::new(client, dump_peer).await?;
-
-        let default_storefront =
-            engine::settings::resolve_default_storefront(&settings.get_settings()).to_owned();
+        let albums = db::AlbumsRepository::new(database.clone());
 
         Ok(Self {
             sink,
             albums,
             tracks,
-            requests,
             settings,
             providers: ProviderRegistry::new(apple, ripper_config, default_storefront),
-            recording_mbid_resolver: crate::musicbrainz::RecordingMbidResolver::default(),
             mirror_policy: probe_policy,
         })
     }
 
-    /// Probe mirror health for the status dashboard. Uses a clone of the
-    /// ripper's policy manager, so circuit state and the endpoint cache stay
-    /// coherent between rips and probes.
     pub async fn probe_mirror_health(&self) -> crate::mirror_health::HealthReport {
         use crate::mirror_health::{MirrorHealthProbe, PolicyProbe};
 
         PolicyProbe::new(self.mirror_policy.shared()).probe().await
     }
 
-    /// The mutable settings store backing the admin `/settings` panel.
     pub fn settings(&self) -> &db::SettingsStore {
         &self.settings
     }
 
-    /// Synchronous snapshot read for panel rendering.
     pub fn settings_snapshot(&self) -> BotSettings {
         self.settings.get_settings()
     }
 
-    /// Read-only database access for handlers that need direct queries outside
-    /// the orchestrator seam.
     pub fn tracks(&self) -> &db::TracksRepository {
         &self.tracks
     }
 
-    pub async fn resolve_recording_mbid(
-        &self,
-        isrc: &str,
-        title: &str,
-        artist: &str,
-        duration_seconds: i64,
-    ) -> Option<String> {
-        self.recording_mbid_resolver
-            .resolve(isrc, title, artist, duration_seconds)
-            .await
-    }
-
     pub fn albums(&self) -> &db::AlbumsRepository {
         &self.albums
-    }
-
-    pub fn requests(&self) -> &db::RequestLogRepository {
-        &self.requests
     }
 
     pub fn catalog(&self) -> &apple::Catalog<apple::ReqwestTransport> {
@@ -214,8 +151,6 @@ impl RipDeps {
     }
 }
 
-// The orchestrator reaches providers straight through these four traits, so
-// `RipDeps` simply lends out the registry it already holds.
 impl CollectionResolver for RipDeps {
     async fn fetch_album_tracks(
         &self,
@@ -268,15 +203,7 @@ impl TrackAcquisition for RipDeps {
         track_id: &str,
         options: engine::ripper::RipOptions<'_>,
     ) -> Result<TrackRipResult, RipError> {
-        let mut result = self.providers.rip(track_id, options).await?;
-        if result.recording_mbid.is_none()
-            && let Some(isrc) = result.isrc.as_deref()
-        {
-            result.recording_mbid = self
-                .resolve_recording_mbid(isrc, &result.title, &result.artist, result.duration)
-                .await;
-        }
-        Ok(result)
+        self.providers.rip(track_id, options).await
     }
 }
 
@@ -322,11 +249,11 @@ impl ProviderDeps for RipDeps {
 impl TrackCache for RipDeps {
     fn find_cached_tracks<'a>(
         &'a self,
-        keys: &'a [TrackKey],
-    ) -> BoxFuture<'a, Result<HashMap<TrackKey, CachedTrack>, TrackCacheError>> {
+        track_ids: &'a [String],
+    ) -> BoxFuture<'a, Result<HashMap<(String, Codec), CachedTrack>, TrackCacheError>> {
         Box::pin(async move {
             self.tracks
-                .find_cached_tracks(keys)
+                .find_cached_tracks(track_ids)
                 .await
                 .map_err(|error| track_cache_error(TrackCacheOperation::Find, error))
         })
@@ -347,11 +274,12 @@ impl TrackCache for RipDeps {
 
     fn delete_track<'a>(
         &'a self,
-        track_key: &'a TrackKey,
+        track_id: &'a str,
+        codec: Option<Codec>,
     ) -> BoxFuture<'a, Result<bool, TrackCacheError>> {
         Box::pin(async move {
             self.tracks
-                .delete_track(track_key)
+                .delete_track(track_id, codec)
                 .await
                 .map_err(|error| track_cache_error(TrackCacheOperation::Delete, error))
         })
@@ -368,7 +296,6 @@ impl AlbumCache for RipDeps {
                 )
             })?;
             let new_album = db::NewAlbum {
-                provider: upload.provider,
                 album_id: &upload.album_id,
                 codec: upload.codec,
                 part_index: upload.part_index,
@@ -377,7 +304,6 @@ impl AlbumCache for RipDeps {
                 file_id: &upload.file_id,
                 file_unique_id: &upload.file_unique_id,
                 file_size: upload.file_size,
-                file_name: &upload.file_name,
                 generation_hash: &upload.generation_hash,
             };
             self.albums
@@ -390,7 +316,7 @@ impl AlbumCache for RipDeps {
 
     fn replace_albums<'a>(
         &'a self,
-        provider: Provider,
+        _provider: Provider,
         album_id: &'a str,
         codec: Codec,
         expected: AlbumReplacementExpectation,
@@ -399,23 +325,23 @@ impl AlbumCache for RipDeps {
         Box::pin(async move {
             let result = self
                 .albums
-                .replace_albums(provider, album_id, codec, &expected, &uploads)
+                .replace_albums(album_id, codec, &expected, &uploads)
                 .await
                 .map_err(|error| album_cache_error(AlbumCacheOperation::Replace, error))?;
-            map_album_replacement(result)
+            Ok(result)
         })
     }
 
     fn find_albums<'a>(
         &'a self,
-        provider: Provider,
+        _provider: Provider,
         album_id: &'a str,
         codec: Option<Codec>,
     ) -> BoxFuture<'a, Result<Vec<CachedAlbum>, AlbumCacheError>> {
         Box::pin(async move {
             let rows = self
                 .albums
-                .find_albums(provider, album_id, codec)
+                .find_albums(album_id, codec)
                 .await
                 .map_err(|error| album_cache_error(AlbumCacheOperation::Find, error))?;
             Ok(rows
@@ -435,13 +361,13 @@ impl AlbumCache for RipDeps {
 
     fn delete_albums<'a>(
         &'a self,
-        provider: Provider,
+        _provider: Provider,
         album_id: &'a str,
         codec: Option<Codec>,
     ) -> BoxFuture<'a, Result<(), AlbumCacheError>> {
         Box::pin(async move {
             self.albums
-                .delete_albums(provider, album_id, codec)
+                .delete_albums(album_id, codec)
                 .await
                 .map(|_| ())
                 .map_err(|error| album_cache_error(AlbumCacheOperation::Delete, error))
@@ -452,18 +378,6 @@ impl AlbumCache for RipDeps {
 impl TaskBookkeeping for RipDeps {
     fn settings_snapshot(&self) -> BotSettings {
         self.settings.get_settings()
-    }
-
-    fn log_request<'a>(
-        &'a self,
-        log: RequestLog,
-    ) -> BoxFuture<'a, Result<(), TaskBookkeepingError>> {
-        Box::pin(async move {
-            self.requests
-                .log_request(&log)
-                .await
-                .map_err(|error| bookkeeping_error(TaskBookkeepingOperation::LogRequest, error))
-        })
     }
 }
 
@@ -506,18 +420,6 @@ impl Delivery for RipDeps {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn stale_album_replacement_is_a_conflict() {
-        let result = map_album_replacement(AlbumReplacementResult::Stale);
-        assert!(matches!(
-            result,
-            Err(AlbumCacheError::Conflict {
-                operation: AlbumCacheOperation::Replace,
-                ..
-            })
-        ));
-    }
 
     #[test]
     fn closed_database_connection_is_unavailable() {

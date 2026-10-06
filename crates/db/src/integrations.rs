@@ -7,7 +7,6 @@ use crate::{
     schema::user_integrations,
 };
 
-/// Upsert a user's third-party integration credentials (e.g. Last.fm session).
 pub async fn save_integration(
     pool: &DbPool,
     telegram_id: i64,
@@ -40,7 +39,6 @@ pub async fn save_integration(
     Ok(())
 }
 
-/// Retrieve integration details for a given user and provider.
 pub async fn get_integration(
     pool: &DbPool,
     telegram_id: i64,
@@ -57,7 +55,6 @@ pub async fn get_integration(
         .map_err(Into::into)
 }
 
-/// Check if a user has connected a specific integration provider.
 pub async fn has_integration(
     pool: &DbPool,
     telegram_id: i64,
@@ -73,7 +70,6 @@ pub async fn has_integration(
     Ok(count > 0)
 }
 
-/// Delete an integration record for a user and provider.
 pub async fn delete_integration(
     pool: &DbPool,
     telegram_id: i64,

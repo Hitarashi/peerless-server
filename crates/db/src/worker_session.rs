@@ -14,7 +14,6 @@ use crate::{
     schema::tg_worker_sessions,
 };
 
-/// High-leverage repository for persisting Telegram worker bot session strings.
 #[derive(Clone)]
 pub struct WorkerSessionStore {
     pool: DbPool,
@@ -39,7 +38,6 @@ impl WorkerSessionStore {
         Self::new(pool, secret_key.as_deref())
     }
 
-    /// Retrieve a saved session string by the bot token's SHA-256 hash.
     pub async fn get_session(&self, token_hash: &str) -> Result<Option<String>, DbError> {
         let mut conn = self.pool.connection().await?;
         let session = tg_worker_sessions::table
@@ -73,7 +71,6 @@ impl WorkerSessionStore {
         }
     }
 
-    /// Persist or update an authenticated session string for a worker bot token.
     pub async fn save_session(&self, token_hash: &str, session_data: &str) -> Result<(), DbError> {
         let mut conn = self.pool.connection().await?;
         let to_save = if let Some(ref c) = self.cipher {
@@ -107,7 +104,6 @@ impl WorkerSessionStore {
         Ok(())
     }
 
-    /// Remove a session record by token hash (e.g. on token revocation or invalid session).
     pub async fn delete_session(&self, token_hash: &str) -> Result<bool, DbError> {
         let mut conn = self.pool.connection().await?;
         let deleted = diesel::delete(

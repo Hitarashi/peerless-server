@@ -85,35 +85,38 @@ where
     }
 }
 
-/// Request payload to exchange a single-use Telegram OTP for session tokens.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct ExchangeRequest {
-    /// The single-use OTP code generated via Telegram bot `/stream`.
     #[schema(example = "ABC-123")]
     pub code: String,
-    /// Client device hardware or model name.
+
+    #[serde(alias = "client")]
+    #[schema(example = "Laboon")]
+    pub client_name: Option<String>,
+
+    #[schema(example = "1.0.0")]
+    pub client_version: Option<String>,
+
     #[schema(example = "Pixel 8 Pro")]
     pub device_name: Option<String>,
-    /// Client operating platform (e.g. android, ios, desktop, linux).
+
     #[schema(example = "android")]
     pub platform: Option<String>,
 }
 
-/// Authenticated user profile.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct UserDto {
-    /// Telegram user ID.
     #[schema(example = 123456789)]
     pub telegram_id: i64,
-    /// Telegram first name or display name.
+
     #[schema(example = "Sayeed")]
     pub name: Option<String>,
-    /// Telegram username without the leading `@`, when available.
+
     #[schema(example = "sayeed")]
     pub username: Option<String>,
-    /// Telegram first name, when available.
+
     pub first_name: Option<String>,
-    /// Telegram last name, when available.
+
     pub last_name: Option<String>,
 }
 
@@ -205,98 +208,91 @@ async fn load_user_profile(state: &ServerState, telegram_id: i64) -> UserDto {
     }
 }
 
-/// Token exchange response containing sliding access tokens and user profile.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ExchangeResponse {
-    /// Standard Bearer token type.
     #[schema(example = "Bearer")]
     pub token_type: &'static str,
-    /// Opaque session token, identical to `access_token` and `refresh_token` in this response.
+
     pub token: String,
-    /// Bearer token for Authorization headers; identical to `token` and `refresh_token`.
+
     pub access_token: String,
-    /// Token accepted by the refresh endpoint; identical to `token` and `access_token`.
+
     pub refresh_token: String,
-    /// Number of seconds until session expiry (default 259,200s / 3 days).
+
     #[schema(example = 259200)]
     pub expires_in: i64,
-    /// ISO-8601 UTC expiration timestamp.
+
     pub expires_at: DateTime<Utc>,
-    /// Unix epoch timestamp (seconds) when the token expires.
+
     #[schema(example = 1742468000)]
     pub expires_at_unix: i64,
-    /// Authenticated user summary.
+
     pub user: UserDto,
-    /// Configured Lyricsporn API base URL for client catalog and artwork lookups.
-    /// Omitted when no URL is configured.
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lyricsporn_api_url: Option<String>,
 }
 
-/// Request payload to refresh an existing sliding session.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct RefreshRequest {
-    /// Raw token to slide forward.
     pub token: Option<String>,
-    /// Refresh token to slide forward.
+
     pub refresh_token: Option<String>,
 }
 
-/// Response returned when a sliding session is refreshed.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RefreshResponse {
-    /// Standard Bearer token type.
     #[schema(example = "Bearer")]
     pub token_type: &'static str,
-    /// Opaque session token supplied in the request, unchanged and identical to the other token fields.
+
     pub token: String,
-    /// Bearer token for Authorization headers; identical to `token` and `refresh_token`.
+
     pub access_token: String,
-    /// Token accepted by the refresh endpoint; identical to `token` and `access_token`.
+
     pub refresh_token: String,
-    /// Number of seconds until session expiry.
+
     #[schema(example = 259200)]
     pub expires_in: i64,
-    /// ISO-8601 UTC expiration timestamp.
+
     pub expires_at: DateTime<Utc>,
-    /// Unix epoch timestamp (seconds) when the token expires.
+
     #[schema(example = 1742468000)]
     pub expires_at_unix: i64,
 }
 
-/// Request payload to revoke an active session.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct LogoutRequest {
-    /// Token to revoke.
     pub token: Option<String>,
-    /// Refresh token to revoke.
+
     pub refresh_token: Option<String>,
 }
 
-/// Details of an active user session device.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SessionDto {
-    /// Unique session identifier.
     #[schema(example = "session_01h7x...")]
     pub id: String,
-    /// Registered device name.
+
+    #[schema(example = "Laboon")]
+    pub client_name: Option<String>,
+
+    #[schema(example = "1.0.0")]
+    pub client_version: Option<String>,
+
     #[schema(example = "MacBook Pro")]
     pub device_name: Option<String>,
-    /// Registered operating platform.
+
     #[schema(example = "macos")]
     pub platform: Option<String>,
-    /// Last recorded active request timestamp.
+
     pub last_active_at: DateTime<Utc>,
-    /// Session expiration timestamp.
+
     pub expires_at: DateTime<Utc>,
 }
 
-/// Response containing current user profile and active device sessions.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct MeResponse {
-    /// User profile.
     pub user: UserDto,
-    /// List of all active device sessions for this user.
+
     pub sessions: Vec<SessionDto>,
 }
 
@@ -317,6 +313,8 @@ pub async fn exchange(
     Json(payload): Json<ExchangeRequest>,
 ) -> Result<Json<ExchangeResponse>, ServerError> {
     let metadata = db::ClientMetadata {
+        client_name: payload.client_name.as_deref(),
+        client_version: payload.client_version.as_deref(),
         device_name: payload.device_name.as_deref(),
         platform: payload.platform.as_deref(),
     };
@@ -430,7 +428,6 @@ pub async fn logout(
         let _ = state.session_mgr.revoke(&token).await;
         Ok(Json(serde_json::json!({ "revoked": true })))
     } else if let Some(user) = maybe_user {
-        // Revoke all sessions for current user if no specific token given
         state.token_cache.invalidate_all();
         let _ = state
             .session_mgr
@@ -473,6 +470,8 @@ pub async fn me(
         .into_iter()
         .map(|s| SessionDto {
             id: s.id,
+            client_name: s.client_name,
+            client_version: s.client_version,
             device_name: s.device_name,
             platform: s.platform,
             last_active_at: s.last_active_at,

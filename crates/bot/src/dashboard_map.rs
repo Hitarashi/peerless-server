@@ -1,9 +1,3 @@
-//! Engine job snapshot → dashboard view-model mapping.
-//
-//! Pure functions only: no Telegram I/O, no orchestrator state. The event
-//! bridge stores the last engine snapshot per job and every dashboard render
-//! (open, refresh callback, `refresh_all`) goes through [`snapshot_from`].
-
 use std::collections::HashMap;
 
 use engine::orchestrator::types::{
@@ -13,9 +7,6 @@ use engine::orchestrator::types::{
 
 use crate::dashboard::{DashboardJob, DashboardSnapshot, JobPhase};
 
-/// Cached per-job rendering context. `ActiveRipTask` snapshots carry the live
-/// counters, but `job_header`/`user_name` are finalized early; remembering
-/// them keeps terminal rows (cancellation) renderable before removal.
 #[derive(Debug, Default)]
 pub struct JobContexts {
     jobs: HashMap<String, JobContext>,
@@ -23,9 +14,8 @@ pub struct JobContexts {
 
 #[derive(Debug, Clone)]
 pub struct JobContext {
-    /// Engine `job_header` post-resolution (rich HTML, already escaped).
     pub header: String,
-    /// Requester display name (`user_name` from options).
+
     pub requester_name: String,
     pub job_activity: Option<TaskActivity>,
     pub download: Option<DownloadLane>,
@@ -39,7 +29,6 @@ impl JobContexts {
         }
     }
 
-    /// Remember a job's rendering context from its latest engine snapshot.
     pub fn remember(&mut self, job: &ActiveRipTask) {
         let (job_activity, download, upload) = self
             .jobs
@@ -67,8 +56,6 @@ impl JobContexts {
         );
     }
 
-    /// Remember the latest pipeline facts while retaining the job's
-    /// presentation context across subsequent engine snapshots.
     pub fn remember_progress(&mut self, progress: &RipTaskProgress) {
         if let Some(context) = self.jobs.get_mut(&progress.job_id) {
             context.job_activity = progress.job_activity.clone();
@@ -77,7 +64,6 @@ impl JobContexts {
         }
     }
 
-    /// Drop contexts for finished jobs so the registry cannot grow unbounded.
     pub fn forget(&mut self, job_id: &str) {
         self.jobs.remove(job_id);
     }
@@ -86,22 +72,15 @@ impl JobContexts {
         self.jobs.get(job_id)
     }
 
-    /// Iterate remembered contexts (used by whole-snapshot builds).
     pub fn iter(&self) -> impl Iterator<Item = (&String, &JobContext)> {
         self.jobs.iter()
     }
 
-    /// Insert/replace one context (used by registry snapshots).
     pub fn insert(&mut self, job_id: String, context: JobContext) {
         self.jobs.insert(job_id, context);
     }
 }
 
-/// Map an engine phase to the dashboard's view.
-///
-/// `Resolving`/`CheckingCache` render as `Processing` (an active-stage label):
-/// the dashboard distinguishes waiting-in-queue, delivering from cache, and
-/// waiting on an inflight duplicate from active work.
 pub fn phase_from(engine_phase: EnginePhase) -> JobPhase {
     match engine_phase {
         EnginePhase::Queued => JobPhase::Queued,
@@ -129,14 +108,10 @@ fn fallback_job_activity(job: &ActiveRipTask) -> Option<TaskActivity> {
     }
 }
 
-/// Percent for the dashboard row, clamped to 100.
 pub fn percent_from(progress: &RipTaskProgress) -> u8 {
     progress.percent.min(100) as u8
 }
 
-/// Map an engine job snapshot into a dashboard row for a specific viewer.
-///
-/// Cancel permission is `viewer == requester || viewer_is_admin` .
 pub fn job_to_dashboard(
     job: &ActiveRipTask,
     context: &JobContext,
@@ -171,10 +146,6 @@ pub fn job_to_dashboard(
     }
 }
 
-/// Build a whole dashboard snapshot from the engine's active jobs.
-///
-/// Jobs missing a remembered context (e.g. an engine restart missed by the
-/// bridge) still render with a fallback header rather than disappearing.
 pub fn snapshot_from(
     active: &[ActiveRipTask],
     contexts: &JobContexts,
@@ -187,9 +158,6 @@ pub fn snapshot_from(
     ordered.sort_by(|left, right| {
         fn key(job: &ActiveRipTask) -> (u8, u64, u64) {
             match job.phase {
-                // The currently running/delivering job is always listed before work
-                // waiting in the queue. Queue positions then order pending
-                // jobs deterministically; waiting duplicate jobs come after queued jobs.
                 EnginePhase::Delivering | EnginePhase::Processing => (0, 0, job.start_time_ms),
                 EnginePhase::Queued => {
                     (1, job.queue_position.unwrap_or(u64::MAX), job.start_time_ms)
@@ -319,7 +287,7 @@ mod tests {
         assert_eq!(row.ripped, 3);
         assert_eq!(row.failed, 1);
         assert_eq!(row.total, 10);
-        assert_eq!(row.percent, 60); // (2+3+1+0)/10
+        assert_eq!(row.percent, 60);
     }
 
     #[test]

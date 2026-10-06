@@ -1,3 +1,2 @@
-# Nightly rustfmt: group and merge imports
 group_imports = "StdExternalCrate"
 imports_granularity = "Crate"

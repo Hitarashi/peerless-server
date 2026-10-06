@@ -1,10 +1,3 @@
-//! Music service integrations.
-//!
-//! Each provider lives in its own submodule and re-exports its handlers,
-//! request/response types, and router from here, so call sites and utoipa
-//! paths keep using `crate::integrations::*`.
-
-// Public so utoipa can reach the generated `__path_*` structs from `docs.rs`.
 pub mod lastfm;
 pub mod listenbrainz;
 

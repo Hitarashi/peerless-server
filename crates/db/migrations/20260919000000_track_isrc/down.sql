@@ -1,2 +1,0 @@
-DROP INDEX IF EXISTS tracks_isrc_idx;
-ALTER TABLE tracks DROP COLUMN IF EXISTS isrc;

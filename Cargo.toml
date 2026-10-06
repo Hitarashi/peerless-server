@@ -4,7 +4,6 @@ members = [
     "crates/music",
     "crates/engine",
     "crates/apple",
-    "crates/qobuz",
     "crates/db",
     "crates/media",
     "crates/stream",
@@ -26,14 +25,9 @@ ferogram = {
 diesel = { version = "2", features = ["postgres", "chrono", "serde_json"] }
 diesel-async = { version = "0.9", features = ["postgres", "bb8", "async-connection-wrapper"] }
 diesel_migrations = "2"
-# Must track the tokio-postgres that diesel-async 0.9 resolves to.
 tokio-postgres = "0.7"
 tokio-postgres-rustls = "0.14"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
-# Same approach as diesel_async's own examples/postgres/*-with-rustls: the
-# platform verifier names the crypto provider explicitly (this dependency tree
-# enables more than one, so ClientConfig::builder() panics) and reads the OS
-# trust store.
 rustls-platform-verifier = "0.7"
 tokio = { version = "1", features = ["full"] }
 bytes = "1"
@@ -54,7 +48,7 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "s
 indexmap = "2"
 cuid2 = "0.1"
 sha2 = "0.11"
-sha1 = "0.10" # pinned to rsa 0.9's digest generation; bump with rsa 0.10
+sha1 = "0.10"
 rsa = { version = "0.9", features = ["sha1", "getrandom"] }
 md-5 = "0.11"
 aes = "0.9"

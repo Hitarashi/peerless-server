@@ -1,9 +1,3 @@
-//! Native lossless conversion of fragmented MP4 audio into progressive MP4.
-//!
-//! The remuxer copies encoded samples and the original sample entry unchanged.
-//! It supports one continuous audio track, which matches the fragmented music
-//! files handled by the rip pipeline.
-
 use std::{
     fs::File,
     io::{Read, Seek, SeekFrom},
@@ -46,8 +40,6 @@ impl BoxSpan {
     }
 }
 
-/// Converts a fragmented M4A source into progressive M4A at `destination`.
-/// Returns `false` for an already progressive source so the caller can copy it.
 pub(super) fn remux_if_fragmented(
     source: &Path,
     destination: &Path,
@@ -165,8 +157,7 @@ fn remux_fragmented(
         timescale: track.timescale,
         language: track.language.clone(),
         handler_name: track.handler_name.clone(),
-        // The raw sample entry carries ALAC, AAC, EC3, and other codec boxes
-        // verbatim, including codec-specific boxes this crate does not model.
+
         codec: Codec::Other {
             entry,
             raw: raw_sample_entry,

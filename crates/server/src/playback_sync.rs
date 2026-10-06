@@ -22,157 +22,117 @@ use crate::{
     },
 };
 
-/// Session revocation is detected within this interval while a socket is idle.
 const AUTH_RECHECK_INTERVAL: Duration = Duration::from_secs(30);
 
-/// Identifies a device currently connected to the authenticated user's playback room.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 pub struct ConnectedDeviceInfo {
-    /// Client-chosen identifier for this device.
     pub device_id: String,
-    /// Human-readable device name shown to other clients in the room.
+
     pub device_name: String,
-    /// Client-reported platform, such as `ios`, `android`, `web`, or `desktop`.
+
     pub platform: String,
 }
 
-/// Messages sent by a client to the playback synchronization server.
-///
-/// The wire representation is adjacent-tagged JSON: `{"type":"...","payload":{...}}`.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type", content = "payload")]
 pub enum ClientMessage {
-    /// Register this connection as a device in the user's room. Required before receiving rip-task events.
     #[serde(rename = "hello")]
     Hello {
-        /// Client-chosen identifier for this device.
         device_id: String,
-        /// Human-readable device name.
+
         device_name: String,
-        /// Client-reported platform.
+
         platform: String,
     },
-    /// Publish playback state. The server treats `snapshot` as opaque JSON and stores/rebroadcasts it unchanged.
+
     #[serde(rename = "report_state")]
-    ReportState {
-        /// Opaque client playback state; the server does not parse or validate its contents.
-        snapshot: serde_json::Value,
-    },
-    /// Ask every device in the room (including the sender) to perform an action.
+    ReportState { snapshot: serde_json::Value },
+
     #[serde(rename = "command")]
     Command {
-        /// Action name, commonly `play`, `pause`, `seek`, `next`, `prev`, or `select_track`.
         action: String,
-        /// Optional action-specific data, whose structure is defined by the client application.
+
         #[serde(default)]
         data: Option<serde_json::Value>,
     },
-    /// Make the named device the active playback device and broadcast the resulting room state.
+
     #[serde(rename = "transfer_playback")]
-    TransferPlayback {
-        /// Identifier of the device to make active.
-        target_device_id: String,
-    },
-    /// Create a rip task and correlate its direct reply using `request_id`.
+    TransferPlayback { target_device_id: String },
+
     #[serde(rename = "create_rip_task")]
     CreateRipTask {
-        /// Client-generated identifier echoed in the RPC reply.
         request_id: String,
-        /// Task request data.
+
         request: crate::rip_tasks::RipTaskRequest,
     },
-    /// Cancel an active rip task and correlate its direct reply using `request_id`.
+
     #[serde(rename = "cancel_rip_task")]
-    CancelRipTask {
-        /// Client-generated identifier echoed in the RPC reply.
-        request_id: String,
-        /// Active task identifier returned by `create_rip_task`.
-        task_id: String,
-    },
+    CancelRipTask { request_id: String, task_id: String },
 }
 
-/// Messages sent by the server to clients in a playback room.
-///
-/// The wire representation is adjacent-tagged JSON: `{"type":"...","payload":{...}}`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(tag = "type", content = "payload")]
 pub enum ServerMessage {
-    /// Current room membership, active device, and most recently reported playback snapshot.
     #[serde(rename = "room_state")]
     RoomState {
-        /// Device currently controlling playback, if one is active.
         active_device_id: Option<String>,
-        /// Devices currently connected to the room.
+
         devices: Vec<ConnectedDeviceInfo>,
-        /// Latest opaque playback snapshot, if any has been reported by the active device.
+
         snapshot: Option<serde_json::Value>,
     },
-    /// A new playback snapshot reported by the active device.
+
     #[serde(rename = "state_updated")]
     StateUpdated {
-        /// Device currently controlling playback.
         active_device_id: Option<String>,
-        /// Opaque playback state, forwarded without server-side interpretation.
+
         snapshot: serde_json::Value,
     },
-    /// A room-wide command to execute locally; this is also delivered back to its sender.
+
     #[serde(rename = "command")]
     Command {
-        /// Action name supplied by the client that issued the command.
         action: String,
-        /// Optional action-specific data supplied by the sender.
+
         data: Option<serde_json::Value>,
     },
-    /// Full active rip-task state, sent after `hello` and when a task subscriber falls behind.
+
     #[serde(rename = "rip_tasks_snapshot")]
     RipTasksSnapshot {
-        /// Current active server-owned task snapshots; each task's `is_owner` identifies ownership.
         tasks: Vec<crate::rip_tasks::RipTaskSnapshot>,
     },
-    /// Updated state for one server-owned rip task.
+
     #[serde(rename = "rip_task_updated")]
     RipTaskUpdated {
-        /// Updated task snapshot.
         task: Box<crate::rip_tasks::RipTaskSnapshot>,
     },
-    /// Notification that a task was dismissed or is no longer active.
+
     #[serde(rename = "rip_task_dismissed")]
-    RipTaskDismissed {
-        /// Identifier of the dismissed task.
-        task_id: String,
-    },
-    /// Direct reply to a create request; sent only to the initiating connection.
+    RipTaskDismissed { task_id: String },
+
     #[serde(rename = "rip_task_created")]
     RipTaskCreated {
-        /// Request correlation identifier supplied by the client.
         request_id: String,
-        /// Empty for a cache hit, which has no cancellable task; see `result_track_id`.
+
         task_id: String,
-        /// Whether a task was queued or an existing cached result completed the request.
+
         status: RipTaskRpcStatus,
-        /// Database track id when the request was satisfied from cache.
+
         result_track_id: Option<i32>,
-        /// Initial active-task snapshot for queued requests; null when there is no active task.
+
         task: Option<Box<crate::rip_tasks::RipTaskSnapshot>>,
     },
-    /// Direct reply to a cancel request; sent only to the initiating connection.
+
     #[serde(rename = "rip_task_cancelled")]
-    RipTaskCancelled {
-        /// Request correlation identifier supplied by the client.
-        request_id: String,
-        /// Identifier of the task that was cancelled.
-        task_id: String,
-    },
-    /// Direct RPC error; sent only to the initiating connection.
+    RipTaskCancelled { request_id: String, task_id: String },
+
     #[serde(rename = "error")]
     Error {
-        /// Request id when it could be recovered from the incoming frame.
         request_id: Option<String>,
-        /// Stable protocol error category.
+
         code: RipTaskRpcErrorCode,
-        /// Sanitized client-facing description.
+
         message: String,
-        /// Whether retrying the same operation may succeed.
+
         retryable: bool,
     },
 }
@@ -232,8 +192,6 @@ pub async fn ws_handler(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, ServerError> {
-    // The Authorization: Bearer header is the only accepted credential. Query-string
-    // tokens are rejected because they land in URLs, proxy/access logs, and history.
     let token = if let Some(auth_val) = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|h| h.to_str().ok())
@@ -486,7 +444,7 @@ async fn handle_socket(
                         break;
                     }
                     None => {
-                        // Client disconnected
+
                         break;
                     }
                 }
@@ -494,7 +452,6 @@ async fn handle_socket(
         }
     }
 
-    // When socket drops or errors:
     if let Some(dev_id) = my_device_id {
         let mut room = room_arc.lock().await;
         let removed = remove_device_connection(&mut room, &dev_id, connection_id);
@@ -522,8 +479,6 @@ async fn dispatch_rip_task_rpc(
         | RipTaskRpcRequest::Cancel { request_id, .. } => request_id.clone(),
     };
 
-    // Never rely on token_cache for operation freshness. Verification is deliberately
-    // immediately before entering the service, before it can reserve or cancel work.
     let identity = match state.session_mgr.verify_session(token).await {
         Ok(identity) if identity.telegram_id == connection_telegram_id => AuthenticatedIdentity {
             telegram_id: identity.telegram_id,
@@ -791,7 +746,6 @@ mod tests {
         }
     }
 
-    /// Locks the exact snake_case wire strings the AsyncAPI document and clients rely on.
     #[test]
     fn rip_task_taxonomy_wire_strings_are_stable() {
         let statuses = [
@@ -814,7 +768,6 @@ mod tests {
         }
     }
 
-    /// The room-wide command uses one name in both directions.
     #[test]
     fn command_wire_name_is_shared_in_both_directions() {
         let client = ClientMessage::Command {

@@ -1,5 +1,3 @@
-//! Production Telegram delivery adapter used by the orchestration engine.
-
 use std::{path::Path, sync::Arc, time::Duration};
 
 use engine::orchestrator::deps::{
@@ -10,12 +8,10 @@ use ferogram::{
     ErrorKind, InputMessage, InvocationError, InvocationErrorExt, PeerRef, TransferHandle,
 };
 
-/// Maximum caption length allowed by Telegram for media messages (in UTF-16 code units).
 const MAX_CAPTION_UTF16_LEN: usize = 1024;
-/// Maximum size allowed for one audio track upload through Telegram.
+
 const MAX_TELEGRAM_TRACK_BYTES: u64 = 2_000_000_000;
 
-/// Clamps plain text to fit within `max_utf16` code units, appending an ellipsis if truncated.
 fn clamp_plain_text(text: &str, max_utf16: usize) -> String {
     let mut curr_len = 0;
     let mut byte_limit = text.len();
@@ -32,8 +28,6 @@ fn clamp_plain_text(text: &str, max_utf16: usize) -> String {
     truncated
 }
 
-/// Prepares an `InputMessage` for media uploads, ensuring the caption never exceeds
-/// Telegram's 1024 UTF-16 code unit limit.
 fn prepare_media_caption(caption_html: &str) -> InputMessage {
     let msg = InputMessage::html(caption_html);
     let utf16_count = msg.text.encode_utf16().count();
@@ -49,7 +43,6 @@ fn prepare_media_caption(caption_html: &str) -> InputMessage {
     InputMessage::text(clamped)
 }
 
-/// Ferogram-backed implementation of the engine's delivery port.
 pub struct FerogramTelegramSink {
     client: Arc<ferogram::Client>,
     dump_peer: PeerRef,
@@ -63,8 +56,7 @@ fn map_invocation(error: InvocationError) -> DeliveryError {
         | ErrorKind::Network
         | ErrorKind::Migration(_)
         | ErrorKind::Transfer => DeliveryError::Transient(detail),
-        // Preserve the existing retryable treatment for media delivery now
-        // that Ferogram distinguishes this from generic transfer errors.
+
         ErrorKind::FileReferenceExpired => DeliveryError::Transient(detail),
         ErrorKind::Rpc { code, .. } if code >= 500 => DeliveryError::Transient(detail),
         ErrorKind::Rpc { name, .. } if name == "ENTITY_BOUNDS_INVALID" => {
@@ -175,20 +167,6 @@ impl FerogramTelegramSink {
     }
 }
 
-/// Force an uploaded document to be classified as music.
-///
-/// The uploader infers a MIME type from the file and builds document attributes
-/// to match. `.m4a` is an MP4 container, and the inference is inconsistent: some
-/// tracks come back as `video/mp4` carrying a `Video` attribute instead of
-/// `audio/m4a` with an `Audio` one. Telegram then renders them as a black video
-/// player with a 00:00 scrubber under "Media" rather than a Music entry, and the
-/// upload's own post-send audio check rejects them, leaving an orphaned message
-/// in the dump channel with no database row.
-///
-/// Rather than trust the inference, state the intent: drop any non-audio
-/// attribute, carry an explicit `Audio` attribute with the real duration, and
-/// give the document an `audio/*` MIME type so both Telegram and the streaming
-/// server agree on what the file is.
 fn force_audio_document(
     document: &mut ferogram::tl::types::InputMediaUploadedDocument,
     file_path: &std::path::Path,
@@ -202,7 +180,6 @@ fn force_audio_document(
         document.mime_type = audio_mime_for(file_path).to_string();
     }
 
-    // Keep the display filename; discard whatever the uploader inferred.
     let filename = document
         .attributes
         .iter()
@@ -227,8 +204,6 @@ fn force_audio_document(
     }
 }
 
-/// The MIME type to declare for a lossless rip, matching the codec the rip
-/// pipeline selected rather than the container extension.
 fn audio_mime_for(file_path: &std::path::Path) -> &'static str {
     match file_path
         .extension()
@@ -620,8 +595,6 @@ mod tests {
         assert_eq!(unique_id, "mtproto:document:7");
     }
 
-    /// Build the document shape the uploader produces when it misclassifies a
-    /// `.m4a` as video — the exact state observed in the dump channel.
     fn video_classified_document() -> ferogram::tl::types::InputMediaUploadedDocument {
         ferogram::tl::types::InputMediaUploadedDocument {
             nosound_video: false,
@@ -719,8 +692,6 @@ mod tests {
             "Elvis Presley",
         );
 
-        // A correct audio upload must not be rewritten into a different
-        // container type; only the attribute detail is filled in.
         assert_eq!(document.mime_type, "audio/m4a");
         let audio = document
             .attributes
@@ -760,7 +731,7 @@ mod tests {
         assert_eq!(audio_mime_for(std::path::Path::new("a.FLAC")), "audio/flac");
         assert_eq!(audio_mime_for(std::path::Path::new("a.opus")), "audio/opus");
         assert_eq!(audio_mime_for(std::path::Path::new("a.mp3")), "audio/mpeg");
-        // Unknown extension: still audio, never video.
+
         assert!(audio_mime_for(std::path::Path::new("a.bin")).starts_with("audio/"));
     }
 }

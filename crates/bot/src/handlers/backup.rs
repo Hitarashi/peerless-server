@@ -1,9 +1,3 @@
-//! `/export` + `/import` — gzipped typed database archive backup/restore
-//! .
-//!
-//! Both commands are admin-only AND DM-only (the silently returns
-//! outside a private chat).
-
 use std::{
     collections::HashMap,
     fs::OpenOptions,
@@ -78,19 +72,16 @@ fn confirmation_keyboard(token: &str) -> ferogram::tl::enums::ReplyMarkup {
         .into_markup()
 }
 
-/// caption: "Compressed Size" in KB with one decimal.
-fn export_caption(users: i64, tracks: i64, requests: i64, bytes: usize) -> String {
+fn export_caption(users: i64, tracks: i64, bytes: usize) -> String {
     format!(
         "<b>📦 Database Dump Exported</b>\n\n\
 • <b>Users:</b> {users}\n\
 • <b>Tracks:</b> {tracks}\n\
-• <b>Requests:</b> {requests}\n\
 • <b>Compressed Size:</b> {:.1} KB",
         bytes as f64 / KB
     )
 }
 
-/// Extract the `.json.gz` (or `.gz`) document from the replied-to message.
 async fn replied_document(
     state: &BotState,
     msg: &ferogram::update::IncomingMessage,
@@ -162,7 +153,6 @@ async fn export(state: Arc<BotState>, msg: ferogram::update::IncomingMessage) {
         }
     };
 
-    // Write to a temp file, upload as a document, then clean up.
     let (tmp, mut file) = match secure_temp_file("alac_export") {
         Ok(file) => file,
         Err(error) => {
@@ -187,12 +177,7 @@ async fn export(state: Arc<BotState>, msg: ferogram::update::IncomingMessage) {
     }
     drop(file);
 
-    let caption = export_caption(
-        stats.users_count,
-        stats.tracks_count,
-        stats.requests_count,
-        stats.bytes,
-    );
+    let caption = export_caption(stats.users_count, stats.tracks_count, stats.bytes);
     let send_result = match state.client.upload_file(&tmp).await {
         Ok(uploaded) => {
             let media = uploaded.as_document_media();
@@ -216,7 +201,6 @@ async fn export(state: Arc<BotState>, msg: ferogram::update::IncomingMessage) {
             .await;
     }
 
-    // deletes the "Generating..." status message in a finally.
     if let Some(status) = status {
         let _ = status.delete().await;
     }
@@ -408,8 +392,8 @@ async fn restore_archive(
     let _ = std::fs::remove_file(&tmp);
     let text = match restore_result {
         Ok(stats) => format!(
-            "<b>Database restored</b><br/><br/><blockquote>• Users: {}<br/>• Tracks: {}<br/>• Requests: {}<br/>• Elapsed: {}ms</blockquote>",
-            stats.users_merged, stats.tracks_merged, stats.requests_merged, stats.duration_ms
+            "<b>Database restored</b><br/><br/><blockquote>• Users: {}<br/>• Tracks: {}<br/>• Elapsed: {}ms</blockquote>",
+            stats.users_merged, stats.tracks_merged, stats.duration_ms
         ),
         Err(error) => {
             tracing::warn!(%error, file_name, "database restore failed");
@@ -435,7 +419,6 @@ async fn delete_query_message(state: &BotState, query: &CallbackQuery) {
     }
 }
 
-/// Download a document's bytes to a temp path and read them back.
 async fn download_document(
     state: &BotState,
     media: &ferogram::tl::enums::MessageMedia,

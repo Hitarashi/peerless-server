@@ -1,5 +1,3 @@
-//! Filename policy tests.
-
 use engine::{
     filename::{
         BoundedName, FilenameError, MAX_FILENAME_BYTES, TrackFilename, build_track_filename,

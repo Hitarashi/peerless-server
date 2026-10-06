@@ -22,8 +22,6 @@ async fn handle_rpc_as(
     expected_user_id: i64,
     request: RipTaskRpcRequest,
 ) -> Result<RipTaskRpcSuccess, server::rip_task_rpc::RipTaskRpcError> {
-    // Match the WebSocket dispatcher: verify the live session immediately before each RPC.
-    // verify_session is deliberately non-sliding and does not extend activity or expiry.
     let session = session_mgr
         .verify_session(token)
         .await
@@ -82,41 +80,48 @@ async fn test_playback_ticket_cryptography() {
     assert_eq!(verified_track, track_id);
     assert_eq!(verified_user, user_id);
 
-    // Direct StreamTicket methods
     let pt = StreamTicket::new(track_id, user_id, ttl);
     let encoded = pt.encode(key);
     let decoded = StreamTicket::decode(key, &encoded).expect("valid ticket must decode");
     assert_eq!(decoded.db_track_id, track_id);
     assert_eq!(decoded.user_id, user_id);
 
-    // Tampered key fails
     assert!(verify_stream_ticket("wrong_key", &ticket).is_err());
     assert!(StreamTicket::decode("wrong_key", &encoded).is_err());
 
-    // Expired ticket fails
     let expired_ticket = create_stream_ticket(key, track_id, user_id, -10);
     assert!(verify_stream_ticket(key, &expired_ticket).is_err());
     let expired_pt = StreamTicket::new(track_id, user_id, -10);
     assert!(StreamTicket::decode(key, &expired_pt.encode(key)).is_err());
 }
 
-#[tokio::test]
-async fn test_docs_and_unauthorized_endpoints() {
+async fn test_pool() -> Option<db::DbPool> {
     let _ = dotenvy::from_filename(".env");
-    let Ok(db_url) = std::env::var("DATABASE_URL").or_else(|_| std::env::var("TEST_DATABASE_URL"))
-    else {
-        eprintln!("Skipping HTTP router integration test: DATABASE_URL not set");
-        return;
-    };
-
-    let pool = match db::connect(&db_url).await {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("Skipping HTTP router test: cannot connect to {db_url}: {e}");
-            return;
+    let pool = if let Ok(pool) = db::connect_test_isolated().await {
+        pool
+    } else if let Ok(db_url) =
+        std::env::var("DATABASE_URL").or_else(|_| std::env::var("TEST_DATABASE_URL"))
+    {
+        match db::connect(&db_url).await {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Skipping test: cannot connect to {db_url}: {e}");
+                return None;
+            }
         }
+    } else {
+        eprintln!("Skipping test: TEST_DATABASE_URL/DATABASE_URL not set");
+        return None;
     };
     db::migrate(&pool).await.expect("database migrations");
+    Some(pool)
+}
+
+#[tokio::test]
+async fn test_docs_and_unauthorized_endpoints() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
 
     let worker_pool = stream::StreamWorkerPool::empty();
     let stream_engine = Arc::new(stream::StreamEngine::new(
@@ -144,7 +149,6 @@ async fn test_docs_and_unauthorized_endpoints() {
 
     let app = server::create_router(state);
 
-    // 1. Test Scalar UI
     let req = Request::builder()
         .uri("/api/v1/docs")
         .body(Body::empty())
@@ -158,7 +162,6 @@ async fn test_docs_and_unauthorized_endpoints() {
     assert!(html.contains("@scalar/api-reference"));
     assert!(html.contains("/api/v1/docs.json"));
 
-    // 2. Test OpenAPI JSON
     let req = Request::builder()
         .uri("/api/v1/docs.json")
         .body(Body::empty())
@@ -171,7 +174,6 @@ async fn test_docs_and_unauthorized_endpoints() {
     let json = String::from_utf8(body.to_vec()).unwrap();
     assert!(json.contains("\"openapi\":\"3.1"));
 
-    // 3. Test OpenAPI YAML
     let req = Request::builder()
         .uri("/api/v1/docs.yaml")
         .body(Body::empty())
@@ -179,7 +181,6 @@ async fn test_docs_and_unauthorized_endpoints() {
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
 
-    // 4. Test Unauthorized access to /api/v1/auth/me
     let req = Request::builder()
         .uri("/api/v1/auth/me")
         .body(Body::empty())
@@ -194,7 +195,6 @@ async fn test_docs_and_unauthorized_endpoints() {
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 
-    // 5. Test Unauthorized access to /api/v1/tracks/1/playback
     let req = Request::builder()
         .uri("/api/v1/tracks/1/playback")
         .body(Body::empty())
@@ -202,7 +202,6 @@ async fn test_docs_and_unauthorized_endpoints() {
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 
-    // 6. Test Bad Request to /api/v1/tracks/1/stream (missing ticket)
     let req = Request::builder()
         .uri("/api/v1/tracks/1/stream")
         .body(Body::empty())
@@ -210,7 +209,6 @@ async fn test_docs_and_unauthorized_endpoints() {
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 
-    // 7. Test /api/v1/tracks/1/stream with invalid ticket
     let req = Request::builder()
         .uri("/api/v1/tracks/1/stream?ticket=bogus_ticket_signature")
         .body(Body::empty())
@@ -218,7 +216,6 @@ async fn test_docs_and_unauthorized_endpoints() {
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 
-    // Verify legacy /api/v1/stream is dropped (404 Not Found)
     let req = Request::builder()
         .uri("/api/v1/stream")
         .body(Body::empty())
@@ -226,7 +223,6 @@ async fn test_docs_and_unauthorized_endpoints() {
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
 
-    // 8. Test /open endpoint
     let req = Request::builder()
         .uri("/open?code=test_code_123")
         .body(Body::empty())
@@ -241,12 +237,10 @@ async fn test_docs_and_unauthorized_endpoints() {
     assert!(html.contains("Open Peerless"));
     assert!(html.contains("Copy Connection Key"));
 
-    // 9. Test /open without code (400 Bad Request)
     let req = Request::builder().uri("/open").body(Body::empty()).unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 
-    // 10. Test /api/v1/health endpoint
     let req = Request::builder()
         .uri("/api/v1/health")
         .body(Body::empty())
@@ -264,7 +258,6 @@ async fn test_docs_and_unauthorized_endpoints() {
     assert!(health_res["cache_bytes"].as_u64().is_some());
     assert!(health_res["uptime_seconds"].as_u64().is_some());
 
-    // 11. Cache lookup is private and must refuse an anonymous caller.
     let lookup_payload = serde_json::json!({
         "track_ids": ["2147483000"],
         "album_ids": ["test_album"]
@@ -324,8 +317,6 @@ async fn test_lookup_requires_authenticated_session() {
 
     let app = server::create_router(state);
 
-    // Exchange a Telegram OTP for a sliding session token, the same flow the
-    // lifecycle tests above use to obtain credentials.
     let code = session_mgr.create_login_code(user_id).await.unwrap();
     let exchange_payload = serde_json::json!({
         "code": code,
@@ -347,7 +338,6 @@ async fn test_lookup_requires_authenticated_session() {
     let token = exchange_res["token"].as_str().unwrap().to_string();
     assert!(!token.is_empty());
 
-    // Unknown IDs stay off external services, while the route still requires a session.
     let lookup_payload = serde_json::json!({
         "track_ids": ["2147483000"],
         "album_ids": ["test_album"]
@@ -376,21 +366,9 @@ async fn test_lookup_requires_authenticated_session() {
 
 #[tokio::test]
 async fn test_auth_lifecycle() {
-    let _ = dotenvy::from_filename(".env");
-    let Ok(db_url) = std::env::var("DATABASE_URL").or_else(|_| std::env::var("TEST_DATABASE_URL"))
-    else {
-        eprintln!("Skipping database lifecycle test: DATABASE_URL not set");
+    let Some(pool) = test_pool().await else {
         return;
     };
-
-    let pool = match db::connect(&db_url).await {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("Skipping test: cannot connect to {db_url}: {e}");
-            return;
-        }
-    };
-    db::migrate(&pool).await.expect("database migrations");
 
     let admin_id = 888_000_123;
     let _ = db::integrations::delete_integration(&pool, admin_id, "lastfm").await;
@@ -409,28 +387,16 @@ async fn test_auth_lifecycle() {
     let playback_track_key = format!("auth_lifecycle_{admin_id}");
     tracks_repo
         .save_track(&engine::orchestrator::deps::SaveTrackInput {
-            track_key: music::TrackKey::new(music::Provider::Apple, playback_track_key.clone()),
+            track_id: playback_track_key.clone(),
             codec: music::Codec::Alac,
             message_id: 987_654_321,
             file_id: "auth_lifecycle_file".to_owned(),
             file_unique_id: "auth_lifecycle_unique".to_owned(),
-            title: "Auth lifecycle test track".to_owned(),
-            artist: "Test Artist".to_owned(),
-            album: "Test Album".to_owned(),
-            duration: 180,
-            bit_depth: 24,
-            sample_rate: 44_100,
-            genre: "Test".to_owned(),
-            release_date: "2026-01-01".to_owned(),
-            track_number: 1,
-            track_count: 1,
-            isrc: None,
-            recording_mbid: None,
         })
         .await
         .unwrap();
     let playback_track_id = tracks_repo
-        .find_all_by_provider_track_id(music::Provider::Apple, &playback_track_key)
+        .find_all_by_track_id(&playback_track_key)
         .await
         .unwrap()
         .into_iter()
@@ -453,12 +419,12 @@ async fn test_auth_lifecycle() {
 
     let app = server::create_router(state);
 
-    // 1. Generate OTP login code for admin
     let otp_code = session_mgr.create_login_code(admin_id).await.unwrap();
 
-    // 2. Exchange OTP for AdonisJS-style opaque token via HTTP POST /api/v1/auth/exchange
     let exchange_payload = serde_json::json!({
         "code": otp_code,
+        "client_name": "Laboon",
+        "client_version": "0.0.3",
         "device_name": "Test Runner",
         "platform": "linux"
     });
@@ -484,7 +450,6 @@ async fn test_auth_lifecycle() {
     assert_eq!(exchange_res["refresh_token"], token);
     assert_eq!(exchange_res["user"]["telegram_id"], admin_id);
 
-    // 2b. Refresh token via /api/v1/auth/refresh
     let refresh_payload = serde_json::json!({
         "refresh_token": token
     });
@@ -506,8 +471,6 @@ async fn test_auth_lifecycle() {
     assert_eq!(refresh_res["expires_in"], 259200);
     assert!(refresh_res["expires_at_unix"].as_i64().is_some());
 
-    // 2c. Test authorized GET /api/v1/tracks/1/playback - streaming needs BOTH a Last.fm and a
-    // ListenBrainz account, so a user with neither connection is forbidden and told about both.
     let req = Request::builder()
         .uri(&playback_uri)
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -525,14 +488,12 @@ async fn test_auth_lifecycle() {
         "with neither account connected the message must name both providers, got {forbidden_msg:?}"
     );
 
-    // Save Last.fm integration for admin
     let cipher = db::crypto::CryptoCipher::new(app_key).unwrap();
     let enc_key = cipher.encrypt("lastfm_test_session_key").unwrap();
     db::integrations::save_integration(&pool, admin_id, "lastfm", "testuser", &enc_key)
         .await
         .unwrap();
 
-    // Only Last.fm connected: still forbidden, and the message names ListenBrainz alone
     let req = Request::builder()
         .uri(&playback_uri)
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -554,7 +515,6 @@ async fn test_auth_lifecycle() {
         "with only Last.fm connected the message must not name the connected provider, got {forbidden_msg:?}"
     );
 
-    // Connect ListenBrainz, then remove Last.fm again to reach the mirror case
     let lb_enc_key = cipher.encrypt("test_lb_token_abc_123").unwrap();
     db::integrations::save_integration(
         &pool,
@@ -569,7 +529,6 @@ async fn test_auth_lifecycle() {
         .await
         .unwrap();
 
-    // Only ListenBrainz connected: still forbidden, and the message names Last.fm alone
     let req = Request::builder()
         .uri(&playback_uri)
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -591,7 +550,6 @@ async fn test_auth_lifecycle() {
         "with only ListenBrainz connected the message must not name the connected provider, got {forbidden_msg:?}"
     );
 
-    // Reconnect Last.fm: with both accounts connected playback is no longer forbidden
     db::integrations::save_integration(&pool, admin_id, "lastfm", "testuser", &enc_key)
         .await
         .unwrap();
@@ -617,7 +575,6 @@ async fn test_auth_lifecycle() {
     assert_eq!(pb_res["expires_in"], 7200);
     assert!(pb_res["file_size"].as_i64().is_some());
 
-    // Test GET /api/v1/integrations/lastfm/status
     let req = Request::builder()
         .uri("/api/v1/integrations/lastfm/status")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -633,7 +590,6 @@ async fn test_auth_lifecycle() {
     assert_eq!(status_res["username"], "testuser");
     assert_eq!(status_res["session_key"], "lastfm_test_session_key");
 
-    // Test DELETE /api/v1/integrations/lastfm
     let req = Request::builder()
         .method("DELETE")
         .uri("/api/v1/integrations/lastfm")
@@ -643,7 +599,6 @@ async fn test_auth_lifecycle() {
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::NO_CONTENT);
 
-    // After disconnect, status is not connected
     let req = Request::builder()
         .uri("/api/v1/integrations/lastfm/status")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -658,7 +613,6 @@ async fn test_auth_lifecycle() {
     assert_eq!(status_res["connected"], false);
     assert!(status_res["session_key"].is_null());
 
-    // Playback is forbidden again after disconnect, naming the now-missing Last.fm account
     let req = Request::builder()
         .uri(&playback_uri)
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -676,12 +630,10 @@ async fn test_auth_lifecycle() {
         "after disconnecting Last.fm only ListenBrainz remains, so only Last.fm should be named, got {forbidden_msg:?}"
     );
 
-    // Restore both integrations for any downstream test steps
     db::integrations::save_integration(&pool, admin_id, "lastfm", "testuser", &enc_key)
         .await
         .unwrap();
 
-    // Nonexistent track returns 404
     let req = Request::builder()
         .uri("/api/v1/tracks/99999999/playback")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -690,7 +642,6 @@ async fn test_auth_lifecycle() {
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
 
-    // 2d. Removed catalog routes no longer resolve.
     let req = Request::builder()
         .uri("/api/v1/albums/test_album")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -699,7 +650,6 @@ async fn test_auth_lifecycle() {
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
 
-    // 3. Query /api/v1/auth/me with Bearer token
     let req = Request::builder()
         .uri("/api/v1/auth/me")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -712,10 +662,11 @@ async fn test_auth_lifecycle() {
         .unwrap();
     let me_res: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(me_res["user"]["telegram_id"], admin_id);
-    assert!(!me_res["sessions"].as_array().unwrap().is_empty());
+    let sessions = me_res["sessions"].as_array().unwrap();
+    assert!(!sessions.is_empty());
+    assert_eq!(sessions[0]["client_name"], "Laboon");
+    assert_eq!(sessions[0]["client_version"], "0.0.3");
 
-    // Drop the ListenBrainz row created for the streaming-gate coverage above so the
-    // connect/disconnect lifecycle below starts from a disconnected state again.
     db::integrations::delete_integration(&pool, admin_id, "listenbrainz")
         .await
         .unwrap();
@@ -786,7 +737,6 @@ async fn test_auth_lifecycle() {
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
 
-    // 8. Subsequent requests with revoked token must fail with 401 UNAUTHORIZED
     let req = Request::builder()
         .uri("/api/v1/auth/me")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -800,21 +750,8 @@ async fn test_auth_lifecycle() {
 
 #[tokio::test]
 async fn test_tasks_rip_create_and_cancel_lifecycle() {
-    let _ = dotenvy::from_filename(".env");
-    let Ok(database_url) =
-        std::env::var("DATABASE_URL").or_else(|_| std::env::var("TEST_DATABASE_URL"))
-    else {
-        eprintln!(
-            "Skipping database lifecycle test: neither DATABASE_URL nor TEST_DATABASE_URL is set"
-        );
+    let Some(pool) = test_pool().await else {
         return;
-    };
-    let pool = match db::connect(&database_url).await {
-        Ok(pool) => pool,
-        Err(e) => {
-            eprintln!("Skipping test: cannot connect to {database_url}: {e}");
-            return;
-        }
     };
     let worker_pool = stream::StreamWorkerPool::empty();
     let stream_engine = Arc::new(stream::StreamEngine::new(
@@ -846,9 +783,6 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
         .with_admin_id(admin_id),
     );
 
-    // Keep the existing database-backed authentication fixture. The RPC service is called
-    // directly below, but every operation first verifies its live session as the WebSocket
-    // dispatcher does.
     let app = server::create_router(state.clone());
     let auth = db::Auth::new(pool.clone(), admin_id);
     auth.authorize(owner_id, Some("Owner")).await.unwrap();
@@ -886,7 +820,6 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
         .as_nanos();
     let owner_track_id = format!("lifecycle_owner_{unique_suffix}");
 
-    // 1. Owner creates a new queued task through the typed RPC service.
     let created = handle_rpc_as(
         &session_mgr,
         state.clone(),
@@ -931,7 +864,6 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
         other => panic!("expected task update, got {other:?}"),
     }
 
-    // 2. A non-owner/non-admin cannot cancel the task; it remains live and emits no feed event.
     let error = handle_rpc_as(
         &session_mgr,
         state.clone(),
@@ -950,7 +882,6 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
         Err(tokio::sync::broadcast::error::TryRecvError::Empty)
     ));
 
-    // 3. Cancelling a task id that does not exist returns NotFound.
     let error = handle_rpc_as(
         &session_mgr,
         state.clone(),
@@ -967,7 +898,6 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
         Err(tokio::sync::broadcast::error::TryRecvError::Empty)
     ));
 
-    // 4. Owner cancels their task and the task feed reports its dismissal.
     assert_eq!(
         handle_rpc_as(
             &session_mgr,
@@ -991,7 +921,6 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
     assert!(controller.is_cancelled());
     assert!(!state.active_tasks.read().contains_key(&task_id));
 
-    // 5. Admins can cancel a task owned by another user.
     let admin_task = handle_rpc_as(
         &session_mgr,
         state.clone(),
@@ -1041,7 +970,6 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
     ));
     assert!(!state.active_tasks.read().contains_key(&admin_task_id));
 
-    // 6. Identical in-flight requests coalesce after provider/track/codec normalization.
     let dedup_track_id = format!("lifecycle_dedup_{unique_suffix}");
     let dedup_first = handle_rpc_as(
         &session_mgr,
@@ -1095,13 +1023,12 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
         Err(tokio::sync::broadcast::error::TryRecvError::Empty)
     ));
 
-    // A different normalized codec is a distinct dedup key and gets its own task.
     let different_codec = handle_rpc_as(
         &session_mgr,
         state.clone(),
         &owner_token,
         owner_id,
-        create_rip_rpc_request("dedup-flac", &dedup_track_id, Some("flac")),
+        create_rip_rpc_request("dedup-aac", &dedup_track_id, Some("aac")),
     )
     .await
     .expect("different codec create succeeds");
@@ -1119,7 +1046,7 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
         state.active_tasks.read()[&different_codec_task_id]
             .codec
             .as_deref(),
-        Some("flac")
+        Some("aac")
     );
     assert!(matches!(
         task_sync_events.recv().await.unwrap(),
@@ -1127,7 +1054,6 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
             if updated_id == different_codec_task_id
     ));
 
-    // Completed tasks disappear from the active task feed.
     state.complete_task(&dedup_task_id);
     assert!(!state.active_tasks.read().contains_key(&dedup_task_id));
     assert!(matches!(
@@ -1148,32 +1074,16 @@ async fn test_tasks_rip_create_and_cancel_lifecycle() {
             if dismissed_id == different_codec_task_id
     ));
 
-    // 7. Fast-path DB cache hit returns the result id and an empty, non-cancellable task id.
     let save_input = engine::orchestrator::deps::SaveTrackInput {
-        track_key: music::TrackKey::new(
-            music::Provider::Apple,
-            "cached_track_fastpath".to_string(),
-        ),
+        track_id: "cached_track_fastpath".to_string(),
         codec: music::Codec::Alac,
         message_id: 202,
         file_id: "tg_file_fastpath".to_string(),
         file_unique_id: "unique_fastpath".to_string(),
-        title: "Fastpath Song".to_string(),
-        artist: "Fastpath Artist".to_string(),
-        album: "Fastpath Album".to_string(),
-        duration: 210,
-        bit_depth: 24,
-        sample_rate: 96000,
-        genre: "Pop".to_string(),
-        release_date: "2024".to_string(),
-        track_number: 1,
-        track_count: 1,
-        isrc: None,
-        recording_mbid: None,
     };
     tracks_repo.save_track(&save_input).await.unwrap();
     let cached_track = tracks_repo
-        .find_all_by_provider_track_id(music::Provider::Apple, "cached_track_fastpath")
+        .find_all_by_track_id("cached_track_fastpath")
         .await
         .unwrap()
         .into_iter()

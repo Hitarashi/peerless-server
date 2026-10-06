@@ -8,7 +8,6 @@ use std::{
 };
 
 use apple::parse_alac_input;
-use engine::{Provider, TrackKey};
 use ferogram::{
     InputMessage, PeerRef, filters,
     filters::Dispatcher,
@@ -17,10 +16,7 @@ use ferogram::{
     update::CallbackQuery,
 };
 
-use crate::{
-    BotState,
-    html::{escape, parse_dynamic_html},
-};
+use crate::{BotState, html::parse_dynamic_html};
 
 const RESTRICTED: &str =
     "! <b>Access restricted</b><br/>This command is restricted to the bot owner.";
@@ -114,15 +110,14 @@ async fn delete(msg: ferogram::update::IncomingMessage, state: Arc<BotState>) {
         return;
     };
     let track_id = parsed.track_id;
-    let track_key = TrackKey::new(Provider::Apple, track_id.clone());
 
     let cached = match state
         .rip_deps
         .tracks()
-        .find_cached_tracks(std::slice::from_ref(&track_key))
+        .find_cached_tracks(std::slice::from_ref(&track_id))
         .await
     {
-        Ok(mut tracks) => tracks.remove(&track_key),
+        Ok(tracks) => tracks.into_values().next(),
         Err(error) => {
             tracing::warn!(%error, "failed to find cached track for deletion");
             return;
@@ -155,20 +150,9 @@ async fn delete(msg: ferogram::update::IncomingMessage, state: Arc<BotState>) {
             },
         );
     }
-    let title_raw = if cached.title.is_empty() {
-        format!("Track {track_id}")
-    } else {
-        cached.title.clone()
-    };
-    let title = escape(&title_raw);
-    let artist = escape(if cached.artist.is_empty() {
-        "Unknown Artist"
-    } else {
-        &cached.artist
-    });
     let text = format!(
-        "<b>Delete this cached track?</b><br/><br/><blockquote><b>Details:</b><br/>• Title: <b>{title}</b> — {artist}<br/>• Apple ID: <code>{track_id}</code><br/>• Dump message: <code>#{}</code></blockquote><br/><i>This removes the dump message and database record.</i>",
-        cached.message_id
+        "<b>Delete this cached track?</b><br/><br/><blockquote><b>Details:</b><br/>• Apple ID: <code>{track_id}</code><br/>• Codec: <code>{}</code><br/>• Dump message: <code>#{}</code></blockquote><br/><i>This removes the dump message and database record.</i>",
+        cached.codec, cached.message_id
     );
     let _ = msg
         .reply(
@@ -229,14 +213,13 @@ pub async fn callback(
         }
         return;
     }
-    let track_key = TrackKey::new(Provider::Apple, pending.track_id.clone());
     let cached = state
         .rip_deps
         .tracks()
-        .find_cached_tracks(std::slice::from_ref(&track_key))
+        .find_cached_tracks(std::slice::from_ref(&pending.track_id))
         .await
         .ok()
-        .and_then(|mut tracks| tracks.remove(&track_key));
+        .and_then(|tracks| tracks.into_values().next());
     let Some(cached) = cached else {
         let _ = query
             .answer()
@@ -270,7 +253,12 @@ pub async fn callback(
         .await;
         return;
     }
-    if let Err(error) = state.rip_deps.tracks().delete_track(&track_key).await {
+    if let Err(error) = state
+        .rip_deps
+        .tracks()
+        .delete_track(&pending.track_id, Some(cached.codec))
+        .await
+    {
         tracing::warn!(%error, track_id = %pending.track_id, "failed to delete cached track");
         edit_query(
             &state,
@@ -280,20 +268,9 @@ pub async fn callback(
         .await;
         return;
     }
-    let title_raw = if cached.title.is_empty() {
-        format!("Track {}", pending.track_id)
-    } else {
-        cached.title.clone()
-    };
-    let title = escape(&title_raw);
-    let artist = escape(if cached.artist.is_empty() {
-        "Unknown Artist"
-    } else {
-        &cached.artist
-    });
     let text = format!(
-        "<b>Track deleted</b><br/><br/><blockquote>• Title: <b>{title}</b> — {artist}<br/>• Apple ID: <code>{}</code><br/>• Removed from the database and dump channel.</blockquote>",
-        pending.track_id
+        "<b>Track deleted</b><br/><br/><blockquote>• Apple ID: <code>{}</code><br/>• Codec: <code>{}</code><br/>• Removed from the database and dump channel.</blockquote>",
+        pending.track_id, cached.codec,
     );
     edit_query(&state, &query, &text).await;
 }
@@ -332,7 +309,6 @@ async fn delete_dump_message(state: &BotState, message_id: i64) -> Result<(), St
         .await
         .map_err(|error| error.to_string())?;
     let Some(message) = messages.first() else {
-        // The message is already absent, which is the desired end state.
         return Ok(());
     };
     message.delete().await.map_err(|error| error.to_string())

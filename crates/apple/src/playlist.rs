@@ -1,8 +1,3 @@
-//! Lyricsporn-backed playlist metadata and ISRC resolver.
-//!
-//! Playlist metadata and track lists are fetched through Lyricsporn. Audio
-//! acquisition remains a separate Apple wrapper and mirror workflow.
-
 use std::{
     collections::HashMap,
     future::Future,
@@ -14,7 +9,6 @@ use serde_json::Value;
 
 const LYRICSPORN_USER_AGENT: &str = "peerless-server";
 
-/// User-facing playlist resolution failures.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PlaylistError {
     #[error("Lyricsporn playlist lookup timed out after {elapsed_ms}ms: {message}")]
@@ -32,11 +26,8 @@ pub enum PlaylistError {
     Other(String),
 }
 
-/// One header for an HTTP GET.
 pub type Header = (String, String);
 
-/// The seam every playlist fetch crosses, with status codes surfaced so
-/// missing Apple Music IDs can be reported without scraping Apple auth.
 pub trait PlaylistHttp: Send + Sync {
     fn get(
         &self,
@@ -114,8 +105,6 @@ impl<H: PlaylistHttp> PlaylistClient<H> {
             .ok_or_else(|| PlaylistError::Other("Catalog API URL is not configured".to_owned()))
     }
 
-    /// Resolve playlist metadata and all available tracks through Lyricsporn.
-    /// An unavailable regional playlist is retried against the US storefront.
     pub async fn fetch_playlist_tracks(
         &self,
         playlist_id: &str,
@@ -233,7 +222,6 @@ impl<H: PlaylistHttp> PlaylistClient<H> {
         })
     }
 
-    /// Resolve ISRCs for a list of Apple Music song IDs via Lyricsporn.
     pub async fn fetch_songs_isrc(
         &self,
         song_ids: &[&str],
@@ -249,7 +237,6 @@ impl<H: PlaylistHttp> PlaylistClient<H> {
         Ok(isrcs)
     }
 
-    /// Single-song ISRC lookup convenience helper.
     pub async fn fetch_song_isrc(
         &self,
         song_id: &str,
@@ -273,6 +260,57 @@ impl<H: PlaylistHttp> PlaylistClient<H> {
             .and_then(Value::as_str)
             .filter(|isrc| !isrc.is_empty())
             .map(ToOwned::to_owned))
+    }
+
+    pub async fn fetch_song_meta(
+        &self,
+        song_id: &str,
+        storefront: &str,
+    ) -> Result<Option<PlaylistTrack>, PlaylistError> {
+        let storefront = normalize_storefront(storefront);
+        let api_url = self.configured_api_url()?;
+        let url = format!(
+            "{api_url}/tracks/{}?storefront={}",
+            urlencode(song_id),
+            urlencode(&storefront)
+        );
+        let start = Instant::now();
+        let body = self
+            .get(&url, Duration::from_secs(20), start, song_id, &storefront)
+            .await?;
+        let response: Value =
+            serde_json::from_str(&body).map_err(|error| PlaylistError::Other(error.to_string()))?;
+        let track = response.get("track").or_else(|| response.get("data"));
+        Ok(track.and_then(map_track))
+    }
+
+    pub async fn search_catalog(
+        &self,
+        term: &str,
+        limit: i64,
+        storefront: &str,
+    ) -> Result<Vec<PlaylistTrack>, PlaylistError> {
+        let storefront = normalize_storefront(storefront);
+        let api_url = self.configured_api_url()?;
+        let limit = limit.clamp(1, 25);
+        let url = format!(
+            "{api_url}/catalog/search?term={}&storefront={}&types=songs&limit={limit}&artworkSize=1000",
+            urlencode(term),
+            urlencode(&storefront)
+        );
+        let start = Instant::now();
+        let body = self
+            .get(&url, Duration::from_secs(15), start, term, &storefront)
+            .await?;
+        let response: Value =
+            serde_json::from_str(&body).map_err(|error| PlaylistError::Other(error.to_string()))?;
+        let items = response
+            .pointer("/results/songs/items")
+            .and_then(Value::as_array);
+        let Some(items) = items else {
+            return Ok(Vec::new());
+        };
+        Ok(items.iter().filter_map(map_track).collect())
     }
 
     async fn get(

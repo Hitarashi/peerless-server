@@ -1,5 +1,3 @@
-//! Typed provenance for an acquired stream source.
-
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

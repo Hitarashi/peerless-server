@@ -16,9 +16,6 @@ struct TelegramSink {
     peer: PeerRef,
 }
 
-/// Construct the dashboard adapter used by both `/status` and get commands.
-/// Keeping the adapter here ensures every chat has one consistent message
-/// lifecycle regardless of which command first opens the dashboard.
 pub(crate) fn dashboard_sink(client: ferogram::Client, peer: PeerRef) -> Arc<dyn DashboardSink> {
     Arc::new(TelegramSink { client, peer })
 }
@@ -98,7 +95,7 @@ pub fn register(dp: &mut Dispatcher, state: Arc<BotState>) {
                 client: state.client.clone(),
                 peer: super::chat_peer_ref(&msg),
             });
-            // Real engine snapshot, viewer-scoped at open time.
+
             let snapshot = event_bridge::current_snapshot(&state).await;
             let _ = dashboard_manager()
                 .open(super::marked_chat_id(&msg), user, admin, sink, snapshot)

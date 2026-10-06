@@ -1,6 +1,3 @@
-//! Single-track ripper: metadata → stream → raw file → tagged M4A, with
-//! retries, cancellation, and source-failure circuit reporting.
-
 use std::{
     fmt,
     future::Future,
@@ -116,7 +113,6 @@ impl std::fmt::Display for RipError {
 
 impl std::error::Error for RipError {}
 
-/// Failure classes that can be attributed to an acquired stream source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceFailureKind {
     Stream,
@@ -165,7 +161,6 @@ impl From<std::io::Error> for RipError {
 
 pub type RipProgressCallback = Arc<dyn Fn(RipActivity) + Send + Sync>;
 
-/// Configuration knobs (default retries 3, base delay 2s).
 #[derive(Clone)]
 pub struct RipperConfig {
     pub default_output_dir: PathBuf,
@@ -213,7 +208,6 @@ impl Default for RipperConfig {
     }
 }
 
-/// Provider-owned acquisition and metadata stage used by the generic ripper.
 pub trait RipStage: Send + Sync {
     fn track_meta(
         &self,
@@ -348,7 +342,6 @@ async fn fetch_artwork_with_client(
     Some(response.bytes().await.ok()?.to_vec())
 }
 
-/// Fetch artwork for the orchestrator's album ZIP enrichment seam.
 pub async fn fetch_artwork_bytes(config: &RipperConfig, url: &str) -> Option<Vec<u8>> {
     fetch_artwork_with_client(config.artwork_client.clone(), config.artwork_timeout, url).await
 }
@@ -399,12 +392,10 @@ async fn finalize_m4a(
         .map_err(map_media_finalize_error)
 }
 
-/// Retrying wrapper around `rip_once`.
 pub struct AlacTrackRipper {
     config: RipperConfig,
 }
 
-/// Options controlling a track rip operation.
 #[derive(Clone)]
 pub struct RipOptions<'a> {
     pub provider: Provider,
@@ -515,7 +506,6 @@ impl AlacTrackRipper {
                         "Track rip failed, retrying"
                     );
 
-                    // Abortable sleep: cancellation rejects immediately.
                     if let Some(token) = &options.signal {
                         tokio::select! {
                             _ = tokio::time::sleep(Duration::from_millis(delay_ms)) => {}
@@ -557,16 +547,10 @@ impl AlacTrackRipper {
         tokio::fs::create_dir_all(target_dir).await?;
         let track_dir = target_dir.join(format!(".track_{}", unique_temp_suffix()));
         if let Err(error) = tokio::fs::create_dir_all(&track_dir).await {
-            // `create_dir_all` can leave a partially-created directory behind
-            // before reporting an error.  Do not leave that staging lane for
-            // a later `/clean` invocation to discover.
             let _ = tokio::fs::remove_dir_all(&track_dir).await;
             return Err(error.into());
         }
 
-        // Keep every operation after staging-directory creation inside one
-        // result so metadata/connect/cancellation errors get the same cleanup
-        // as stream and tagging errors.
         let result: Result<TrackRipResult, RipError> = async {
             emit_progress(on_progress, RipActivity::ResolvingMetadata);
             let meta = stage.track_meta(track_id, storefront).await?;
@@ -583,7 +567,6 @@ impl AlacTrackRipper {
                 },
             );
 
-            // Fetch Apple-ID lyrics while the audio stream downloads.
             let lyrics_task = {
                 let track_id = track_id.to_owned();
                 let client = self.config.lyrics_client.clone();
@@ -623,7 +606,6 @@ impl AlacTrackRipper {
                 }
             };
 
-            // Connect the audio stream.
             let stream_start = std::time::Instant::now();
             let stream_progress: Option<ProgressCallback> = on_progress.cloned();
             let mut stream = stage
@@ -659,20 +641,14 @@ impl AlacTrackRipper {
                     }
                 })
                 .collect();
-            // Keep the human-readable track id for diagnostics, but always add a
-            // monotonic/time component. Track ids are external input and must not
-            // be allowed to select a path or collide within one job.
+
             let temp_raw_name = format!(
                 "stream_{safe_track_id}_{unix_ms}_{}.raw",
                 unique_temp_suffix()
             );
             let temp_raw_name = StandardFilename::sanitize_and_bound(&temp_raw_name, Some(".raw"));
             let temp_raw_path = track_dir.join(temp_raw_name);
-            // The raw stream is staged in the private lane, but the completed
-            // file must live outside it: callers consume this path after `rip`
-            // returns, while the lane is removed on every outcome. Reserve the
-            // normal human-readable name first, falling back to a unique name
-            // rather than clobbering a concurrent rip's output.
+
             let base_name = build_track_filename_with_codec(&meta, &stream.codec);
             let mut final_name = base_name.clone();
             let mut final_path = target_dir.join(&final_name);
@@ -693,9 +669,6 @@ impl AlacTrackRipper {
                 }
             }
 
-            // Detached-into-the-loop prefetch: lyrics + artwork download while
-            // the audio streams (polled in the same select! as the stream so
-            // failures never wait on them).
             let lyrics_fut = std::pin::pin!(lyrics_task);
             let artwork_fut = std::pin::pin!(artwork_task);
             let mut lyrics_result: Option<Option<String>> = None;
@@ -708,7 +681,7 @@ impl AlacTrackRipper {
             let result: Result<TrackRipResult, RipError> = async {
                 let total = stream.content_length.filter(|len| *len > 0);
                 let mut downloaded_bytes = 0u64;
-                // Starting at 0 makes the first chunk always emit a progress event.
+
                 let mut last_progress_update = std::time::Instant::now()
                     .checked_sub(Duration::from_secs(10))
                     .unwrap_or_else(std::time::Instant::now);
@@ -823,7 +796,6 @@ impl AlacTrackRipper {
                 );
                 let tag_start = std::time::Instant::now();
 
-                // Reap any prefetches that outlived the stream.
                 if lyrics_result.is_none() {
                     lyrics_result = Some((&mut lyrics_fut).await);
                 }
@@ -837,10 +809,6 @@ impl AlacTrackRipper {
                     return Err(RipError::Cancelled);
                 }
 
-                // Only source validation produces `Decode`: the stage cannot
-                // know the stream source, so the ripper attaches it here.
-                // Post-tag failures arrive as `Message`/`LocalIo` and never
-                // trip the circuit.
                 let tags = assemble_tags(stage, &meta, cover.as_deref(), lyrics.as_deref());
                 match finalize_m4a(&temp_raw_path, &final_path, &tags).await {
                     Ok(()) => {}
@@ -890,13 +858,10 @@ impl AlacTrackRipper {
                     track_number: meta.track_number.unwrap_or(1),
                     track_count: meta.track_count.unwrap_or(1),
                     isrc: meta.isrc.clone().filter(|s| !s.is_empty()),
-                    recording_mbid: None,
                 })
             }
             .await;
 
-            // Temp raw removed on every exit path; prefetch tasks reaped.  A
-            // failed finalizer may also have left a partial public output.
             let _ = tokio::fs::remove_file(&temp_raw_path).await;
             if result.is_err() {
                 let _ = tokio::fs::remove_file(&final_path).await;
@@ -905,9 +870,6 @@ impl AlacTrackRipper {
         }
         .await;
 
-        // The staging lane is private implementation detail, not persistent
-        // storage. Remove it after both success and failure (including errors
-        // before the inner stream result is constructed).
         let _ = tokio::fs::remove_dir_all(&track_dir).await;
         result
     }
@@ -919,8 +881,6 @@ fn emit_progress(on_progress: Option<&RipProgressCallback>, activity: RipActivit
     }
 }
 
-/// Jitter fraction in `0.0..1.0` from a cheap time-seeded xorshift
-/// (exact values are never asserted).
 fn jitter_fraction() -> f64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static STATE: AtomicU64 = AtomicU64::new(0);

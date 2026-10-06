@@ -1,12 +1,3 @@
-//! Async bridge between the engine's synchronous event callbacks and
-//! Telegram/dashboard work.
-//!
-//! The orchestrator emits events from inside its pipeline; those callbacks
-//! must not perform network I/O (they can run under the job mutex and would
-//! stall the whole queue). The sync subscription only **clones** event data
-//! into a bounded mpsc channel; this module's spawned consumer does the
-//! async rendering: one shared status dashboard per chat.
-
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -24,9 +15,6 @@ use crate::{
     mirror_health::last_known_health,
 };
 
-/// Owned copies of engine events, safe to move across an mpsc channel.
-/// `job` is boxed: `ActiveRipTask` is large enough that six inline copies
-/// would bloat every `BridgeEvent` to the size of the biggest variant.
 #[derive(Debug, Clone)]
 pub enum BridgeEvent {
     Created {
@@ -61,7 +49,6 @@ impl BridgeEvent {
         )
     }
 
-    /// Clone a borrowed engine event into an owned, sendable copy.
     pub fn from_engine(event: &OrchestratorEvent<'_>) -> Option<Self> {
         Some(match event {
             OrchestratorEvent::Created(job) => BridgeEvent::Created {
@@ -90,9 +77,7 @@ impl BridgeEvent {
     }
 }
 
-/// Job registry shared by the bridge consumer and dashboard renders.
 pub struct BridgeRegistry {
-    /// Rendering contexts keyed by job id (header/requester name).
     contexts: Mutex<JobContexts>,
 }
 
@@ -103,9 +88,6 @@ impl BridgeRegistry {
         }
     }
 
-    /// Remember a job's rendering context (header/requester) from its latest
-    /// engine snapshot. `user_name` is set once at creation and the header is
-    /// finalized post-resolution, so later snapshots are authoritative.
     pub fn remember(&self, job: &ActiveRipTask) {
         self.contexts
             .lock()
@@ -120,8 +102,6 @@ impl BridgeRegistry {
             .remember_progress(progress);
     }
 
-    /// Drop a finished job's context and editor so neither registry grows
-    /// unbounded.
     pub fn forget(&self, job_id: &str) {
         self.contexts
             .lock()
@@ -129,7 +109,6 @@ impl BridgeRegistry {
             .forget(job_id);
     }
 
-    /// Copy of all contexts, for whole-dashboard snapshot builds.
     pub fn contexts_snapshot(&self) -> JobContexts {
         let guard = self.contexts.lock().expect("contexts poisoned");
         let mut copy = JobContexts::new();
@@ -148,7 +127,6 @@ pub fn registry() -> Arc<BridgeRegistry> {
         .clone()
 }
 
-/// The consumer loop: one event at a time, network edits allowed.
 async fn consume(state: Arc<BotState>, mut rx: mpsc::Receiver<BridgeEvent>) {
     const CREATED_EVENT_QUIET_PERIOD: Duration = Duration::from_millis(100);
 
@@ -209,19 +187,15 @@ fn remember_event_context(event: &BridgeEvent) {
     }
 }
 
-/// Subscribe the bridge to orchestrator events and spawn its consumer.
 pub fn start(state: Arc<BotState>) {
     const EVENT_BUFFER: usize = 256;
     let (tx, rx) = mpsc::channel(EVENT_BUFFER);
 
-    // Sync subscriber: clone event data only, never await.
     state.rip_orchestrator.subscribe(Arc::new(move |event| {
         if let Some(owned) = BridgeEvent::from_engine(event) {
             match tx.try_send(owned) {
                 Ok(()) => {}
                 Err(mpsc::error::TrySendError::Full(event)) if event.is_terminal() => {
-                    // Never lose a terminal state just because progress edits
-                    // are filling the bounded queue.
                     let tx = tx.clone();
                     tokio::spawn(async move {
                         let _ = tx.send(event).await;
@@ -238,15 +212,11 @@ pub fn start(state: Arc<BotState>) {
     tokio::spawn(consume(state, rx));
 }
 
-/// Build a global dashboard snapshot from the engine's current jobs.
 pub async fn current_snapshot(state: &BotState) -> crate::dashboard::DashboardSnapshot {
     let active = state.rip_orchestrator.get_active_tasks();
     let settings = state.rip_deps.settings_snapshot();
     let mode = settings.ripping_mode.as_str().to_owned();
-    // Refresh mirror health opportunistically: the last-known value renders
-    // immediately, and a fresh probe runs only when the cached one is stale.
-    // The probe is bounded (4s timeout) and shares the ripper's policy
-    // manager, so an unreachable mirror cannot flood the transport.
+
     let health = if last_known_health().is_fresh() {
         last_known_health().label().map(str::to_owned)
     } else {
@@ -254,8 +224,7 @@ pub async fn current_snapshot(state: &BotState) -> crate::dashboard::DashboardSn
         last_known_health().record(report);
         Some(report.health.label().to_owned())
     };
-    // Per-viewer permissions are applied by the dashboard manager per entry;
-    // the global snapshot stays viewer-neutral.
+
     snapshot_from(
         &active,
         &registry().contexts_snapshot(),
@@ -266,7 +235,6 @@ pub async fn current_snapshot(state: &BotState) -> crate::dashboard::DashboardSn
     )
 }
 
-/// Single consumer turn: refresh the shared dashboard for the event.
 async fn handle_event(state: Arc<BotState>, event: BridgeEvent) -> Result<(), String> {
     let state_ref = state.as_ref();
     match event {
@@ -302,15 +270,11 @@ async fn handle_event(state: Arc<BotState>, event: BridgeEvent) -> Result<(), St
     Ok(())
 }
 
-/// Refresh every open dashboard; `force` bypasses the coalescing window for
-/// terminal/queue-shape changes.
 async fn refresh_dashboard(state: &BotState, force: bool) {
     let snapshot = current_snapshot(state).await;
     dashboard_manager().refresh(snapshot, force).await;
 }
 
-/// Remember a burst of created jobs, then send or edit each affected chat's
-/// dashboard once with a snapshot that includes the whole burst.
 async fn refresh_dashboard_for_created_jobs(state: &BotState, jobs: Vec<ActiveRipTask>) {
     let mut chats = HashMap::<i64, ActiveRipTask>::new();
     for job in jobs {
@@ -409,10 +373,6 @@ fn format_failed_track(failed: &FailedTrack) -> String {
     }
 }
 
-/// Prefer the ordered multi-rendition view, while retaining the singular
-/// field as a compatibility fallback for summaries produced by older engine
-/// callers.  The returned order is the delivery order and must not be
-/// reconstructed through a map or sorted by codec.
 fn zip_delivery_entries(
     summary: &RipTaskSummary,
 ) -> Vec<&engine::orchestrator::types::ZipDeliveryInfo> {
@@ -455,9 +415,6 @@ fn zip_delivery_details_html(
     }
 }
 
-/// Send one terminal completion notice to the originating chat. Reply to the
-/// command when it still exists; otherwise mention the requester explicitly
-/// so completion remains visible even after message cleanup.
 async fn notify_job_completed(state: &BotState, job: &ActiveRipTask, summary: &RipTaskSummary) {
     if job.chat_id <= 0 {
         return;
@@ -524,8 +481,7 @@ async fn notify_job_completed(state: &BotState, job: &ActiveRipTask, summary: &R
             }
         }
     }
-    // Engine-authored plain-text notes (e.g. single-track ZIP skip). Escaped
-    // because they can embed album names.
+
     for warning in &summary.warnings {
         lines.push(format!("┣ ⚠️ {}", crate::html::escape(warning)));
     }
@@ -554,11 +510,6 @@ async fn notify_job_completed(state: &BotState, job: &ActiveRipTask, summary: &R
         None
     };
 
-    // ZIP jobs: the album preview photo + rich details caption was delivered
-    // alongside each ZIP rendition. If a photo could not be delivered, fall
-    // back to the corresponding rich album details as a text message (no
-    // webpage preview). Iterate the engine's vector directly so primary then
-    // Atmos order and each rendition's codec label are preserved.
     let zip_deliveries = zip_delivery_entries(summary);
     let multiple_renditions = zip_deliveries.len() > 1;
     for zip in zip_deliveries {
@@ -587,9 +538,7 @@ async fn notify_job_completed(state: &BotState, job: &ActiveRipTask, summary: &R
     }
     if let Err(error) = state.client.send_message(peer.clone(), input).await {
         tracing::warn!(job_id = %job.id, error = %error, "completion notification failed");
-        // The command may have been deleted between the existence check and
-        // the reply. Fall back to sending without reply_to so the user still gets
-        // a completion notification.
+
         if reply_id.is_some() {
             let mut fb_msg = ferogram::InputMessage::html(details).no_webpage(true);
             if let Some(k) = keyboard {

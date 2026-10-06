@@ -1,9 +1,3 @@
-//! Bot settings: ripping mode + feature flags.
-//!
-//! The DB-backed `SettingsStore` (typed singleton, write-through cache)
-//! lives in the db crate; this module carries the domain types,
-//! defaults, and permission logic.
-
 use std::{
     collections::HashMap,
     sync::{Arc, RwLock},
@@ -19,8 +13,6 @@ fn default_50() -> u32 {
     50
 }
 
-/// The storefront every Apple Music catalog call falls back to when the caller
-/// did not supply one.
 pub const FALLBACK_STOREFRONT: &str = "in";
 
 fn default_storefront() -> String {
@@ -31,10 +23,6 @@ fn default_stream_server_port() -> u16 {
     4444
 }
 
-/// Validate and normalize a configured Lyricsporn API base URL.
-///
-/// The value must include the API path prefix (for example, `https://host/api/v1`),
-/// because API clients append resource paths such as `/tracks/{id}` to it.
 pub fn normalize_lyricsporn_api_url(value: &str) -> Option<String> {
     let trimmed = value.trim().trim_end_matches('/');
     let parsed = reqwest::Url::parse(trimmed).ok()?;
@@ -50,8 +38,6 @@ pub fn normalize_lyricsporn_api_url(value: &str) -> Option<String> {
     Some(trimmed.to_owned())
 }
 
-/// Shared live endpoint handle used by catalog, playlist, artwork, and lyrics
-/// requests. Updating the saved bot setting updates in-flight services too.
 #[derive(Clone, Debug, Default)]
 pub struct LyricspornApiEndpoint(Arc<RwLock<Option<String>>>);
 
@@ -66,8 +52,6 @@ impl LyricspornApiEndpoint {
         self.0.read().expect("Lyricsporn URL lock poisoned").clone()
     }
 
-    /// Set a valid URL, or clear the endpoint. Invalid URLs leave the current
-    /// value unchanged.
     pub fn set(&self, value: Option<&str>) -> bool {
         let value = match value {
             Some(value) => match normalize_lyricsporn_api_url(value) {
@@ -81,7 +65,6 @@ impl LyricspornApiEndpoint {
     }
 }
 
-/// Whether the bot rips live, serves cache only, or is paused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RippingMode {
@@ -100,8 +83,6 @@ impl RippingMode {
         }
     }
 
-    /// Parse a stored `ripping_mode` row value; anything unrecognized falls
-    /// back to the default.
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "live" => Some(RippingMode::Live),
@@ -112,7 +93,6 @@ impl RippingMode {
     }
 }
 
-/// The bot's runtime settings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BotSettings {
     #[serde(default)]
@@ -135,11 +115,10 @@ pub struct BotSettings {
     pub stream_public_url: Option<String>,
     #[serde(default = "default_stream_server_port")]
     pub stream_server_port: u16,
-    /// Storefront used for Apple Music catalog lookups when the caller did not
-    /// supply one.
+
     #[serde(default = "default_storefront")]
     pub default_storefront: String,
-    /// Optional base URL used for Apple catalog, artwork, and lyrics calls.
+
     #[serde(default)]
     pub lyricsporn_api_url: Option<String>,
     #[serde(flatten, default)]
@@ -167,7 +146,6 @@ impl Default for BotSettings {
 }
 
 impl BotSettings {
-    /// Admins can always rip live; users need mode `'live'`.
     pub fn can_rip_live(&self, is_admin: bool) -> bool {
         if is_admin {
             return true;
@@ -175,7 +153,6 @@ impl BotSettings {
         self.ripping_mode == RippingMode::Live
     }
 
-    /// Check if live ripping is enabled for the specified provider.
     pub fn can_rip_provider(&self, provider: &music::Provider, is_admin: bool) -> bool {
         if !provider.is_apple() {
             return false;
@@ -187,7 +164,6 @@ impl BotSettings {
         self.can_rip_provider(&music::Provider::Apple, is_admin)
     }
 
-    /// Admins can always serve cache; users need mode `!= 'paused'`.
     pub fn can_serve_cache(&self, is_admin: bool) -> bool {
         if is_admin {
             return true;
@@ -215,7 +191,6 @@ impl BotSettings {
         is_admin || self.multi_link_rip_enabled
     }
 
-    /// Cycle: live → cache_only → paused → live.
     pub fn cycled_mode(&self) -> RippingMode {
         match self.ripping_mode {
             RippingMode::Live => RippingMode::CacheOnly,
@@ -225,17 +200,10 @@ impl BotSettings {
     }
 }
 
-/// Construct the default runtime settings.
 pub fn default_settings() -> BotSettings {
     BotSettings::default()
 }
 
-/// The configured default storefront, trimmed and guaranteed non-empty.
-///
-/// A stored value that is empty or whitespace-only would otherwise be handed
-/// straight to the Apple API, so it falls back to [`FALLBACK_STOREFRONT`].
-/// Call this wherever `default_storefront` is about to become a request
-/// parameter.
 pub fn resolve_default_storefront(settings: &BotSettings) -> &str {
     let trimmed = settings.default_storefront.trim();
     if trimmed.is_empty() {
@@ -276,15 +244,12 @@ mod tests {
         let mut s = default_settings();
         assert_eq!(resolve_default_storefront(&s), "in");
 
-        // A stored value wins once it is non-blank.
         s.default_storefront = "gb".to_string();
         assert_eq!(resolve_default_storefront(&s), "gb");
 
-        // Surrounding whitespace is trimmed, not rejected.
         s.default_storefront = "  jp  ".to_string();
         assert_eq!(resolve_default_storefront(&s), "jp");
 
-        // Empty / whitespace-only never reaches the Apple API.
         s.default_storefront = String::new();
         assert_eq!(resolve_default_storefront(&s), "in");
         s.default_storefront = "   \t ".to_string();
@@ -293,8 +258,6 @@ mod tests {
 
     #[test]
     fn missing_default_storefront_key_deserializes_to_default() {
-        // Rows persisted before the field existed have no `default_storefront`
-        // key; serde must fall back rather than fail the whole decode.
         let decoded: BotSettings =
             serde_json::from_str(r#"{"rippingMode":"live","albumRipEnabled":true}"#)
                 .expect("deserialize legacy row");
@@ -309,7 +272,7 @@ mod tests {
         let json_str = serde_json::to_string(&s).expect("serialize");
         let decoded: BotSettings = serde_json::from_str(&json_str).expect("deserialize");
         assert_eq!(decoded.default_storefront, "ca");
-        // The flattened `extra` map must not shadow the typed field.
+
         assert!(!decoded.extra.contains_key("default_storefront"));
     }
 
@@ -339,7 +302,7 @@ mod tests {
         assert!(live.can_rip_live(false));
         assert!(!cache.can_rip_live(false));
         assert!(!paused.can_rip_live(false));
-        // Admins bypass everything.
+
         assert!(paused.can_rip_live(true));
     }
 

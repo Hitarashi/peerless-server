@@ -9,7 +9,6 @@ enum WorkerState {
     Quarantined { until: Instant },
 }
 
-/// Circuit breaker managing auxiliary worker health and FloodWait quarantines.
 #[derive(Debug)]
 pub struct CircuitBreaker {
     worker_states: RwLock<Vec<WorkerState>>,
@@ -22,7 +21,6 @@ impl CircuitBreaker {
         }
     }
 
-    /// Check if a worker is healthy and eligible to receive chunk requests.
     pub fn is_available(&self, worker_id: usize) -> bool {
         let states = self.worker_states.read().unwrap();
         match states.get(worker_id) {
@@ -32,7 +30,6 @@ impl CircuitBreaker {
         }
     }
 
-    /// Place a worker in quarantine for the specified duration.
     pub fn quarantine(&self, worker_id: usize, duration: Duration, reason: impl Into<String>) {
         let reason = reason.into();
         let until = Instant::now() + duration;
@@ -48,7 +45,6 @@ impl CircuitBreaker {
         }
     }
 
-    /// Mark a worker as healthy after a successful operation if it was previously quarantined.
     pub fn record_success(&self, worker_id: usize) {
         let mut states = self.worker_states.write().unwrap();
         if let Some(slot) = states.get_mut(worker_id)
@@ -58,7 +54,6 @@ impl CircuitBreaker {
         }
     }
 
-    /// Remaining quarantine duration, or None if healthy/expired.
     pub fn quarantine_remaining(&self, worker_id: usize) -> Option<Duration> {
         let states = self.worker_states.read().unwrap();
         match states.get(worker_id) {
@@ -74,7 +69,6 @@ impl CircuitBreaker {
         }
     }
 
-    /// Number of currently healthy and available workers.
     pub fn available_count(&self) -> usize {
         let states = self.worker_states.read().unwrap();
         let now = Instant::now();
@@ -87,7 +81,6 @@ impl CircuitBreaker {
             .count()
     }
 
-    /// Alias for healthy worker count.
     pub fn healthy_worker_count(&self) -> usize {
         self.available_count()
     }
@@ -103,7 +96,7 @@ mod tests {
         assert!(cb.is_available(0));
         assert!(cb.is_available(1));
         assert!(cb.is_available(2));
-        assert!(!cb.is_available(3)); // Out of bounds
+        assert!(!cb.is_available(3));
     }
 
     #[test]

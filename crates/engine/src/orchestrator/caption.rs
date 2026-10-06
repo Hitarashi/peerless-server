@@ -1,15 +1,7 @@
-//! Dump-channel caption formatting and parsing.
-//!
-//! Dump-channel captions contain only the canonical machine-readable JSON
-//! records consumed by the indexer. Captions are clean-slate: the indexer
-//! accepts only the current payload shape and does not support older formats.
+use crate::types::{Codec, TrackRipResult};
 
-use crate::types::{Codec, Provider, TrackKey, TrackRipResult};
-
-/// Maximum plain-text length allowed by Telegram for media captions (in UTF-16 code units).
 pub const MAX_MEDIA_CAPTION_UTF16_LEN: usize = 1024;
 
-/// Clamps a string to at most `max_utf16` code units, appending an ellipsis ('…') if truncated.
 pub fn clamp_str_utf16(text: &str, max_utf16: usize) -> String {
     let count = text.encode_utf16().count();
     if count <= max_utf16 {
@@ -30,7 +22,6 @@ pub fn clamp_str_utf16(text: &str, max_utf16: usize) -> String {
     truncated
 }
 
-/// Estimates the plain-text UTF-16 code unit count after Telegram processes HTML tags and entities.
 pub fn estimate_html_utf16_len(html: &str) -> usize {
     let mut count = 0;
     let mut chars = html.chars().peekable();
@@ -67,62 +58,30 @@ pub fn estimate_html_utf16_len(html: &str) -> usize {
     count
 }
 
-/// Everything the dump caption builder takes; `None` fields are simply
-/// everything else required.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DumpCaptionMetadata<'a> {
-    pub track_key: TrackKey,
-    pub title: &'a str,
-    pub artist: &'a str,
-    pub album: &'a str,
-    pub duration: i64,
-    pub bit_depth: u32,
-    pub sample_rate: u32,
+    pub track_id: &'a str,
     pub codec: Option<&'a str>,
-    pub genre: Option<&'a str>,
-    pub release_date: Option<&'a str>,
-    pub track_number: Option<i64>,
-    pub track_count: Option<i64>,
-    pub isrc: Option<&'a str>,
-    pub recording_mbid: Option<&'a str>,
 }
 
-impl<'a> From<(&'a TrackRipResult, Provider, &'a str)> for DumpCaptionMetadata<'a> {
-    fn from((rip, provider, track_id): (&'a TrackRipResult, Provider, &'a str)) -> Self {
+impl<'a> From<(&'a TrackRipResult, &'a str)> for DumpCaptionMetadata<'a> {
+    fn from((rip, track_id): (&'a TrackRipResult, &'a str)) -> Self {
         DumpCaptionMetadata {
-            track_key: TrackKey::new(provider, track_id),
-            title: &rip.title,
-            artist: &rip.artist,
-            album: &rip.album,
-            duration: rip.duration,
-            bit_depth: rip.bit_depth,
-            sample_rate: rip.sample_rate,
+            track_id,
             codec: Some(&rip.codec),
-            genre: Some(&rip.genre),
-            release_date: Some(&rip.release_date),
-            track_number: Some(rip.track_number),
-            track_count: Some(rip.track_count),
-            isrc: rip.isrc.as_deref(),
-            recording_mbid: rip.recording_mbid.as_deref(),
         }
     }
 }
 
-/// Machine-readable metadata for formatting an album ZIP caption.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DumpZipCaptionMetadata<'a> {
-    pub provider: Provider,
     pub album_id: &'a str,
     pub codec: Option<&'a str>,
-    pub album: &'a str,
-    pub artist: &'a str,
-    pub filename: &'a str,
     pub part_index: i32,
     pub total_parts: i32,
     pub generation_hash: &'a str,
 }
 
-/// Metadata used to format the rich album details caption (delivered alongside the preview photo or as fallback text).
 #[derive(Debug, Clone, PartialEq)]
 pub struct AlbumDetailsCaptionMetadata<'a> {
     pub album: &'a str,
@@ -138,29 +97,19 @@ pub struct AlbumDetailsCaptionMetadata<'a> {
     pub is_partial: bool,
     pub user_name: Option<&'a str>,
     pub user_id: i64,
-    /// Highest codec delivered in the archive (`alac`, `aac`, `mp4a.40.2`, `ec-3`, `flac`).
+
     pub codec: Option<&'a str>,
 }
 
-/// Parsed metadata extracted from an album ZIP dump caption.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedZipDumpMetadata {
-    pub provider: Provider,
     pub album_id: String,
     pub codec: Codec,
-    pub album: String,
-    pub artist: String,
     pub part_index: i32,
     pub total_parts: i32,
     pub generation_hash: String,
 }
 
-/// Escape `& < > " '` with hex entities (mtcute-compatible).
-///
-/// The single workspace implementation of Telegram HTML escaping; the bot
-/// crate's `html::escape` delegates here so the two cannot drift. The exact
-/// set of replaced characters is a contract with Telegram's HTML parse mode,
-/// so it is pinned by tests in this module and in `bot::html`.
 pub fn html_escape(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     for ch in input.chars() {
@@ -176,7 +125,6 @@ pub fn html_escape(input: &str) -> String {
     out
 }
 
-/// Formats a user mention with clickable link (Telegram handle or tg:// user link).
 pub fn format_requester_mention(user_name: Option<&str>, user_id: i64) -> String {
     let name = user_name
         .map(str::trim)
@@ -194,7 +142,6 @@ pub fn format_requester_mention(user_name: Option<&str>, user_id: i64) -> String
     }
 }
 
-/// Formats the rich album details caption (displayed with album preview photo or fallback text).
 pub fn format_album_details_caption(meta: &AlbumDetailsCaptionMetadata<'_>) -> String {
     let album_link = match meta.album_url {
         Some(url) => format!(
@@ -241,7 +188,6 @@ pub fn format_album_details_caption(meta: &AlbumDetailsCaptionMetadata<'_>) -> S
         match meta.codec {
             Some("ec-3") => "Dolby Atmos".to_owned(),
             Some("aac") | Some("mp4a.40.2") | Some("mp4a.40.5") => "AAC 256".to_owned(),
-            Some("flac") => "Lossless · FLAC".to_owned(),
             _ => "Lossless · ALAC".to_owned(),
         }
     ));
@@ -257,10 +203,6 @@ pub fn format_album_details_caption(meta: &AlbumDetailsCaptionMetadata<'_>) -> S
     )
 }
 
-/// Formats the canonical machine-readable track record for the dump channel.
-///
-/// Long string values are shortened before serialization as needed to keep the
-/// JSON valid and within Telegram's 1,024 UTF-16 code unit caption limit.
 pub fn format_dump_caption(meta: &DumpCaptionMetadata<'_>) -> String {
     let default_codec = "alac";
 
@@ -271,38 +213,13 @@ pub fn format_dump_caption(meta: &DumpCaptionMetadata<'_>) -> String {
         .unwrap_or(default_codec);
 
     let mut payload = serde_json::json!({
-        "provider": meta.track_key.provider,
-        "track_id": meta.track_key.track_id,
+        "track_id": meta.track_id,
         "codec": canonical_codec,
-        "title": meta.title,
-        "artist": meta.artist,
-        "album": meta.album,
-        "dur": meta.duration,
-        "bit": meta.bit_depth,
-        "hz": meta.sample_rate,
-        "genre": meta.genre.unwrap_or("Music"),
-        "date": meta.release_date.unwrap_or(""),
-        "trk": meta.track_number.unwrap_or(1),
-        "cnt": meta.track_count.unwrap_or(1),
     });
-    if let Some(isrc) = meta.isrc.filter(|s| !s.is_empty()) {
-        payload["isrc"] = serde_json::Value::String(isrc.to_owned());
-    }
-    if let Some(recording_mbid) = meta
-        .recording_mbid
-        .and_then(music::normalize_recording_mbid)
-    {
-        payload["recording_mbid"] = serde_json::Value::String(recording_mbid);
-    }
 
     serialize_caption_payload(&mut payload)
 }
 
-/// Formats the canonical machine-readable record for a complete album ZIP.
-///
-/// Incomplete ZIPs do not have an indexable record and therefore produce an
-/// empty caption. Long string values are shortened before serialization as
-/// needed to keep complete ZIP records valid and within Telegram's limit.
 pub fn format_zip_dump_caption(
     meta: &DumpZipCaptionMetadata<'_>,
     is_complete: bool,
@@ -316,11 +233,8 @@ pub fn format_zip_dump_caption(
 
     let mut payload_json = serde_json::json!({
         "type": "album_zip",
-        "provider": meta.provider,
         "album_id": meta.album_id,
         "codec": meta.codec.unwrap_or(default_codec),
-        "album": meta.album,
-        "artist": meta.artist,
         "part": meta.part_index,
         "total_parts": meta.total_parts,
         "hash": meta.generation_hash,
@@ -328,13 +242,10 @@ pub fn format_zip_dump_caption(
     serialize_caption_payload(&mut payload_json)
 }
 
-/// Serializes a JSON object as Telegram-safe JSON text, shortening string
-/// values rather than slicing serialized output when the caption is too long.
 fn serialize_caption_payload(payload: &mut serde_json::Value) -> String {
     loop {
         let serialized = serde_json::to_string(payload).expect("payload serializes");
-        // Escape HTML-sensitive characters as JSON unicode escapes. The caption
-        // remains valid JSON while passing through Telegram's HTML parser.
+
         let caption = serialized
             .replace('&', "\\u0026")
             .replace('<', "\\u003c")
@@ -368,30 +279,16 @@ fn serialize_caption_payload(payload: &mut serde_json::Value) -> String {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedDumpMetadata {
-    pub track_key: TrackKey,
+    pub track_id: String,
     pub codec: Codec,
-    pub title: String,
-    pub artist: String,
-    pub album: String,
-    pub duration: i64,
-    pub bit_depth: u32,
-    pub sample_rate: u32,
-    pub genre: String,
-    pub release_date: String,
-    pub track_number: i64,
-    pub track_count: i64,
-    pub isrc: Option<String>,
-    pub recording_mbid: Option<String>,
 }
 
-/// Extracts structured track metadata from a message caption. Returns
-/// `None` for missing, stale, unrelated, or invalid records.
 pub fn parse_dump_caption(text: Option<&str>) -> Option<ParsedDumpMetadata> {
     let text = text?;
     let payload = extract_payload(text)?;
     let parsed: serde_json::Value = serde_json::from_str(&payload).ok()?;
-    let provider = parsed.get("provider")?.as_str()?.parse::<Provider>().ok()?;
     let track_id = parsed.get("track_id")?.as_str()?;
     if track_id.is_empty() {
         return None;
@@ -406,36 +303,15 @@ pub fn parse_dump_caption(text: Option<&str>) -> Option<ParsedDumpMetadata> {
         .unwrap_or(default_codec);
 
     Some(ParsedDumpMetadata {
-        track_key: TrackKey::new(provider, track_id).with_codec(codec),
+        track_id: track_id.to_owned(),
         codec,
-        title: string_field(&parsed, "title"),
-        artist: string_field(&parsed, "artist"),
-        album: string_field(&parsed, "album"),
-        duration: number_field(&parsed, "dur", 0),
-        bit_depth: number_field(&parsed, "bit", 16).max(0) as u32,
-        sample_rate: number_field(&parsed, "hz", 44100).max(0) as u32,
-        genre: string_field_or(&parsed, "genre", "Music"),
-        release_date: string_field(&parsed, "date"),
-        track_number: number_field(&parsed, "trk", 1),
-        track_count: number_field(&parsed, "cnt", 1),
-        isrc: parsed
-            .get("isrc")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(ToOwned::to_owned),
-        recording_mbid: parsed
-            .get("recording_mbid")
-            .and_then(|v| v.as_str())
-            .and_then(music::normalize_recording_mbid),
     })
 }
 
-/// Extracts structured album ZIP metadata from a message caption.
 pub fn parse_zip_dump_caption(text: Option<&str>) -> Option<ParsedZipDumpMetadata> {
     let text = text?;
     let payload = extract_zip_payload(text)?;
     let parsed: serde_json::Value = serde_json::from_str(&payload).ok()?;
-    let provider = parsed.get("provider")?.as_str()?.parse::<Provider>().ok()?;
     let album_id = parsed.get("album_id")?.as_str()?;
     if album_id.is_empty() {
         return None;
@@ -450,11 +326,8 @@ pub fn parse_zip_dump_caption(text: Option<&str>) -> Option<ParsedZipDumpMetadat
         .unwrap_or(default_codec);
 
     Some(ParsedZipDumpMetadata {
-        provider,
         album_id: album_id.to_owned(),
         codec,
-        album: string_field(&parsed, "album"),
-        artist: string_field(&parsed, "artist"),
         part_index: number_field(&parsed, "part", 1).max(1) as i32,
         total_parts: number_field(&parsed, "total_parts", 1).max(1) as i32,
         generation_hash: string_field(&parsed, "hash"),
@@ -552,31 +425,15 @@ mod tests {
 
     fn sample_meta() -> DumpCaptionMetadata<'static> {
         DumpCaptionMetadata {
-            track_key: TrackKey::apple("1440828878"),
-            title: "Night Song",
-            artist: "A&R <duo>",
-            album: "Escapes",
-            duration: 215,
-            bit_depth: 24,
-            sample_rate: 48000,
+            track_id: "1440828878",
             codec: Some("alac"),
-            genre: Some("Electronic"),
-            release_date: Some("2021-06-04"),
-            track_number: Some(2),
-            track_count: Some(10),
-            isrc: Some("USUM71703861"),
-            recording_mbid: None,
         }
     }
 
     fn sample_zip_meta() -> DumpZipCaptionMetadata<'static> {
         DumpZipCaptionMetadata {
-            provider: Provider::Apple,
             album_id: "1440828878",
             codec: Some("alac"),
-            album: "Escapes",
-            artist: "A&R <duo>",
-            filename: "Escapes.zip",
             part_index: 1,
             total_parts: 1,
             generation_hash: "generation-123",
@@ -638,7 +495,7 @@ mod tests {
         assert!(html.contains("<blockquote>"));
         assert!(html.contains("• <b>Tracks:</b> 8 tracks"));
         assert!(html.contains("• <b>Size:</b> 276.52MB"));
-        // Single part: NO "parts" text
+
         assert!(!html.contains("parts"));
         assert!(html.contains("• <b>Released:</b> 2001"));
         assert!(html.contains("• <b>Genre:</b> Rock"));
@@ -653,7 +510,7 @@ mod tests {
     }
 
     #[test]
-    fn format_album_details_caption_flac() {
+    fn format_album_details_caption_aac() {
         let meta = AlbumDetailsCaptionMetadata {
             album: "ROCKSTAR WITHOUT A GUITAR",
             artist: "UMAIR",
@@ -668,10 +525,10 @@ mod tests {
             is_partial: false,
             user_name: None,
             user_id: 0,
-            codec: Some("flac"),
+            codec: Some("aac"),
         };
         let html = format_album_details_caption(&meta);
-        assert!(html.contains("• <b>Quality:</b> Lossless · FLAC"));
+        assert!(html.contains("• <b>Quality:</b> AAC 256"));
     }
 
     #[test]
@@ -729,82 +586,30 @@ mod tests {
         let meta = sample_meta();
         let caption = format_dump_caption(&meta);
         let json = assert_json_only_caption(&caption);
-        for key in [
-            "provider", "track_id", "codec", "title", "artist", "album", "dur", "bit", "hz",
-            "genre", "date", "trk", "cnt", "isrc",
-        ] {
+        for key in ["track_id", "codec"] {
             assert!(json.get(key).is_some(), "missing track payload key {key}");
         }
 
         let parsed = parse_dump_caption(Some(&caption)).expect("track payload round-trips");
-        assert_eq!(parsed.track_key.provider, meta.track_key.provider);
-        assert_eq!(parsed.track_key.track_id, meta.track_key.track_id);
+        assert_eq!(parsed.track_id, meta.track_id);
         assert_eq!(parsed.codec, Codec::Alac);
-        assert_eq!(parsed.title, meta.title);
-        assert_eq!(parsed.artist, meta.artist);
-        assert_eq!(parsed.album, meta.album);
-        assert_eq!(parsed.duration, meta.duration);
-        assert_eq!(parsed.bit_depth, meta.bit_depth);
-        assert_eq!(parsed.sample_rate, meta.sample_rate);
-        assert_eq!(parsed.genre, meta.genre.unwrap());
-        assert_eq!(parsed.release_date, meta.release_date.unwrap());
-        assert_eq!(parsed.track_number, meta.track_number.unwrap());
-        assert_eq!(parsed.track_count, meta.track_count.unwrap());
-        assert_eq!(parsed.isrc.as_deref(), meta.isrc);
     }
 
     #[test]
-    fn format_dump_caption_flac() {
+    fn format_dump_caption_codec() {
         let meta = DumpCaptionMetadata {
-            track_key: TrackKey::new("legacy-store".parse().unwrap(), "264126443"),
-            title: "HEARTBREAK CITY",
-            artist: "UMAIR",
-            album: "ROCKSTAR WITHOUT A GUITAR",
-            duration: 372,
-            bit_depth: 24,
-            sample_rate: 48000,
-            codec: Some("flac"),
-            genre: Some("Hip-Hop/Rap"),
-            release_date: Some("2024-04-25"),
-            track_number: Some(16),
-            track_count: Some(20),
-            isrc: None,
-            recording_mbid: None,
+            track_id: "264126443",
+            codec: Some("aac"),
         };
         let caption = format_dump_caption(&meta);
         let json = assert_json_only_caption(&caption);
-        assert_eq!(json["codec"], "flac");
-        for key in [
-            "provider", "track_id", "title", "artist", "album", "dur", "bit", "hz", "genre",
-            "date", "trk", "cnt",
-        ] {
+        assert_eq!(json["codec"], "aac");
+        for key in ["track_id", "codec"] {
             assert!(json.get(key).is_some(), "missing track payload key {key}");
         }
-        assert!(json.get("isrc").is_none(), "empty ISRC must be omitted");
-        let parsed = parse_dump_caption(Some(&caption)).expect("parsed flac caption");
-        assert_eq!(parsed.codec, Codec::Flac);
-        assert_eq!(parsed.bit_depth, 24);
-        assert_eq!(parsed.sample_rate, 48000);
-    }
-
-    #[test]
-    fn parse_dump_caption_extracts_all_fields() {
-        let caption = format_dump_caption(&sample_meta());
-        assert_json_only_caption(&caption);
-        let parsed = parse_dump_caption(Some(&caption)).expect("payload parsed");
-        assert_eq!(parsed.track_key.track_id, "1440828878");
-        assert_eq!(parsed.codec, Codec::Alac);
-        assert_eq!(parsed.title, "Night Song");
-        assert_eq!(parsed.artist, "A&R <duo>");
-        assert_eq!(parsed.album, "Escapes");
-        assert_eq!(parsed.duration, 215);
-        assert_eq!(parsed.bit_depth, 24);
-        assert_eq!(parsed.sample_rate, 48000);
-        assert_eq!(parsed.genre, "Electronic");
-        assert_eq!(parsed.release_date, "2021-06-04");
-        assert_eq!(parsed.track_number, 2);
-        assert_eq!(parsed.track_count, 10);
-        assert_eq!(parsed.isrc.as_deref(), Some("USUM71703861"));
+        let parsed = parse_dump_caption(Some(&caption)).expect("parsed aac caption");
+        assert_eq!(parsed.track_id, "264126443");
+        assert_eq!(parsed.codec, Codec::Aac);
     }
 
     #[test]
@@ -820,28 +625,17 @@ mod tests {
         let meta = sample_zip_meta();
         let caption = format_zip_dump_caption(&meta, true, 0);
         let json = assert_json_only_caption(&caption);
-        for key in [
-            "type",
-            "provider",
-            "album_id",
-            "codec",
-            "album",
-            "artist",
-            "part",
-            "total_parts",
-            "hash",
-        ] {
+        for key in ["type", "album_id", "codec", "part", "total_parts", "hash"] {
             assert!(json.get(key).is_some(), "missing ZIP payload key {key}");
         }
         assert_eq!(json["type"], "album_zip");
+        assert!(json.get("album").is_none());
+        assert!(json.get("artist").is_none());
         assert!(json.get("filename").is_none());
 
         let parsed = parse_zip_dump_caption(Some(&caption)).expect("ZIP payload round-trips");
-        assert_eq!(parsed.provider, meta.provider);
         assert_eq!(parsed.album_id, meta.album_id);
         assert_eq!(parsed.codec, Codec::Alac);
-        assert_eq!(parsed.album, meta.album);
-        assert_eq!(parsed.artist, meta.artist);
         assert_eq!(parsed.part_index, meta.part_index);
         assert_eq!(parsed.total_parts, meta.total_parts);
         assert_eq!(parsed.generation_hash, meta.generation_hash);
@@ -855,83 +649,15 @@ mod tests {
     }
 
     #[test]
-    fn dump_caption_stays_valid_json_when_clamped_to_telegram_limit() {
-        let long_title = "A".repeat(400);
-        let long_artist_sample = "B".repeat(200);
-        let long_album = "C".repeat(200);
-        let meta = DumpCaptionMetadata {
-            track_key: TrackKey::apple("1440828878"),
-            title: &long_title,
-            artist: &long_artist_sample,
-            album: &long_album,
-            duration: 180,
-            bit_depth: 16,
-            sample_rate: 44100,
-            codec: Some("alac"),
-            genre: Some("Pop"),
-            release_date: Some("2024-01-01"),
-            track_number: Some(1),
-            track_count: Some(1),
-            isrc: None,
-            recording_mbid: None,
-        };
-        let caption = format_dump_caption(&meta);
-        assert_json_only_caption(&caption);
-        assert!(parse_dump_caption(Some(&caption)).is_some());
-    }
-
-    #[test]
-    fn dump_caption_with_extremely_long_artist_fits_within_telegram_limit() {
-        let long_artist = "Rochak Kohli, Jubin Nautiyal, Tulsi Kumar, Sachet-Parampara, Parampara Tandon, Neha Kakkar, Guru Randhawa, Yo Yo Honey Singh, Darshan Raval, Neeti Mohan, Tanishk Bagchi, Meet Bros., Monali Thakur, Amaal Mallik, Armaan Malik, Mithoon, Shreya Ghoshal, Akhil Sachdeva, Mansheel Gujral, Dhvani Bhanushali, B Praak, Jasleen Royal, Harshdeep Kaur, Shekhar Ravjiani, Payal Dev & Stebin Ben";
-        let meta = DumpCaptionMetadata {
-            track_key: TrackKey::apple("1529537935"),
-            title: "Love Mashup 2020(Remix By Kedrock,Sd Style)",
-            artist: long_artist,
-            album: "Love Mashup 2020(Remix By Kedrock,Sd Style) - Single",
-            duration: 254,
-            bit_depth: 24,
-            sample_rate: 44100,
-            codec: Some("alac"),
-            genre: Some("Bollywood"),
-            release_date: Some("2020-08-25"),
-            track_number: Some(1),
-            track_count: Some(1),
-            isrc: None,
-            recording_mbid: None,
-        };
-        let caption = format_dump_caption(&meta);
-        assert_json_only_caption(&caption);
-        let parsed =
-            parse_dump_caption(Some(&caption)).expect("payload parsed from long artist caption");
-        assert_eq!(parsed.track_key.track_id, "1529537935");
-        assert_eq!(parsed.codec, Codec::Alac);
-        assert_eq!(parsed.duration, 254);
-    }
-
-    #[test]
-    fn pathological_track_and_zip_strings_are_clamped_without_breaking_json() {
-        let long_title = "🎵<&Title".repeat(1_000);
-        let long_album = "<Album & Artist> 🎶".repeat(1_000);
-        let track_meta = DumpCaptionMetadata {
-            title: &long_title,
-            album: &long_album,
-            ..sample_meta()
-        };
-        let track_caption = format_dump_caption(&track_meta);
-        let track_json = assert_json_only_caption(&track_caption);
-        assert!(track_json["title"].as_str().unwrap().len() < long_title.len());
-        assert!(track_json["album"].as_str().unwrap().len() < long_album.len());
-        assert!(parse_dump_caption(Some(&track_caption)).is_some());
-
+    fn pathological_zip_strings_are_clamped_without_breaking_json() {
+        let long_hash = "hash_token_abc_".repeat(200);
         let zip_meta = DumpZipCaptionMetadata {
-            album: &long_album,
-            artist: &long_title,
+            generation_hash: &long_hash,
             ..sample_zip_meta()
         };
         let zip_caption = format_zip_dump_caption(&zip_meta, true, 0);
         let zip_json = assert_json_only_caption(&zip_caption);
-        assert!(zip_json["album"].as_str().unwrap().len() < long_album.len());
-        assert!(zip_json["artist"].as_str().unwrap().len() < long_title.len());
+        assert!(zip_json["hash"].as_str().unwrap().len() < long_hash.len());
         assert!(parse_zip_dump_caption(Some(&zip_caption)).is_some());
     }
 }

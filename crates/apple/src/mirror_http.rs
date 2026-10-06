@@ -1,5 +1,3 @@
-//! Text HTTP seam used by Apple's mirror policy.
-
 use std::{
     future::Future,
     time::{Duration, Instant},

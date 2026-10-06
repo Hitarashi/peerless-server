@@ -19,7 +19,6 @@ use crate::{
 
 const STREAM_PREFETCH_CHUNKS: usize = 2;
 
-/// Parsed HTTP byte range [start, end] (inclusive).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ByteRange {
     pub start: u64,
@@ -31,12 +30,10 @@ impl ByteRange {
         Self { start, end }
     }
 
-    /// Length in bytes.
     pub fn length(&self) -> u64 {
         self.end.saturating_sub(self.start) + 1
     }
 
-    /// Parse HTTP `Range` header value (e.g. `bytes=0-1048575` or `bytes=1048576-`).
     pub fn parse(header: &str, file_size: u64) -> Result<Self, StreamError> {
         let s = header.trim();
         let s = s.strip_prefix("bytes=").unwrap_or(s);
@@ -78,7 +75,6 @@ impl ByteRange {
     }
 }
 
-/// Backpressure-regulated async byte stream wrapping a bounded prefetch channel.
 pub struct ChunkStream {
     receiver: mpsc::Receiver<Result<Bytes, std::io::Error>>,
     abort_handle: tokio::task::AbortHandle,
@@ -105,7 +101,6 @@ pub type LocationRefresher = Arc<
         + Sync,
 >;
 
-/// Parameters for spawning a stream pipe.
 #[derive(Clone)]
 pub struct StreamPipeParams {
     pub range: ByteRange,
@@ -116,13 +111,11 @@ pub struct StreamPipeParams {
     pub refresh_location: Option<LocationRefresher>,
 }
 
-/// Spawns the prefetch pipeline and produces a `ChunkStream`.
 pub fn create_stream_pipe(
     params: StreamPipeParams,
     worker_pool: Arc<StreamWorkerPool>,
     cache: Arc<ChunkCache>,
 ) -> ChunkStream {
-    // Bound both queued output and in-flight source reads per stream.
     let (tx, rx) = mpsc::channel(2);
     let metrics = Arc::clone(worker_pool.metrics());
     metrics.record_stream_started();
@@ -186,7 +179,6 @@ pub fn create_stream_pipe(
                 }
             };
 
-            // Slice the chunk according to the requested HTTP range.
             let chunk_offset_start = chunk_idx * chunk_size_u64;
             let slice_start = if chunk_idx == start_chunk {
                 (params.range.start.saturating_sub(chunk_offset_start)) as usize

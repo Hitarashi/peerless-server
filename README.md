@@ -1,7 +1,7 @@
 # Peerless Server
 
 > **High-Performance Telegram Lossless Streaming Server & Ripping Engine**  
-> Direct MTProto-backed lossless audio streaming (ALAC, FLAC, Dolby Atmos) with REST API, WebSockets, and Telegram Bot
+> Direct MTProto-backed lossless audio streaming (ALAC, Dolby Atmos) with REST API, WebSockets, and Telegram Bot
 > backend in Rust 2024.
 
 ---
@@ -78,7 +78,6 @@ mirrors with native client applications (such as [Peerless KMP](https://github.c
 | `music`  | Provider-neutral music domain types.                                                    |
 | `engine` | Rip orchestration, track ripping, ZIP assembly, streaming, and tagging/filename policy. |
 | `apple`  | Lyricsporn catalog and playlist metadata; Apple wrapper, mirror, and audio acquisition.  |
-| `qobuz`  | Standalone adapter crate retained in the workspace; the bot and server do not enable it. |
 | `db`     | PostgreSQL models, migrations, persistence, and repositories.                           |
 | `media`  | Audio inspection, tagging, and spectrogram rendering.                                   |
 | `stream` | Telegram MTProto worker pool, chunk cache, and byte-range stream engine.                |
@@ -229,7 +228,7 @@ again.
 
 - [Rust](https://rustup.rs) (stable 1.88+ toolchain; Rust 2024 edition)
 - [just](https://github.com/casey/just) (command task runner)
-- [PostgreSQL](https://www.postgresql.org/) (with `pg_trgm` extension)
+- [PostgreSQL](https://www.postgresql.org/)
 - **Telegram API Credentials**: `API_ID` & `API_HASH` from [my.telegram.org](https://my.telegram.org)
 - **Primary Bot Token**: `BOT_TOKEN` from [@BotFather](https://t.me/BotFather)
 - **Telegram Dump Channel**: Private channel accessible to the primary bot and any configured worker tokens

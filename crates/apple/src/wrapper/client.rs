@@ -1,29 +1,15 @@
-//! Client for wrapper-lite HTTP API (ports 12340).
-//!
-//! Exposes:
-//! - `/status` -> check available storefronts
-//! - `/m3u8?adamId={id}` -> master playlist URL
-//! - `/key?adamId={id}&uri={uri}` -> FairPlay key templates for Temari
-
 use std::time::Duration;
 
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
-/// A typed wrapper outcome that can be propagated to an optional rendition.
-///
-/// The valid-master variant retains provider-playlist provenance; the
-/// non-EC-3 variant is only produced after a wrapper candidate has resolved a
-/// successful stream response that cannot satisfy an Atmos request. A missing
-/// `/m3u8` is converted to a permanent primary failure by the wrapper engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WrapperUnavailableReason {
     NoAtmosVariantInValidMaster,
-    /// The wrapper cannot resolve a master playlist for this track.
+
     M3u8NotFound,
-    /// A wrapper endpoint resolved successfully, but only returned a stream
-    /// that cannot satisfy an Atmos request.
+
     NonEc3StreamForAtmos,
 }
 
@@ -53,9 +39,7 @@ pub enum WrapperError {
     Auth { status: u16 },
     #[error("Temari template error: {0}")]
     Template(String),
-    /// The requested rendition is not present in the provider playlist.
-    /// This is distinct from a malformed playlist or transport failure so
-    /// optional renditions can be skipped without retrying.
+
     #[error("{0}")]
     Unavailable(WrapperUnavailableReason),
     #[error("{0}")]
@@ -136,7 +120,6 @@ impl WrapperLiteClient {
         &self.base_url
     }
 
-    /// Check wrapper status and return supported storefronts (e.g. `["in"]`).
     pub async fn check_status(&self) -> Result<Vec<String>, WrapperError> {
         let url = format!("{}/status", self.base_url);
         debug!(url = %url, "Checking wrapper-lite status");
@@ -153,7 +136,6 @@ impl WrapperLiteClient {
         Ok(env.data.map(|d| d.regions).unwrap_or_default())
     }
 
-    /// Fetch master HLS playlist URL for given Adam track ID.
     pub async fn fetch_m3u8_url(&self, adam_id: &str) -> Result<String, WrapperError> {
         let url = format!("{}/m3u8?adamId={}", self.base_url, adam_id);
         debug!(adam_id = %adam_id, url = %url, "Fetching m3u8 URL from wrapper");
@@ -185,8 +167,6 @@ impl WrapperLiteClient {
         Ok(m3u8)
     }
 
-    /// Fetch the web playback AAC playlist URL (stores with no lossless
-    /// HLS still expose the lossy playlist here).
     pub async fn fetch_webplayback(&self, adam_id: &str) -> Result<String, WrapperError> {
         let url = format!("{}/webplayback?adamId={}", self.base_url, adam_id);
         debug!(adam_id = %adam_id, url = %url, "Fetching web playback URL from wrapper");
@@ -210,9 +190,6 @@ impl WrapperLiteClient {
         Ok(m3u8)
     }
 
-    /// Relay a Widevine license challenge through wrapper-lite `/license`.
-    /// `challenge` and the returned license are base64 strings; `uri` is
-    /// the `"<prefix>,<pssh>"` pair wrapper-lite forwards to Apple.
     pub async fn fetch_license(
         &self,
         adam_id: &str,
@@ -272,7 +249,6 @@ impl WrapperLiteClient {
         Ok(license)
     }
 
-    /// Fetch FairPlay key template from wrapper `/key` endpoint and instantiate `temari::rounds::Template`.
     pub async fn fetch_template(
         &self,
         adam_id: &str,
@@ -368,8 +344,6 @@ fn urlencoding(s: &str) -> String {
     encoded
 }
 
-/// Keep error bodies bounded: 120 chars mirrors what the mirror endpoint
-/// reports upstream, plenty for a diagnostic message.
 fn truncate_error_body(text: &str) -> String {
     let mut out: String = text.chars().take(120).collect();
     if text.chars().count() > 120 {
@@ -378,7 +352,6 @@ fn truncate_error_body(text: &str) -> String {
     out
 }
 
-/// 401/403 are authentication failures, not transport noise.
 fn auth_or_http(what: &str, status: reqwest::StatusCode) -> WrapperError {
     let code = status.as_u16();
     if code == 401 || code == 403 {
@@ -387,7 +360,6 @@ fn auth_or_http(what: &str, status: reqwest::StatusCode) -> WrapperError {
     WrapperError::Message(format!("{what} HTTP {status}"))
 }
 
-/// API body codes share HTTP's authentication semantics.
 fn api_or_auth(code: i64, message: String) -> WrapperError {
     if code == 401 || code == 403 {
         return WrapperError::Auth {

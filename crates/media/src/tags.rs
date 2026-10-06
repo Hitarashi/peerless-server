@@ -1,9 +1,3 @@
-//! Container tagging for FLAC, MP3, and M4A.
-//!
-//! Tag writers are reached from `finalize_m4a_sync`, which runs under
-//! `spawn_blocking`, so every function here is allowed to touch the
-//! filesystem. `mp4ameta` and `id3` details never leave this module.
-
 use std::path::Path;
 
 use id3::TagLike;
@@ -286,9 +280,6 @@ fn non_empty(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
 
-/// Write provider and Apple-specific metadata while keeping `mp4ameta` out of
-/// the public media interface. Optional values are omitted rather than writing
-/// empty atoms, which keeps files compact and avoids misleading player output.
 fn write_extended_metadata(tag: &mut mp4ameta::Tag, tags: &TrackTags) {
     if let Some(value) = non_empty(tags.isrc.as_deref()) {
         tag.set_isrc(value);

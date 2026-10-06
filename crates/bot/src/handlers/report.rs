@@ -8,7 +8,7 @@ use std::{
 
 use engine::{
     orchestrator::deps::CachedTrack,
-    types::{ParsedTargetItem, Provider, TargetKind, TrackKey},
+    types::{ParsedTargetItem, TargetKind},
 };
 use ferogram::{
     InputMessage, PeerRef,
@@ -38,7 +38,6 @@ pub struct TrackReport {
     pub reason: String,
     pub track_title: String,
     pub track_artist: String,
-    pub track_album: String,
     pub dump_message_id: Option<i32>,
 }
 
@@ -56,7 +55,6 @@ fn report_state() -> &'static Mutex<ReportState> {
     REPORT_STATE.get_or_init(|| Mutex::new(ReportState::default()))
 }
 
-/// Checks and records a report in the sliding one-hour window.
 pub fn check_user_rate_limit(state: &mut ReportState, user_id: i64, now_ms: u64) -> bool {
     let timestamps = state.user_timestamps.entry(user_id).or_default();
     timestamps.retain(|timestamp| now_ms.saturating_sub(*timestamp) < USER_RATE_LIMIT_WINDOW_MS);
@@ -67,7 +65,6 @@ pub fn check_user_rate_limit(state: &mut ReportState, user_id: i64, now_ms: u64)
     true
 }
 
-/// Parses an Apple Music track id from a provider URL.
 pub fn extract_track_id_from_text(text: &str) -> Option<String> {
     if text.is_empty() {
         return None;
@@ -91,9 +88,6 @@ pub fn clean_dump_id(id: i64) -> String {
 }
 
 fn random_report_id() -> String {
-    // Report ids are eight opaque lowercase base-36 characters.
-    // A timestamp and process-local counter give the same shape without
-    // adding a random dependency.
     let value = now_ms() ^ REPORT_COUNTER.fetch_add(1, Ordering::Relaxed);
     let mut value = value;
     let mut result = String::with_capacity(8);
@@ -115,27 +109,22 @@ fn document_file_unique_id(document: &ferogram::media::Document) -> String {
 
 fn cached_from_track(track: db::Track) -> CachedTrack {
     CachedTrack {
-        track_key: TrackKey::new(track.provider, track.track_id.clone()).with_codec(track.codec),
+        track_id: track.track_id,
         codec: track.codec,
         message_id: i64::from(track.message_id),
         file_id: track.file_id,
         file_unique_id: track.file_unique_id,
-        title: track.title,
-        artist: track.artist,
-        album: track.album,
     }
 }
 
 async fn find_cached_track(state: &BotState, track_id: &str) -> Option<CachedTrack> {
-    let key = TrackKey::new(Provider::Apple, track_id);
-    let ids = [key.clone()];
     state
         .rip_deps
         .tracks()
-        .find_cached_tracks(&ids)
+        .find_cached_tracks(&[track_id.to_string()])
         .await
         .ok()
-        .and_then(|mut tracks| tracks.remove(&key))
+        .and_then(|tracks| tracks.into_values().next())
 }
 
 async fn find_by_file_unique_id(state: &BotState, file_unique_id: &str) -> Option<CachedTrack> {
@@ -228,16 +217,29 @@ async fn dispatch_report(
     reporter_name: String,
     reason: String,
 ) -> TrackReport {
+    let settings = state.rip_deps.settings().get_settings();
+    let default_storefront = engine::settings::resolve_default_storefront(&settings);
+    let (track_title, track_artist) = match state
+        .rip_deps
+        .playlist()
+        .fetch_song_meta(&track.track_id, default_storefront)
+        .await
+    {
+        Ok(Some(meta)) => (meta.title, meta.artist),
+        _ => (
+            format!("Track {}", track.track_id),
+            "Unknown Artist".to_string(),
+        ),
+    };
     let report = TrackReport {
         id: random_report_id(),
-        track_id: track.track_key.track_id.clone(),
+        track_id: track.track_id.clone(),
         reporter_user_id,
         reporter_chat_id,
         reporter_name,
         reason,
-        track_title: track.title.clone(),
-        track_artist: track.artist.clone(),
-        track_album: track.album.clone(),
+        track_title,
+        track_artist,
         dump_message_id: (track.message_id != 0)
             .then(|| i32::try_from(track.message_id).ok())
             .flatten(),
@@ -254,13 +256,12 @@ async fn dispatch_report(
             },
         );
         format!(
-            "🚨 <b>New Track Issue Report</b><br/><br/>👤 <b>Reported by:</b> <a href=\"tg://user?id={}\">{}</a> (<code>{}</code>)<br/>🎵 <b>Track:</b> <b>{}</b> - {}<br/>💽 <b>Album:</b> {}<br/>🆔 <b>Apple Track ID:</b> <code>{}</code><br/>🔗 <b>Dump Message:</b> {}<br/><br/>⚠️ <b>Reported Issue:</b><br/><blockquote>{}</blockquote>",
+            "🚨 <b>New Track Issue Report</b><br/><br/>👤 <b>Reported by:</b> <a href=\"tg://user?id={}\">{}</a> (<code>{}</code>)<br/>🎵 <b>Track:</b> <b>{}</b> - {}<br/>🆔 <b>Apple Track ID:</b> <code>{}</code><br/>🔗 <b>Dump Message:</b> {}<br/><br/>⚠️ <b>Reported Issue:</b><br/><blockquote>{}</blockquote>",
             report.reporter_user_id,
             escape(&report.reporter_name),
             report.reporter_user_id,
             escape(&report.track_title),
             escape(&report.track_artist),
-            escape(&report.track_album),
             report.track_id,
             dump_link,
             escape(&report.reason),
@@ -357,11 +358,11 @@ async fn handle_command(state: Arc<BotState>, msg: IncomingMessage) {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .reports_by_track
-        .contains_key(&track.track_key.track_id)
+        .contains_key(&track.track_id)
     {
         let text = format!(
-            "ℹ️ <b>Already Under Review</b><br/><br/><blockquote>The track <b>{}</b> has already been reported and is currently under review by the administrator. Thank you for your report!</blockquote>",
-            escape(&track.title)
+            "ℹ️ <b>Already Under Review</b><br/><br/><blockquote>The track (ID: <code>{}</code>) has already been reported and is currently under review by the administrator. Thank you for your report!</blockquote>",
+            escape(&track.track_id)
         );
         let _ = msg
             .reply(InputMessage::html(parse_dynamic_html(&text)))
@@ -397,15 +398,13 @@ async fn handle_command(state: Arc<BotState>, msg: IncomingMessage) {
             .await;
     } else {
         let text = format!(
-            "⚠️ <b>Report Track Issue</b><br/><br/><blockquote>🎵 <b>Track:</b> <b>{}</b> - {}<br/>💽 <b>Album:</b> {}<br/><br/>Please choose the issue you experienced:</blockquote>",
-            escape(&track.title),
-            escape(&track.artist),
-            escape(&track.album)
+            "⚠️ <b>Report Track Issue</b><br/><br/><blockquote>🎵 <b>Track ID:</b> <code>{}</code><br/><br/>Please choose the issue you experienced:</blockquote>",
+            escape(&track.track_id),
         );
         let _ = msg
             .reply(
                 InputMessage::html(parse_dynamic_html(&text))
-                    .reply_markup(reason_keyboard(&track.track_key.track_id)),
+                    .reply_markup(reason_keyboard(&track.track_id)),
             )
             .await;
     }
@@ -623,12 +622,7 @@ async fn admin_callback(state: Arc<BotState>, query: CallbackQuery, action: Repo
                 .await;
                 return;
             }
-            if let Err(error) = state
-                .rip_deps
-                .tracks()
-                .delete_track(&TrackKey::new(Provider::Apple, &track_id))
-                .await
-            {
+            if let Err(error) = state.rip_deps.tracks().delete_track(&track_id, None).await {
                 tracing::warn!(%error, track_id, "failed to delete cached track after message deletion");
                 edit_query(
                     &state,
@@ -701,8 +695,7 @@ async fn admin_callback(state: Arc<BotState>, query: CallbackQuery, action: Repo
                 .as_ref()
                 .map(super::marked_peer_id)
                 .unwrap_or(query.user_id);
-            // The shared dashboard is the only live rip status surface. The
-            // Created event opens/replaces it for this chat.
+
             super::ensure_dashboard(
                 &state,
                 marked_chat,

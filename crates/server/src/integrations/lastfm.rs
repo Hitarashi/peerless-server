@@ -22,11 +22,11 @@ pub struct LastfmLoginRequest {
 pub struct LastfmStatusResponse {
     pub connected: bool,
     pub username: Option<String>,
-    /// Raw Last.fm session key returned to the client in this response when connected.
+
     pub session_key: Option<String>,
-    /// Last.fm API key from `LASTFM_API_KEY`, included in this response when configured.
+
     pub api_key: Option<String>,
-    /// Last.fm API shared secret from `LASTFM_SHARED_SECRET`, included in this response when configured.
+
     pub api_secret: Option<String>,
 }
 
@@ -241,11 +241,10 @@ mod tests {
             "test_user",
             "test_secret",
         );
-        // MD5 of "api_keytest_api_keymethodauth.getMobileSessionpasswordtest_passwordusernametest_usertest_secret"
+
         assert_eq!(sig.len(), 32);
         assert!(sig.chars().all(|c| c.is_ascii_hexdigit()));
 
-        // Check determinism
         let sig2 = compute_api_sig(
             "test_api_key",
             "auth.getMobileSession",

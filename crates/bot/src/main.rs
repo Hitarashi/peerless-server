@@ -13,8 +13,6 @@ use tracing_subscriber::EnvFilter;
 
 const PROGRESS_UPDATE_INTERVAL: Duration = Duration::from_millis(250);
 
-/// Minimum accepted length of `APP_KEY`; the key signs stream tickets and
-/// encrypts provider session tokens at rest, so short values are rejected.
 const MIN_APP_KEY_LEN: usize = 32;
 
 #[derive(Default)]
@@ -192,10 +190,9 @@ fn load_env() -> Result<Env> {
     )
     .unwrap_or_default();
     let database_url = required("DATABASE_URL", &mut invalid);
-    // APP_KEY has no built-in fallback on purpose: it signs stream tickets and
-    // encrypts provider session tokens, so a shared default would be a known key.
+
     let app_key = required("APP_KEY", &mut invalid);
-    // Precedence: LOG_LEVEL || RUST_LOG || 'info'.
+
     let log_level = std::env::var("LOG_LEVEL")
         .or_else(|_| std::env::var("RUST_LOG"))
         .unwrap_or_else(|_| "info".to_owned());
@@ -214,9 +211,7 @@ fn load_env() -> Result<Env> {
             invalid.join(", ")
         ));
     }
-    // `required` already treats a blank value as missing; this rejects short
-    // secrets. The length is measured on the trimmed value while the key itself
-    // is kept verbatim, matching how `db::crypto::CryptoCipher::from_env` reads it.
+
     if app_key.trim().len() < MIN_APP_KEY_LEN {
         return Err(anyhow!(
             "invalid environment variable: APP_KEY must be at least {MIN_APP_KEY_LEN} characters; \
@@ -237,9 +232,6 @@ fn load_env() -> Result<Env> {
 }
 
 fn init_tracing(log_level: &str) {
-    // Our crates honor LOG_LEVEL (default info); external crates are pinned
-    // to warn so their internal chatter (ferogram session/connection logs,
-    // etc.) stays quiet unless something is actually wrong.
     let level = if log_level.eq_ignore_ascii_case("critical") {
         "error"
     } else {
@@ -274,8 +266,6 @@ async fn main() -> Result<()> {
 
     let (client, shutdown) = Client::builder()
         .api_id(env.api_id)
-        // The builder takes ownership of the hash (the source API does not
-        // implement Into<String> for &String), so clone this small value.
         .api_hash(env.api_hash.clone())
         .session("bot-data/session")
         .catch_up(true)
@@ -309,7 +299,6 @@ async fn main() -> Result<()> {
             Arc::new(client.clone()),
             PeerRef::from(env.dump_channel_id),
             db::TracksRepository::new(database.clone()),
-            db::RequestLogRepository::new(database.clone()),
             Arc::clone(&settings_store),
             database.clone(),
         )
@@ -379,9 +368,7 @@ async fn main() -> Result<()> {
                     storefront: Some(default_storefront.clone()),
                 };
                 let codec_preference = codec.map(|c| match c {
-                    music::Codec::Alac | music::Codec::Flac => {
-                        music::CodecPreference::HighestQuality
-                    }
+                    music::Codec::Alac => music::CodecPreference::HighestQuality,
                     music::Codec::Aac => music::CodecPreference::LosslessCd,
                     _ => music::CodecPreference::HighestQuality,
                 });
@@ -426,7 +413,6 @@ async fn main() -> Result<()> {
         .with_rip_task_runner(rip_task_runner),
     );
 
-    // Mirror orchestrator activity into the server-owned live task feed.
     let server_state_for_events = Arc::clone(&server_state);
     let progress_throttles = Mutex::new(HashMap::<String, ProgressThrottle>::new());
     orchestrator.subscribe(Arc::new(move |event| {
@@ -463,8 +449,6 @@ async fn main() -> Result<()> {
             (plain, None)
         }
 
-        // Match app-created tasks first. Ordinary bot jobs get a server-owned
-        // task record too, so every client sees the same active job feed.
         let find_task = |job: &engine::orchestrator::types::ActiveRipTask,
                          register_if_missing: bool|
          -> Option<server::rip_tasks::ServerTaskMeta> {
@@ -473,7 +457,6 @@ async fn main() -> Result<()> {
             let (parsed_title, parsed_artist) =
                 parse_job_title_and_artist(&job.job_header, is_album);
 
-            // App rip tasks put their server task ID in user_name.
             if let Some(task) = job
                 .user_name
                 .as_ref()
@@ -487,7 +470,7 @@ async fn main() -> Result<()> {
                 }
                 return Some(task.clone());
             }
-            // Repeated orchestrator events resolve through the assigned job ID.
+
             for task in tasks.values_mut() {
                 if task.rip_task_id == job.id {
                     if task.task_id.starts_with("bot_") {
@@ -500,8 +483,7 @@ async fn main() -> Result<()> {
                     return Some(task.clone());
                 }
             }
-            // Recover a matching app task if its Created event raced the
-            // orchestrator event bridge.
+
             for task in tasks.values_mut() {
                 if task.rip_task_id.is_empty()
                     && (task.owner_id == job.user_id || job.user_id == 0)
@@ -932,7 +914,6 @@ async fn main() -> Result<()> {
         tracks_repo: tracks_repo.clone(),
     });
 
-    // Bridge subscribes once; its consumer renders status messages + dashboard.
     bot::event_bridge::start(Arc::clone(&state));
     let mut dispatcher = Dispatcher::new();
     handlers::register(&mut dispatcher, state);

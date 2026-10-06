@@ -1,5 +1,3 @@
-//! Sequential, cancellable task queue used by ripping.
-
 use std::{
     any::Any,
     collections::VecDeque,
@@ -57,7 +55,6 @@ struct Inner {
     state: Mutex<QueueState>,
 }
 
-/// A single-worker queue. Cloning the queue shares the same worker and state.
 #[derive(Clone)]
 pub struct SequentialRipQueue {
     inner: Arc<Inner>,
@@ -100,7 +97,6 @@ impl SequentialRipQueue {
             .processing
     }
 
-    /// Cancel and fail pending jobs. The active job is deliberately untouched.
     pub fn clear(&self) {
         let pending = {
             let mut state = self.inner.state.lock().expect("queue mutex poisoned");
@@ -130,14 +126,6 @@ impl SequentialRipQueue {
             .map_err(|_| QueueError::Task("queue result type mismatch".to_owned()))
     }
 
-    /// Enqueue without waiting for the task to run: appends the item
-    /// synchronously (so call order == FIFO order across concurrent
-    /// submitters) and returns the completion receiver. The caller may
-    /// drop it (fire-and-forget) or spawn a waiter to observe
-    /// `Aborted`/`Cleared`.
-    ///
-    /// Returns `Err` immediately when the outer signal is already
-    /// cancelled, exactly like `enqueue`.
     pub fn submit<T: Send + 'static>(
         &self,
         task: impl FnOnce(CancellationToken) -> Pin<Box<dyn Future<Output = T> + Send>> + Send + 'static,
@@ -153,9 +141,6 @@ impl SequentialRipQueue {
             .as_ref()
             .is_some_and(CancellationToken::is_cancelled)
         {
-            // Mirror `enqueue`'s early rejection without a receiver to
-            // await: send the error through a fresh channel so callers
-            // handling the receiver uniformly still observe it.
             let (completion_tx, completion_rx) = oneshot::channel();
             let _ = completion_tx.send(Err(QueueError::Aborted));
             return completion_rx;
@@ -259,8 +244,6 @@ fn abort_item(inner: &Arc<Inner>, id: u64, child: &CancellationToken) {
             callback(position);
         }
     } else {
-        // An active item's outer cancellation only reaches its child. Its
-        // task remains responsible for deciding the result delivered to it.
         let is_active = inner.state.lock().expect("queue mutex poisoned").active == Some(id);
         if is_active {
             child.cancel();

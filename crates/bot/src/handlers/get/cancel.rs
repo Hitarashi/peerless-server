@@ -1,8 +1,3 @@
-//! Dynamic `/cancel_<cuid>` and inline cancel authorization.
-//!
-//! M5c: the engine orchestrator owns job state. This module only performs
-//! authorization and selects which engine job to cancel.
-
 use crate::BotState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,7 +7,6 @@ pub enum CancelResult {
     Expired,
 }
 
-/// Inline-button cancel: authorize against the engine job's requester.
 pub fn cancel_inline(
     state: &BotState,
     job_id: &str,

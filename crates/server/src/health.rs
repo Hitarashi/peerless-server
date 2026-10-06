@@ -6,44 +6,29 @@ use utoipa::ToSchema;
 
 use crate::{ServerState, error::ServerError, probe};
 
-/// Telemetry and liveness status of the streaming server.
-///
-/// This is the **liveness** view: it answers only "should this process be
-/// restarted?", and the accompanying HTTP status code is derived from that
-/// question alone -- 200 when the process, the database, and at least one
-/// stream worker are serving, 503 otherwise.
-///
-/// The counters below are pure telemetry. They are useful while debugging a
-/// 503, but they never influence the status code themselves.
-///
-/// For the wide, per-subsystem breakdown -- including the Apple wrapper, which
-/// cannot trigger a restart -- see
-/// [`status_report`] / `GET /api/v1/status`.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct HealthResponse {
-    /// `healthy` when the process is live, `unhealthy` when it is not.
     #[schema(example = "healthy")]
     pub status: &'static str,
-    /// Total number of auxiliary MTProto stream workers configured.
+
     #[schema(example = 4)]
     pub workers_total: usize,
-    /// Number of healthy MTProto workers available to service requests.
+
     #[schema(example = 4)]
     pub workers_available: usize,
-    /// Total number of cached 512KB media chunks in memory.
+
     #[schema(example = 128)]
     pub cache_entries: u64,
-    /// Total memory size in bytes consumed by cached chunks.
+
     #[schema(example = 67108864)]
     pub cache_bytes: u64,
-    /// Number of seconds the server process has been running.
+
     #[schema(example = 3600)]
     pub uptime_seconds: u64,
-    /// Cumulative stream performance counters since process start.
+
     pub stream_metrics: StreamingMetrics,
 }
 
-/// Cumulative measurements for tuning streaming and worker capacity.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct StreamingMetrics {
     pub cache_hits: u64,
@@ -75,13 +60,6 @@ pub struct StreamingMetrics {
     pub rpc_slot_wait_max_ms: Option<u64>,
 }
 
-/// Liveness probe, polled by the Docker `HEALTHCHECK` (`healthcheck.sh`).
-///
-/// Returns 200 while the process can serve requests, and **503** once it
-/// cannot. Restarting only helps for a fault the process cannot recover from,
-/// so this deliberately ignores the Apple wrapper: a dead
-/// wrapper stops new rips but leaves streaming, catalog, lyrics, and
-/// already-ripped playback working, and a restart would not fix it anyway.
 #[utoipa::path(
     get,
     path = "/api/v1/health",
@@ -103,7 +81,6 @@ pub async fn health_check(
     let cache_metrics = cache.metrics_snapshot();
     let stream_metrics = pool.metrics().snapshot();
 
-    // The one and only thing that decides the status code.
     let status_code = if liveness.live {
         StatusCode::OK
     } else {
@@ -156,12 +133,6 @@ pub async fn health_check(
     ))
 }
 
-/// Wide diagnostics: every subsystem with an explicit state.
-///
-/// **Always returns HTTP 200**, whatever it finds. This is the endpoint an
-/// operator reads precisely *because* something is wrong, so it must always
-/// answer -- a 500 from the diagnostics endpoint would be the one failure mode
-/// that hides the actual fault.
 #[utoipa::path(
     get,
     path = "/api/v1/status",

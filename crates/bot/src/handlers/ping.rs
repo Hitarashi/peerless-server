@@ -1,8 +1,3 @@
-//! `/ping` — liveness probe that replies with a system-health card.
-//!
-//! Reports Telegram round-trip latency, database and ALAC-mirror reachability
-//! with their latencies, process uptime, RSS, and the current rip-queue state.
-
 use std::{
     sync::Arc,
     time::{Duration, Instant},

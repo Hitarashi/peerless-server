@@ -1,7 +1,3 @@
-//! Ripper tests — progress
-//! sequences, retry semantics, stall/cancel behavior, temp cleanup, and
-//! result mapping.
-
 use std::{
     path::Path,
     sync::{
@@ -33,17 +29,17 @@ fn meta() -> TrackMeta {
         artist: "Artist".into(),
         album: "Album".into(),
         album_artist: "Artist".into(),
-        genre: None,                 // → 'Unknown' in result mapping
-        release_date: String::new(), // '' passthrough
+        genre: None,
+        release_date: String::new(),
         composer: None,
-        track_number: None, // → 1
-        track_count: None,  // → 1
+        track_number: None,
+        track_count: None,
         disc_number: None,
         disc_count: None,
         duration_secs: 240,
         explicit: false,
         content_advisory: None,
-        artwork_url: String::new(), // → no artwork fetch
+        artwork_url: String::new(),
         album_id: None,
         artist_id: None,
         isrc: None,
@@ -82,14 +78,13 @@ fn split_valid_stream_chunks(count: usize) -> Vec<Bytes> {
         .collect()
 }
 
-/// Scriptable fake stage: acquisition behavior is configurable per test.
 struct FakeStage {
     meta: TrackMeta,
-    meta_failures: u32, // first N track_meta calls fail
+    meta_failures: u32,
     meta_calls: AtomicU32,
     stream_chunks: Vec<Bytes>,
     stream_content_length: Option<u64>,
-    connect_fails: u32, // first N connect calls fail with a stall message
+    connect_fails: u32,
     connect_error: Option<RipError>,
     connect_permanent: Option<String>,
     connect_unavailable: bool,
@@ -214,7 +209,6 @@ async fn happy_path_progress_and_result_mapping() {
         .await
         .unwrap();
 
-    // Result mapping (JS || / ?? semantics).
     assert_eq!(result.title, "Title");
     assert_eq!(result.genre, "Unknown");
     assert_eq!(result.release_date, "");
@@ -226,8 +220,6 @@ async fn happy_path_progress_and_result_mapping() {
     assert_eq!(result.duration, 240);
     assert!(result.file_path.ends_with("01. Title - Artist [ALAC].m4a"));
 
-    // Progress sequence (TS: lastProgressUpdate=0 → the FIRST chunk always
-    // emits a byte-progress update).
     let log = log.lock().unwrap();
     assert_eq!(log[0], RipActivity::ResolvingMetadata);
     assert_eq!(
@@ -249,7 +241,6 @@ async fn happy_path_progress_and_result_mapping() {
             if track == &TrackLabel::new("Title", "Artist")
     )));
 
-    // Finalized output exists; temp raw cleaned up.
     assert!(Path::new(&result.file_path).is_file());
     let leftovers: Vec<_> = std::fs::read_dir(dir.path())
         .unwrap()
@@ -433,8 +424,6 @@ async fn artwork_empty_vec_means_no_cover() {
 
 #[tokio::test]
 async fn stalled_stream_is_retryable() {
-    // A stream that NEVER yields (pending forever): rip_once returns the
-    // 45s stall error, and the retry loop retries it.
     let dir = tempfile::tempdir().unwrap();
     struct StalledStage(FakeStage);
     impl RipStage for StalledStage {
@@ -477,7 +466,7 @@ async fn stalled_stream_is_retryable() {
 
     let inner = FakeStage::ok();
     let connect_calls = Arc::new(AtomicU32::new(0));
-    // Track connect attempts via the shared counter inside FakeStage.
+
     let stage = StalledStage(inner);
     let ripper = AlacTrackRipper::new(config(dir.path(), 1, 1));
     tokio::time::pause();
@@ -528,7 +517,7 @@ async fn progress_totals_with_content_length() {
         .filter(|activity| matches!(activity, RipActivity::Downloading { .. }))
         .collect();
     assert!(!download_events.is_empty());
-    // Byte progress includes the known total when content length is present.
+
     assert!(matches!(
         download_events[0],
         RipActivity::Downloading { progress, .. } if progress.total == Some(stream_length)
@@ -640,7 +629,7 @@ async fn local_io_error_is_non_retryable() {
 async fn progress_throttles_to_one_per_second() {
     let dir = tempfile::tempdir().unwrap();
     let mut deps = FakeStage::ok();
-    // Many chunks arriving quickly: progress updates throttle to 1/sec.
+
     deps.stream_chunks = split_valid_stream_chunks(50);
     let ripper = AlacTrackRipper::new(config(dir.path(), 3, 1));
     let (cb, log) = record();
@@ -658,10 +647,7 @@ async fn progress_throttles_to_one_per_second() {
         .iter()
         .filter(|activity| matches!(activity, RipActivity::Downloading { .. }))
         .collect();
-    // All chunks delivered within the same paused "second" → at most a
-    // handful of updates (first fires immediately due to the backdated
-    // last_update, subsequent ones only after 1s of paused time, which
-    // never advances while chunks are ready).
+
     assert!(
         download_events.len() <= 3,
         "throttled: got {}",

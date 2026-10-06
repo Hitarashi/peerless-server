@@ -1,8 +1,3 @@
-//! One-off live smoke check for the production transport + catalog mapping
-//! against a configured catalog API. NOT part of the test suite (network).
-//!
-//! Run: `CATALOG_API_URL=https://host/api/v1 cargo run -p apple --example live_check`
-
 use apple::catalog::{Catalog, ReqwestTransport};
 use engine::settings::LyricspornApiEndpoint;
 

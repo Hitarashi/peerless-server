@@ -1,8 +1,3 @@
-//! Typed Telegram callback protocol.
-//!
-//! All callback payloads cross this seam once. Feature modules receive typed
-//! intent and never parse callback grammar themselves.
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TelegramAction {
     Dashboard {
@@ -115,8 +110,6 @@ pub enum MessageEffect {
     None,
 }
 
-/// One callback query produces exactly one acknowledgement and at most one
-/// message effect.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallbackOutcome {
     pub acknowledgement: CallbackAck,

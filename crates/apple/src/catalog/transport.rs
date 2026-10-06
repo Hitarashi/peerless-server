@@ -1,20 +1,10 @@
-//! HTTP transport seam for the catalog module.
-//!
-//! Two adapters justify this seam: `ReqwestTransport` for production and a
-//! fake JSON-serving transport for offline tests. User-agent and timeout are
-//! per-call decisions made by the catalog (headers/timeout are chosen
-//! them per fetch), so the transport stays a dumb GET.
-
 use std::{
     future::Future,
     time::{Duration, Instant},
 };
 
-/// Failures of a single HTTP GET.
 #[derive(Debug, thiserror::Error)]
 pub enum TransportError {
-    /// The request threw — timeout OR network error. Both cases fold into
-    /// one "failed after Xms" message.
     #[error("fetch failed after {elapsed_ms}ms: {source}")]
     Fetch {
         elapsed_ms: u64,
@@ -24,7 +14,6 @@ pub enum TransportError {
     Status { status: u16 },
 }
 
-/// The seam every catalog fetch crosses.
 pub trait Transport: Send + Sync {
     fn get(
         &self,
@@ -34,7 +23,6 @@ pub trait Transport: Send + Sync {
     ) -> impl Future<Output = Result<String, TransportError>> + Send;
 }
 
-/// Production adapter over `reqwest`.
 #[derive(Clone, Default)]
 pub struct ReqwestTransport {
     client: reqwest::Client,

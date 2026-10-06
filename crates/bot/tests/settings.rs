@@ -1,5 +1,3 @@
-//! `/settings` presentation behavior tests.
-
 use bot::handlers::settings::render_settings_text;
 use engine::settings::{BotSettings, RippingMode, default_settings};
 

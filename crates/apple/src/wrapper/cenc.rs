@@ -1,6 +1,3 @@
-//! CENC (Common Encryption, ISO/IEC 23001-7) sample decryption for the
-//! webplayback AAC path.
-
 use ctr::cipher::{KeyIvInit, StreamCipher};
 
 use super::{
@@ -72,7 +69,6 @@ fn parse_senc_samples(data: &[u8], start: usize, len: usize) -> Option<Vec<SencS
     None
 }
 
-/// Decrypt one `moof`+`mdat` fragment in place with a CENC content key.
 pub fn decrypt_cenc_fragment(fragment: &mut [u8], key: &[u8; 16]) -> Result<bool, WrapperError> {
     let total_len = fragment.len();
 
@@ -163,8 +159,6 @@ pub fn decrypt_cenc_fragment(fragment: &mut [u8], key: &[u8; 16]) -> Result<bool
     Ok(true)
 }
 
-/// Strip encryption-related boxes (`senc`, `saiz`, `saio`, `uuid`, `pssh`, `seam`)
-/// from a decrypted fragment and adjust `trun` data offsets accordingly.
 pub fn strip_encryption_boxes(fragment: &mut Vec<u8>) -> Result<(), WrapperError> {
     let total_len = fragment.len();
     let (moof_off, moof_len) = find_child_box(fragment, 0, total_len, b"moof")

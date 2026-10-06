@@ -7,8 +7,6 @@ use diesel_async::RunQueryDsl;
 
 #[derive(Debug, QueryableByName)]
 struct StoredTrack {
-    #[diesel(sql_type = VarChar)]
-    provider: String,
     #[diesel(sql_type = Text)]
     track_id: String,
     #[diesel(sql_type = VarChar)]
@@ -17,8 +15,6 @@ struct StoredTrack {
 
 #[derive(Debug, QueryableByName)]
 struct StoredAlbum {
-    #[diesel(sql_type = VarChar)]
-    provider: String,
     #[diesel(sql_type = Text)]
     album_id: String,
     #[diesel(sql_type = VarChar)]
@@ -34,31 +30,21 @@ async fn archive_roundtrips_legacy_provider_rows_and_codecs() {
 
     let mut connection = pool.connection().await.expect("connection");
     sql_query(
-        "INSERT INTO tracks (provider, track_id, codec, message_id, file_id, file_unique_id, title, artist, album, duration, bit_depth, sample_rate, genre, release_date, track_number, track_count) VALUES ($1, $2, $3, 101, 'legacy-track-file', 'legacy-track-unique', 'Legacy Track', 'Legacy Artist', 'Legacy Album', 180, 24, 96000, 'Music', '2026-01-01', 1, 1)",
+        "INSERT INTO tracks (track_id, codec, message_id, file_id, file_unique_id) VALUES ($1, $2, 101, 'legacy-track-file', 'legacy-track-unique')",
     )
-    .bind::<VarChar, _>("qobuz")
     .bind::<Text, _>("legacy-track")
-    .bind::<VarChar, _>("flac")
+    .bind::<VarChar, _>("alac")
     .execute(&mut *connection)
     .await
     .expect("insert legacy track");
     sql_query(
-        "INSERT INTO albums (provider, album_id, codec, part_index, total_parts, message_id, file_id, file_unique_id, file_size, file_name, generation_hash) VALUES ($1, $2, $3, 1, 1, 102, 'legacy-album-file', 'legacy-album-unique', 4096, 'legacy.zip', 'legacy-generation')",
+        "INSERT INTO albums (album_id, codec, part_index, total_parts, message_id, file_id, file_unique_id, file_size, generation_hash) VALUES ($1, $2, 1, 1, 102, 'legacy-album-file', 'legacy-album-unique', 4096, 'legacy-generation')",
     )
-    .bind::<VarChar, _>("qobuz")
     .bind::<Text, _>("legacy-album")
-    .bind::<VarChar, _>("flac")
+    .bind::<VarChar, _>("alac")
     .execute(&mut *connection)
     .await
     .expect("insert legacy album");
-    sql_query(
-        "INSERT INTO requests (telegram_id, chat_id, provider, track_id, is_cache_hit, status) VALUES (700001, 700002, $1, $2, true, 'completed')",
-    )
-    .bind::<VarChar, _>("qobuz")
-    .bind::<Text, _>("legacy-track")
-    .execute(&mut *connection)
-    .await
-    .expect("insert legacy request");
     drop(connection);
 
     let archive_service = DbDumpService::new(pool.clone());
@@ -69,30 +55,26 @@ async fn archive_roundtrips_legacy_provider_rows_and_codecs() {
         .expect("restore archive");
 
     let mut connection = pool.connection().await.expect("connection");
-    let track =
-        sql_query("SELECT provider, track_id, codec FROM tracks WHERE track_id = 'legacy-track'")
-            .get_result::<StoredTrack>(&mut *connection)
-            .await
-            .expect("restored legacy track");
-    assert_eq!(track.provider, "qobuz");
+    let track = sql_query("SELECT track_id, codec FROM tracks WHERE track_id = 'legacy-track'")
+        .get_result::<StoredTrack>(&mut *connection)
+        .await
+        .expect("restored legacy track");
     assert_eq!(track.track_id, "legacy-track");
-    assert_eq!(track.codec, "flac");
+    assert_eq!(track.codec, "alac");
 
-    let album =
-        sql_query("SELECT provider, album_id, codec FROM albums WHERE album_id = 'legacy-album'")
-            .get_result::<StoredAlbum>(&mut *connection)
-            .await
-            .expect("restored legacy album");
-    assert_eq!(album.provider, "qobuz");
+    let album = sql_query("SELECT album_id, codec FROM albums WHERE album_id = 'legacy-album'")
+        .get_result::<StoredAlbum>(&mut *connection)
+        .await
+        .expect("restored legacy album");
     assert_eq!(album.album_id, "legacy-album");
-    assert_eq!(album.codec, "flac");
+    assert_eq!(album.codec, "alac");
     drop(connection);
 
     assert!(
         TracksRepository::new(pool)
-            .search_cached_tracks("Legacy Track", 10)
+            .find_track_by_file_unique_id("legacy-track-unique")
             .await
-            .expect("Apple-only cache search")
-            .is_empty()
+            .expect("cache lookup")
+            .is_some()
     );
 }

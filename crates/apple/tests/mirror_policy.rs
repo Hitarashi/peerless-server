@@ -90,7 +90,6 @@ async fn env_override_returns_without_http_and_strips_slashes() {
 
 #[tokio::test]
 async fn empty_env_override_falls_through_to_manifest_discovery() {
-    // Empty URL/key means "not configured" — discovery runs.
     let manager = MirrorPolicyManager::new(ready_http(), Some(("".into(), "".into())));
     let endpoint = manager.get_endpoint(false, None).await.unwrap();
     assert_eq!(endpoint.mirror_url, "https://mirror");

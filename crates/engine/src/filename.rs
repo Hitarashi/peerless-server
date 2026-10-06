@@ -1,39 +1,21 @@
-//! Typed, bounded, filesystem-safe filename primitives.
-//!
-//! Enforces OS-level single-component path length limits (commonly 255 bytes on Linux
-//! filesystems) and zip entry constraints at the type level.
-//!
-//! Also holds the filename policy for finalized audio tracks: [`build_track_filename`]
-//! and [`build_track_filename_with_codec`] name a ripped track after its number,
-//! title, artist, and the codec that was actually delivered.
-
 use std::{borrow::Borrow, fmt, ops::Deref, path::Path};
 
 use crate::types::TrackMeta;
 
-/// Standard maximum byte length for a single filesystem path component on Linux.
 pub const MAX_FILENAME_BYTES: usize = 255;
 
-/// Maximum byte length for a planned archive filename, reserving room to append
-/// `" [Partial]"` before `".zip"` without exceeding [`MAX_FILENAME_BYTES`].
 pub const MAX_ARCHIVE_FILENAME_BYTES: usize = 245;
 
-/// Maximum byte length for track entries packaged inside a ZIP archive.
 pub const MAX_ZIP_ENTRY_FILENAME_BYTES: usize = 240;
 
-/// A bounded, validated filename for finalized single tracks.
 pub type TrackFilename = BoundedName<MAX_FILENAME_BYTES>;
 
-/// A bounded, validated filename for single-component files (e.g. temp streams).
 pub type StandardFilename = BoundedName<MAX_FILENAME_BYTES>;
 
-/// A bounded filename planned for a ZIP archive.
 pub type ArchiveFilename = BoundedName<MAX_ARCHIVE_FILENAME_BYTES>;
 
-/// A bounded filename for members inside a ZIP archive.
 pub type ZipEntryName = BoundedName<MAX_ZIP_ENTRY_FILENAME_BYTES>;
 
-/// Error returned when strict filename validation fails.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum FilenameError {
     #[error("filename is empty")]
@@ -44,14 +26,10 @@ pub enum FilenameError {
     InvalidCharacter(char),
 }
 
-/// A validated, non-empty filename guaranteed to not exceed `MAX` bytes and to contain
-/// only filesystem-safe characters.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BoundedName<const MAX: usize>(String);
 
 impl<const MAX: usize> BoundedName<MAX> {
-    /// Strict constructor: validates that `name` is non-empty, within `MAX` bytes,
-    /// and free of filesystem-forbidden characters.
     pub fn try_new(name: impl Into<String>) -> Result<Self, FilenameError> {
         let s = name.into();
         let trimmed = s.trim();
@@ -75,8 +53,6 @@ impl<const MAX: usize> BoundedName<MAX> {
         Ok(Self(trimmed.to_owned()))
     }
 
-    /// Infallible domain constructor: sanitizes invalid characters, trims, and bounds
-    /// along valid UTF-8 code point boundaries while preserving an optional suffix.
     pub fn sanitize_and_bound(name: &str, suffix: Option<&str>) -> Self {
         let sanitized: String = name
             .chars()
@@ -111,8 +87,6 @@ impl<const MAX: usize> BoundedName<MAX> {
         Self(final_str)
     }
 
-    /// Returns a variant of this filename with `_{collision_id}` inserted before the
-    /// file extension, guaranteed to remain within `MAX` bytes and valid UTF-8.
     pub fn with_collision_id(&self, collision_id: &str) -> Self {
         let s = &self.0;
         let (stem, ext) = match s.rfind('.') {
@@ -134,31 +108,22 @@ impl<const MAX: usize> BoundedName<MAX> {
         }
     }
 
-    /// Access the underlying string slice.
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
-    /// Consume the wrapper and return the inner `String`.
     pub fn into_inner(self) -> String {
         self.0
     }
 }
 
 impl ArchiveFilename {
-    /// Suffix used when marking an archive as incomplete.
     pub const PARTIAL_SUFFIX: &'static str = " [Partial]";
 
-    /// Converts this 245-byte archive filename into a 255-byte standard filename.
     pub fn into_standard(self) -> StandardFilename {
         BoundedName(self.0)
     }
 
-    /// Converts this 245-byte archive filename into a 255-byte standard filename
-    /// with `" [Partial]"` inserted before `".zip"`.
-    ///
-    /// Guaranteed not to overflow 255 bytes because `self.0.len() <= 245` and
-    /// `PARTIAL_SUFFIX.len() == 10`.
     pub fn into_partial(self) -> StandardFilename {
         let s = self.0;
         let partial_name = if let Some(stem) = s.strip_suffix(".zip") {
@@ -170,7 +135,6 @@ impl ArchiveFilename {
     }
 }
 
-/// Truncate `s` to at most `max_bytes` at a UTF-8 character boundary.
 pub fn bound_utf8_prefix(s: &str, max_bytes: usize) -> &str {
     if s.len() <= max_bytes {
         return s;
@@ -182,7 +146,6 @@ pub fn bound_utf8_prefix(s: &str, max_bytes: usize) -> &str {
     &s[..end]
 }
 
-/// Check whether a character is forbidden in a standard filesystem filename.
 pub fn is_forbidden_char(c: char) -> bool {
     matches!(
         c,
@@ -190,13 +153,10 @@ pub fn is_forbidden_char(c: char) -> bool {
     ) || c.is_control()
 }
 
-/// Build the final output filename for a ripped track.
 pub fn build_track_filename(meta: &TrackMeta) -> TrackFilename {
     build_track_filename_with_codec(meta, "alac")
 }
 
-/// Same as [`build_track_filename`], labeled with the actually delivered
-/// codec (`alac`, `aac`, `mp4a.40.2`, `ec-3`, `flac`, `mp3`).
 pub fn build_track_filename_with_codec(meta: &TrackMeta, codec: &str) -> TrackFilename {
     let number = meta.track_number.filter(|number| *number != 0).unwrap_or(1);
     let suffix = track_filename_suffix(meta.explicit, codec);
@@ -346,7 +306,6 @@ mod tests {
         let bounded = TrackFilename::sanitize_and_bound(name, Some(" [ALAC].m4a"));
         assert_eq!(bounded.as_str(), "Artist_ Song _ Remix [ALAC].m4a");
 
-        // Length bounding with suffix
         let long_title = "a".repeat(300);
         let long_name = format!("{long_title} [ALAC].m4a");
         let bounded = TrackFilename::sanitize_and_bound(&long_name, Some(" [ALAC].m4a"));
@@ -356,14 +315,13 @@ mod tests {
 
     #[test]
     fn utf8_boundaries_are_never_split() {
-        // Multi-byte character: 🎵 is 4 bytes
         let note = "🎵";
         let prefix = "a".repeat(253);
         let name = format!("{prefix}{note}.m4a");
         let bounded = TrackFilename::sanitize_and_bound(&name, Some(".m4a"));
         assert!(bounded.len() <= MAX_FILENAME_BYTES);
         assert!(bounded.ends_with(".m4a"));
-        // Valid utf-8
+
         std::str::from_utf8(bounded.as_bytes()).expect("valid utf-8");
     }
 
@@ -405,13 +363,11 @@ mod tests {
 
     #[test]
     fn oversized_suffix_and_collision_suffixes_are_handled() {
-        // Suffix >= MAX
         let long_suffix = ".abcdefghijklmnop";
         let bounded =
             BoundedName::<10>::sanitize_and_bound("test.abcdefghijklmnop", Some(long_suffix));
         assert!(bounded.len() <= 10);
 
-        // Collision suffix >= MAX
         let base = BoundedName::<10>::sanitize_and_bound("track.m4a", Some(".m4a"));
         let collided = base.with_collision_id("verylongcollisionidexceedingtenbytes");
         assert!(collided.len() <= 10);

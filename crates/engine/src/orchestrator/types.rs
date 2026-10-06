@@ -1,5 +1,3 @@
-//! Orchestrator domain types.
-
 use std::sync::Arc;
 
 pub use music::{
@@ -10,9 +8,6 @@ use tokio_util::sync::CancellationToken;
 use super::deps::ChatMessageRef;
 use crate::types::{ParsedTargetItem, Provider, TargetKind};
 
-/// The non-terminal lifecycle phase of a job.  Terminality is represented by
-/// `terminal_state` below so consumers can retain the last useful phase while
-/// rendering a completed/cancelled job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskPhase {
     Resolving,
@@ -30,22 +25,19 @@ pub enum TerminalTaskState {
     Failed,
 }
 
-/// Live job bookkeeping. The orchestrator owns it, mutates it from several
-/// tasks behind its mutex, and hands out read-only snapshots via events.
 #[derive(Debug, Clone)]
 pub struct ActiveRipTask {
     pub id: String,
     pub provider: Provider,
     pub source_track_ids: Vec<String>,
     pub chat_id: i64,
-    /// Chat the delivered copies target (group jobs retarget to the user's
-    /// DM); the bridge uses it to send ZIP details to the right chat.
+
     pub delivery_chat_id: i64,
     pub user_id: i64,
     pub user_name: Option<String>,
     pub job_header: String,
     pub total_tracks: usize,
-    /// Shared cancellation token — cloned into every pipeline stage.
+
     pub controller: CancellationToken,
     pub is_cancelled: bool,
     pub cancelled_by: Option<String>,
@@ -54,7 +46,7 @@ pub struct ActiveRipTask {
     pub failed_count: usize,
     pub completed: bool,
     pub start_time_ms: u64,
-    /// Queue position, maintained by the queue rather than the job flow.
+
     pub queue_position: Option<u64>,
     pub phase: TaskPhase,
     pub terminal_state: Option<TerminalTaskState>,
@@ -64,15 +56,13 @@ pub struct ActiveRipTask {
     pub reply_to_message_id: Option<i64>,
 }
 
-/// Everything one rip request carries.
 #[derive(Debug, Clone)]
 pub struct RipTaskOptions {
     pub provider: Provider,
     pub chat_id: i64,
     pub user_id: i64,
     pub user_name: Option<String>,
-    /// Chat the file copy is delivered to (numbers only in practice; the
-    /// bot resolves usernames/ids to i64 before enqueueing).
+
     pub delivery_chat_id: i64,
     pub is_group: bool,
     pub is_force: bool,
@@ -81,10 +71,9 @@ pub struct RipTaskOptions {
     pub parsed_items: Vec<ParsedTargetItem>,
     pub reply_to_message_id: Option<i64>,
     pub is_admin: bool,
-    /// Preferred audio codec/quality preference for the selected adapter.
+
     pub codec_preference: Option<CodecPreference>,
-    /// Renditions to acquire for this request. Primary is always required;
-    /// Atmos, when selected, is optional.
+
     pub rendition_policy: RenditionPolicy,
 }
 
@@ -111,7 +100,7 @@ mod rendition_tests {
         );
         assert_eq!(
             plan.units()[0].accepted_cache_codecs(),
-            &[Codec::Alac, Codec::Aac, Codec::Flac]
+            &[Codec::Alac, Codec::Aac]
         );
         assert_eq!(plan.units()[1].accepted_cache_codecs(), &[Codec::Ec3]);
     }
@@ -236,7 +225,6 @@ pub enum TaskActivity {
     WaitingDuplicate { inflight_job_id: String },
 }
 
-/// A progress snapshot; every display slot is optional.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RipTaskProgress {
     pub job_id: String,
@@ -253,20 +241,17 @@ pub struct RipTaskProgress {
     pub codec: Option<String>,
 }
 
-/// One failed track, as reported in the job summary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FailedTrack {
     pub id: String,
     pub error: String,
-    /// Disposition of the failure, from the typed rip error. `None` for
-    /// upload-lane failures that never had a rip error.
+
     pub kind: Option<FailedTrackKind>,
     pub title: Option<String>,
     pub artist: Option<String>,
     pub storefront: Option<String>,
 }
 
-/// What a consumer does with a failed track: render text or a label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailedTrackKind {
     TrackUnavailable,
@@ -279,8 +264,6 @@ pub enum FailedTrackKind {
 }
 
 impl FailedTrackKind {
-    /// Disposition of a typed rip error; `None` for technical failures that
-    /// carry no user-facing label.
     pub fn of(error: &crate::ripper::RipError) -> Option<Self> {
         use crate::ripper::RipError;
         match error {
@@ -326,7 +309,6 @@ impl FailedTrack {
     }
 }
 
-/// The end-of-job report for the requesting chat.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RipTaskSummary {
     pub job_id: String,
@@ -342,36 +324,29 @@ pub struct RipTaskSummary {
     pub max_collection_limit: u32,
     pub is_cache_only: bool,
     pub is_group: bool,
-    /// User-facing notes appended to the completion message (plain text;
-    /// the bridge escapes them). Empty in the common case.
+
     pub warnings: Vec<String>,
-    /// Metadata about a user-delivered album ZIP, rendered as the details
-    /// message in the delivery chat. `None` for cache-only jobs and
-    /// non-ZIP jobs.
+
     pub zip_delivery: Option<ZipDeliveryInfo>,
-    /// Metadata for every delivered rendition archive. `zip_delivery` is
-    /// retained as the primary/first entry compatibility view.
+
     pub zip_deliveries: Vec<ZipDeliveryInfo>,
-    /// Telegram message ID of the first delivered track or ZIP in the delivery chat.
+
     pub first_delivered_msg_id: Option<ChatMessageRef>,
-    /// Highest-quality or primary codec delivered/ripped.
+
     pub codec: Option<String>,
 }
 
-/// Album details for a delivered ZIP, powering the post-ZIP info message.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ZipDeliveryInfo {
     pub album: String,
     pub artist: String,
-    /// First four characters of the album release date, may be empty.
+
     pub release_year: String,
     pub total_tracks: usize,
-    /// Tracks actually present in the delivered archive. `None` means the
-    /// archive was reused but its sparse track count could not be derived from
-    /// the per-track cache.
+
     pub delivered_tracks: Option<usize>,
     pub total_parts: usize,
-    /// Total delivered archive bytes.
+
     pub size_bytes: i64,
     pub is_partial: bool,
     pub album_id: String,
@@ -381,12 +356,10 @@ pub struct ZipDeliveryInfo {
     pub record_label: Option<String>,
     pub copyright: Option<String>,
     pub photo_delivered: bool,
-    /// Highest-quality codec in the archive (`alac`, `aac`, `mp4a.40.2`, `ec-3`).
+
     pub codec: Option<String>,
 }
 
-/// A target which could not be resolved.  The engine deliberately keeps this
-/// structured; presentation (including HTML escaping) belongs to the bot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolutionFailure {
     pub kind: TargetKind,
@@ -409,22 +382,19 @@ fn kind_name(kind: TargetKind) -> &'static str {
     }
 }
 
-/// Events emitted by the orchestrator.
 #[derive(Debug, Clone)]
 pub enum OrchestratorEvent<'a> {
-    /// `job:created`
     Created(&'a ActiveRipTask),
-    /// `job:started`
+
     Started(&'a ActiveRipTask),
-    /// `job:progress`
+
     Progress(&'a ActiveRipTask, &'a RipTaskProgress),
-    /// `job:completed`
+
     Completed(&'a ActiveRipTask, &'a RipTaskSummary),
-    /// `job:cancelled`
+
     Cancelled(&'a ActiveRipTask, &'a Option<String>),
-    /// `job:failed`
+
     Failed(&'a ActiveRipTask, &'a str),
 }
 
-/// Callback type subscribed to orchestrator events.
 pub type EventCallback = Arc<dyn Fn(&OrchestratorEvent<'_>) + Send + Sync>;

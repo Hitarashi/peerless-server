@@ -7,13 +7,11 @@ pub mod cache;
 pub mod delivery;
 pub mod providers;
 
-pub use bookkeeping::{
-    RequestLog, TaskBookkeeping, TaskBookkeepingError, TaskBookkeepingOperation,
-};
+pub use bookkeeping::TaskBookkeeping;
 pub use cache::{
     AlbumCache, AlbumCacheError, AlbumCacheOperation, AlbumReplacementExpectation,
-    AlbumReplacementResult, AlbumUpload, CachedAlbum, CachedTrack, SaveTrackInput, TrackCache,
-    TrackCacheError, TrackCacheOperation,
+    AlbumReplacementResult, AlbumUpload, CachedAlbum, CachedTrack, CachedTracksMap, SaveTrackInput,
+    TrackCache, TrackCacheError, TrackCacheOperation,
 };
 pub use delivery::{
     ChatDelivery, ChatMessageRef, ChatRef, Delivery, DeliveryError, DeliveryReceipt,

@@ -3,10 +3,8 @@ use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 
 use crate::{DbError, DbPool, establish};
 
-/// Embedded Diesel migrations for this crate.
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
-/// Apply the embedded canonical schema migrations.
 pub async fn migrate(pool: &DbPool) -> Result<(), DbError> {
     let database_url = pool.database_url().to_owned();
     let connection = establish(&database_url)

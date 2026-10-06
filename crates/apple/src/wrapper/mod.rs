@@ -1,5 +1,3 @@
-//! Native wrapper-lite engine module for Apple Music ALAC decryption.
-
 pub mod cenc;
 pub mod client;
 pub mod decryptor;

@@ -1,10 +1,3 @@
-//! FFT rendering and the hand-rolled PNG canvas.
-//!
-//! The pixel buffer is written by hand rather than through an image
-//! dependency, so the drawing helpers below own every bounds check.
-//! `render_spectrogram_sync` blocks; `render_image` and the `draw_*` family
-//! only do because they are part of that blocking call tree.
-
 use std::{fs::File, path::Path};
 
 use font8x8::UnicodeFonts;

@@ -1,12 +1,8 @@
-//! Offline catalog tests via a fake transport — field mapping, cache
-//! behavior, storefront fallback order, and error semantics.
-
 use std::{collections::HashMap, sync::Mutex, time::Duration};
 
 use apple::catalog::{Catalog, CatalogError, Transport, TransportError};
 use engine::settings::LyricspornApiEndpoint;
 
-/// Serves canned JSON by URL substring match; records every served URL.
 struct FakeTransport {
     routes: HashMap<String, Route>,
     served: Mutex<Vec<String>>,
@@ -25,14 +21,12 @@ impl FakeTransport {
         }
     }
 
-    /// Serve `json` for any URL containing `needle`.
     fn on(&mut self, needle: &str, json: &str) -> &mut Self {
         self.routes
             .insert(needle.to_owned(), Route::Json(json.to_owned()));
         self
     }
 
-    /// Fail with an HTTP status for any URL containing `needle`.
     fn fail_with(&mut self, needle: &str, status: u16) -> &mut Self {
         self.routes.insert(needle.to_owned(), Route::Status(status));
         self
@@ -119,7 +113,7 @@ async fn track_mapping_matches_expected_fields() {
     assert_eq!(meta.album, "Beauty Behind the Madness");
     assert_eq!(meta.album_artist, "The Weeknd");
     assert_eq!(meta.genre.as_deref(), Some("R&B/Soul"));
-    assert_eq!(meta.release_date, "2015-05-27"); // sliced to 10 chars
+    assert_eq!(meta.release_date, "2015-05-27");
     assert_eq!(meta.composer.as_deref(), Some("Abel Tesfaye"));
     assert_eq!(meta.album_id.as_deref(), Some("1440841723"));
     assert_eq!(meta.artist_id.as_deref(), Some("12345"));
@@ -131,7 +125,7 @@ async fn track_mapping_matches_expected_fields() {
     assert_eq!(meta.track_count, Some(14));
     assert_eq!(meta.disc_number, Some(1));
     assert_eq!(meta.disc_count, Some(1));
-    assert_eq!(meta.duration_secs, 242); // 241758ms rounds to 242
+    assert_eq!(meta.duration_secs, 242);
     assert!(meta.explicit);
     assert_eq!(meta.content_advisory.as_deref(), Some("explicit"));
     assert_eq!(
@@ -148,9 +142,9 @@ async fn track_missing_fields_map_to_defaults() {
     let meta = catalog.fetch_track_meta("1", "us").await.expect("track");
     assert_eq!(meta.title, "");
     assert_eq!(meta.genre, None);
-    assert_eq!(meta.release_date, ""); // absent date → ''
+    assert_eq!(meta.release_date, "");
     assert_eq!(meta.duration_secs, 1);
-    assert_eq!(meta.artwork_url, ""); // absent artwork → ''
+    assert_eq!(meta.artwork_url, "");
     assert!(!meta.explicit);
 }
 
@@ -212,7 +206,7 @@ async fn cache_hit_serves_one_network_call() {
 #[tokio::test]
 async fn us_fallback_caches_under_original_key() {
     let mut fake = FakeTransport::new();
-    // jp fails, us succeeds.
+
     fake.fail_with("storefront=jp", 404);
     fake.on("storefront=us", &track_json());
     let catalog = configured_catalog(fake);
@@ -221,7 +215,7 @@ async fn us_fallback_caches_under_original_key() {
         .await
         .expect("us fallback should succeed");
     assert_eq!(meta.id, "1440841730");
-    // Called again: served from cache under the ORIGINAL jp key.
+
     let again = catalog
         .fetch_track_meta("1440841730", "jp")
         .await
@@ -248,7 +242,7 @@ async fn regional_chain_order() {
         .await
         .expect("gb fallback should succeed");
     assert_eq!(meta.id, "1440841730");
-    // Attempt order: jp (primary), us, gb (first regional hit).
+
     let served = catalog.transport().served();
     let order: Vec<&str> = served
         .iter()
@@ -277,14 +271,14 @@ async fn all_fail_rethrows_original_error() {
         .fetch_track_meta("1440841730", "jp")
         .await
         .expect_err("all storefronts fail");
-    // ORIGINAL error was the jp 404, not the later us 503.
+
     match err {
         CatalogError::Message(msg) => {
             assert_eq!(msg, "Lyricsporn track metadata was not found")
         }
         other => panic!("expected Message, got {other:?}"),
     }
-    // 1 primary + 1 us + 6 remaining regionals = 8 attempts.
+
     assert_eq!(catalog.transport().served().len(), 8);
 }
 
@@ -429,7 +423,7 @@ async fn artist_skips_an_unavailable_album_when_another_has_tracks() {
 #[tokio::test]
 async fn search_never_errors_and_falls_back() {
     let mut fake = FakeTransport::new();
-    fake.fail_with("storefront=jp", 500); // primary fails → []
+    fake.fail_with("storefront=jp", 500);
     fake.on("storefront=us", r#"{"results":{"songs":{"items":[]}}}"#);
     fake.on(
         "storefront=gb",
@@ -442,7 +436,7 @@ async fn search_never_errors_and_falls_back() {
         .expect("search never errors");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].title, "Found");
-    // Cached final result: second search makes no new calls.
+
     let served_before = catalog.transport().served().len();
     let again = catalog.search_catalog("query", 5, "jp").await.unwrap();
     assert_eq!(again, results);

@@ -863,8 +863,6 @@ async fn wrapper_license_404_remains_retryable_technical_failure() {
 
 #[tokio::test]
 async fn wrapper_service_offline_is_typed_without_retry() {
-    // Bind an ephemeral port then drop the listener: nothing is listening,
-    // so the wrapper-lite connection is refused.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     drop(listener);

@@ -13,7 +13,6 @@ pub(crate) enum RetryReason {
     PrimaryFallback,
 }
 
-/// Process-local counters and latency summaries for the streaming path.
 #[derive(Default)]
 pub struct StreamMetrics {
     streams_started: AtomicU64,
@@ -43,7 +42,6 @@ pub struct StreamMetrics {
     rpc_slot_wait_micros_max: AtomicU64,
 }
 
-/// Cumulative streaming measurements since the process started.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct StreamMetricsSnapshot {
     pub streams_started: u64,

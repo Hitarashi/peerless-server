@@ -1,10 +1,3 @@
-//! `/get` command policy and pipeline entry point.
-//!
-//! M5c: the bot owns only preflight policy and input parsing. Status is
-//! rendered by one shared dashboard message per chat. All download semantics —
-//! cache-first maintenance, queue position, retries, circuit breaker — live
-//! in the engine orchestrator.
-
 pub mod cancel;
 pub mod gates;
 pub mod input;
@@ -61,8 +54,6 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
         return;
     }
 
-    // Determine job owner: if input was provided by a replied-to message, the owner is
-    // the sender of that message (x), not the person who ran /get (y).
     let (owner_id, owner_display_name, owner_is_admin) =
         if let (true, Some(id)) = (parsed.from_reply, parsed.reply_sender_id) {
             let is_admin = state.auth.is_admin(id);
@@ -95,7 +86,6 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
             (caller_id, name, caller_is_admin)
         };
 
-    // If x owns the job and is not an admin, media should be delivered to x (not cache-only).
     let is_cache_only = if parsed.from_reply {
         owner_is_admin
     } else {
@@ -121,9 +111,6 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
 
     let is_group = chat != owner_id;
 
-    // Group DM preflight: for non-cache group requests, verify the owner can receive
-    // DMs before queueing anything. A failure prompts them to start the bot in DM
-    // and stops the job; on success delivery is retargeted to owner's private chat.
     let mut delivery_chat_id = chat;
     if is_group && !is_cache_only {
         let note = InputMessage::html(
@@ -168,8 +155,6 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
 
     let rendition_policy = engine::orchestrator::types::RenditionPolicy::PrimaryWithOptionalAtmos;
 
-    // Batch inputs and artist links create one engine job per target. Artist
-    // links first expand into their albums, so each album remains its own job.
     let has_artist = parsed
         .items
         .iter()
@@ -376,9 +361,6 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
         rendition_policy,
     };
 
-    // Engine owns everything from here: resolution, cache-first, queue,
-    // pipeline, and terminal events. The bridge refreshes the dashboard;
-    // start_task errors are logged only.
     if let Err(error) = state
         .rip_orchestrator
         .start_task(Arc::clone(&state.rip_deps), &options)
