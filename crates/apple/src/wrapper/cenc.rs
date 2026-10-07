@@ -196,7 +196,7 @@ pub fn strip_encryption_boxes(fragment: &mut Vec<u8>) -> Result<(), WrapperError
             }
             if (&box_type == b"sgpd" || &box_type == b"sbgp")
                 && cur + 16 <= fragment.len()
-                && &fragment[cur + 12..cur + 16] == b"seam"
+                && (&fragment[cur + 12..cur + 16] == b"seam" || &fragment[cur + 12..cur + 16] == b"seig")
             {
                 removed_from_traf += len;
                 boxes_to_remove.push((cur, len));

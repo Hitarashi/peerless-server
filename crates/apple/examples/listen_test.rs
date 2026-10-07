@@ -97,13 +97,25 @@ async fn rip_one(
     }
 
     let codec = source.codec.clone();
-    let path = format!("{out_dir}/{track_id}_{label}_{codec}.m4a");
+    let path = format!("{out_dir}/{track_id}_{label}_{codec}.raw.m4a");
     std::fs::write(&path, &collected).map_err(|e| StreamError::Message(e.to_string()))?;
+
+    let final_path = format!("{out_dir}/{track_id}_{label}_{codec}.m4a");
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    media::MediaProcessor::new()
+        .finalize_m4a(
+            std::path::Path::new(&path),
+            std::path::Path::new(&final_path),
+            &media::TrackTags::default(),
+            &cancellation,
+        )
+        .await
+        .map_err(|e| StreamError::Message(format!("finalize failed: {e}")))?;
 
     let mins = collected.len() as f64 / 1024.0 / 1024.0;
     println!(
-        "[{track_id}] {label}: {codec} {}Hz {}-bit {mins:.1}MB -> {path}",
+        "[{track_id}] {label}: {codec} {}Hz {}-bit {mins:.1}MB -> {final_path}",
         source.sample_rate, source.bit_depth
     );
-    Ok(Some((path, codec)))
+    Ok(Some((final_path, codec)))
 }

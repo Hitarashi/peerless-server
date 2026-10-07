@@ -35,6 +35,11 @@ fn read_u64_be(buf: &[u8]) -> u64 {
     u64::from_be_bytes(buf[..8].try_into().unwrap())
 }
 
+#[inline]
+fn write_u64_be(buf: &mut [u8], val: u64) {
+    buf[..8].copy_from_slice(&val.to_be_bytes());
+}
+
 #[derive(Debug, Clone)]
 pub struct SubSample {
     pub clear_bytes: u16,
@@ -340,6 +345,53 @@ pub fn transform_init_segment(init_data: &[u8]) -> Result<Vec<u8>, WrapperError>
             &mut out[moov_off..moov_off + 4],
             cur_moov - total_removed as u32,
         );
+    }
+
+    let Some((cur_moov_len, _, moov_hdr_size)) = read_box_header(&out, moov_off) else {
+        return Err(WrapperError::Message("Cannot read moov header".into()));
+    };
+    let mut pssh_in_moov =
+        find_all_child_boxes(&out, moov_off + moov_hdr_size, moov_off + cur_moov_len, b"pssh");
+    if !pssh_in_moov.is_empty() {
+        let pssh_removed: usize = pssh_in_moov.iter().map(|(_, len)| *len).sum();
+        pssh_in_moov.sort_by_key(|a| std::cmp::Reverse(a.0));
+        for (b_off, b_len) in pssh_in_moov {
+            out.drain(b_off..b_off + b_len);
+        }
+        if moov_hdr_size == 16 {
+            let cur_moov = read_u64_be(&out[moov_off + 8..moov_off + 16]);
+            write_u64_be(
+                &mut out[moov_off + 8..moov_off + 16],
+                cur_moov - pssh_removed as u64,
+            );
+        } else {
+            let cur_moov = read_u32_be(&out[moov_off..moov_off + 4]);
+            write_u32_be(
+                &mut out[moov_off..moov_off + 4],
+                cur_moov - pssh_removed as u32,
+            );
+        }
+    }
+
+    let mut top_level_pssh = Vec::new();
+    let mut cur = 0;
+    while cur + 8 <= out.len() {
+        let Some((b_len, b_type, _)) = read_box_header(&out, cur) else {
+            break;
+        };
+        if b_len < 8 || cur + b_len > out.len() {
+            break;
+        }
+        if &b_type == b"pssh" {
+            top_level_pssh.push((cur, b_len));
+        }
+        cur += b_len;
+    }
+    if !top_level_pssh.is_empty() {
+        top_level_pssh.sort_by_key(|a| std::cmp::Reverse(a.0));
+        for (b_off, b_len) in top_level_pssh {
+            out.drain(b_off..b_off + b_len);
+        }
     }
 
     Ok(out)
@@ -677,7 +729,7 @@ pub fn decrypt_fragment(
             }
             if (&b_type == b"sgpd" || &b_type == b"sbgp")
                 && cur + 16 <= out.len()
-                && &out[cur + 12..cur + 16] == b"seam"
+                && (&out[cur + 12..cur + 16] == b"seam" || &out[cur + 12..cur + 16] == b"seig")
             {
                 bytes_removed_from_traf += b_len;
                 boxes_to_remove.push((cur, b_len));
@@ -1201,4 +1253,79 @@ mod tests {
         frag2.extend_from_slice(&[0u8; 16]);
         normalize_fragment(&mut frag2);
     }
+
+    #[test]
+    fn transform_init_segment_strips_pssh_and_transforms_enca() {
+        fn make_box(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+            let mut b = Vec::new();
+            b.extend_from_slice(&((8 + payload.len()) as u32).to_be_bytes());
+            b.extend_from_slice(kind);
+            b.extend_from_slice(payload);
+            b
+        }
+
+        let frma = make_box(b"frma", b"alac");
+        let sinf = make_box(b"sinf", &frma);
+        let mut enca_body = vec![0u8; 28];
+        enca_body.extend_from_slice(&sinf);
+        let enca = make_box(b"enca", &enca_body);
+
+        let mut stsd_body = vec![0u8; 4]; // version and flags
+        stsd_body.extend_from_slice(&1u32.to_be_bytes()); // entry count = 1
+        stsd_body.extend_from_slice(&enca);
+        let stsd = make_box(b"stsd", &stsd_body);
+        let stbl = make_box(b"stbl", &stsd);
+        let minf = make_box(b"minf", &stbl);
+        let mdia = make_box(b"mdia", &minf);
+        let trak = make_box(b"trak", &mdia);
+
+        let pssh_moov1 = make_box(b"pssh", &[0xAA; 32]);
+        let pssh_moov2 = make_box(b"pssh", &[0xBB; 24]);
+        let mut moov_body = Vec::new();
+        moov_body.extend_from_slice(&pssh_moov1);
+        moov_body.extend_from_slice(&trak);
+        moov_body.extend_from_slice(&pssh_moov2);
+        let moov = make_box(b"moov", &moov_body);
+
+        let top_pssh = make_box(b"pssh", &[0xCC; 40]);
+        let mut init_data = Vec::new();
+        init_data.extend_from_slice(&top_pssh);
+        init_data.extend_from_slice(&moov);
+
+        let transformed = transform_init_segment(&init_data).expect("transform_init_segment");
+
+        // Verify top-level pssh is gone
+        let top_pssh_boxes = find_all_child_boxes(&transformed, 0, transformed.len(), b"pssh");
+        assert!(top_pssh_boxes.is_empty(), "top-level pssh boxes must be stripped");
+
+        // Verify moov exists and moov pssh is gone
+        let (moov_off, moov_len) =
+            find_child_box(&transformed, 0, transformed.len(), b"moov").expect("moov box");
+        let moov_pssh_boxes =
+            find_all_child_boxes(&transformed, moov_off + 8, moov_off + moov_len, b"pssh");
+        assert!(moov_pssh_boxes.is_empty(), "pssh boxes in moov must be stripped");
+
+        // Verify enca was converted to alac
+        let (trak_off, trak_len) =
+            find_child_box(&transformed, moov_off + 8, moov_off + moov_len, b"trak").expect("trak");
+        let (mdia_off, mdia_len) =
+            find_child_box(&transformed, trak_off + 8, trak_off + trak_len, b"mdia").expect("mdia");
+        let (minf_off, minf_len) =
+            find_child_box(&transformed, mdia_off + 8, mdia_off + mdia_len, b"minf").expect("minf");
+        let (stbl_off, stbl_len) =
+            find_child_box(&transformed, minf_off + 8, minf_off + minf_len, b"stbl").expect("stbl");
+        let (stsd_off, _) =
+            find_child_box(&transformed, stbl_off + 8, stbl_off + stbl_len, b"stsd").expect("stsd");
+
+        let entry_start = stsd_off + 16;
+        let (_, entry_type, _) = read_box_header(&transformed, entry_start).expect("entry header");
+        assert_eq!(&entry_type, b"alac", "sample entry must be transformed from enca to alac");
+
+        // Verify sinf is removed
+        assert!(
+            find_child_box(&transformed, entry_start + 36, entry_start + 36 + 20, b"sinf").is_none(),
+            "sinf box must be removed"
+        );
+    }
 }
+
