@@ -4303,3 +4303,160 @@ async fn single_track_cached_album_bypasses_rip_queue_while_rip_queue_is_occupie
     let res1 = task1.await.unwrap().expect("job 1 completes");
     assert_eq!(res1.ripped_count, 1);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pre_upload_cache_hit_cancels_upload_and_delivers_existing_track() {
+    let (orch, deps, state, _) = setup();
+    let rip_gate = tokio_util::sync::CancellationToken::new();
+    state.lock().unwrap().initial_rip_track = Some("track_pre_up".into());
+    state.lock().unwrap().initial_rip_gate = Some(rip_gate.clone());
+
+    let orch = Arc::new(orch);
+    let o = Arc::clone(&orch);
+    let d = Arc::clone(&deps);
+    let mut opts = options(vec![track_item("track_pre_up")], false);
+    opts.delivery_chat_id = 999;
+
+    let task = tokio::spawn(async move { o.start_task(d, &opts).await });
+
+    loop {
+        let notified = deps.rip_notify.notified();
+        if state.lock().unwrap().initial_rip_started {
+            break;
+        }
+        notified.await;
+    }
+
+    // While track is being ripped, another worker puts it into DB cache
+    deps.cache_track("track_pre_up", 8888);
+
+    // Release rip gate: ripping finishes, upload lane begins
+    rip_gate.cancel();
+
+    let summary = task.await.unwrap().expect("task succeeds");
+
+    // The upload to dump must be cancelled, and the existing track delivered
+    assert_eq!(summary.cached_count, 1, "track must be counted as cached");
+    assert_eq!(summary.ripped_count, 0, "track must not be counted as ripped");
+
+    let st = state.lock().unwrap();
+    assert!(
+        st.sent_audio.is_empty(),
+        "Dump publication must have been cancelled when track was found in DB before upload"
+    );
+    assert!(
+        st.copies
+            .iter()
+            .any(|(chat, msg, _, _)| *chat == 999 && *msg == 8888),
+        "Existing cached track 8888 must have been delivered to chat 999"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pre_upload_cache_hit_with_stale_message_falls_back_to_upload() {
+    let (orch, deps, state, _) = setup();
+    let rip_gate = tokio_util::sync::CancellationToken::new();
+    state.lock().unwrap().initial_rip_track = Some("track_stale_up".into());
+    state.lock().unwrap().initial_rip_gate = Some(rip_gate.clone());
+
+    let orch = Arc::new(orch);
+    let o = Arc::clone(&orch);
+    let d = Arc::clone(&deps);
+    let mut opts = options(vec![track_item("track_stale_up")], false);
+    opts.delivery_chat_id = 999;
+
+    let task = tokio::spawn(async move { o.start_task(d, &opts).await });
+
+    loop {
+        let notified = deps.rip_notify.notified();
+        if state.lock().unwrap().initial_rip_started {
+            break;
+        }
+        notified.await;
+    }
+
+    // Track is in DB cache with message 8889, but delivery copy of 8889 will fail (e.g. deleted message)
+    deps.cache_track("track_stale_up", 8889);
+    state.lock().unwrap().copies_fail_ids.push(8889);
+
+    rip_gate.cancel();
+
+    let summary = task.await.unwrap().expect("task succeeds");
+
+    // Delivery of stale cache failed -> falls back to uploading the ripped audio!
+    assert_eq!(summary.ripped_count, 1);
+    assert_eq!(summary.cached_count, 0);
+
+    let st = state.lock().unwrap();
+    assert_eq!(
+        st.sent_audio.len(),
+        1,
+        "Must have fallen back to uploading the freshly ripped audio to dump"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pre_upload_zip_cache_hit_cancels_zip_build_and_delivers_existing_zip() {
+    let (orch, deps, state, _) = setup();
+    let meta = |id: &str| FakeDeps::track_meta(id, "Track", "Artist");
+    deps.albums.lock().unwrap().insert(
+        "alb.zip_race".into(),
+        FakeDeps::album(vec![meta("zt1"), meta("zt2")]),
+    );
+
+    let rip_gate = tokio_util::sync::CancellationToken::new();
+    state.lock().unwrap().initial_rip_track = Some("zt1".into());
+    state.lock().unwrap().initial_rip_gate = Some(rip_gate.clone());
+
+    let orch = Arc::new(orch);
+    let o = Arc::clone(&orch);
+    let d = Arc::clone(&deps);
+    let opts = album_options("alb.zip_race", false, false);
+
+    let task = tokio::spawn(async move { o.start_task(d, &opts).await });
+
+    loop {
+        let notified = deps.rip_notify.notified();
+        if state.lock().unwrap().initial_rip_started {
+            break;
+        }
+        notified.await;
+    }
+
+    // While zt1 is being ripped, another worker completes the album and saves complete ZIP rows to DB
+    let hash = expected_generation_hash("alb.zip_race", &["zt1", "zt2"]);
+    state.lock().unwrap().found_albums.insert(
+        "alb.zip_race".into(),
+        vec![
+            cached_zip_row("alb.zip_race", 1, 2, &hash),
+            cached_zip_row("alb.zip_race", 2, 2, &hash),
+        ],
+    );
+
+    // Release rip gate: ripping finishes for zt1, zt2 rips, then finalization begins
+    rip_gate.cancel();
+
+    let summary = task.await.unwrap().expect("job succeeds");
+
+    let st = state.lock().unwrap();
+
+    // The existing cached ZIP rows (5001, 5002) should have been delivered to chat
+    let zip_copies: Vec<i64> = st
+        .copies
+        .iter()
+        .filter(|(to, _, _, _)| *to == 100)
+        .map(|(_, msg, _, _)| *msg)
+        .collect();
+    assert_eq!(zip_copies, vec![5001, 5002]);
+
+    // No ZIP documents should have been created or published to dump!
+    assert!(
+        st.sent_documents.is_empty(),
+        "Must not build or upload fresh ZIP documents when album ZIP already exists in cache"
+    );
+    assert_eq!(summary.ripped_count, 2);
+    let delivery = summary.zip_delivery.as_ref().expect("zip delivery info present");
+    assert_eq!(delivery.total_parts, 2);
+    assert!(!delivery.is_partial);
+}
+

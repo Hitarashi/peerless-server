@@ -442,6 +442,79 @@ where
             continue;
         }
 
+        let default_codec = "alac";
+        let default_enum_codec = Codec::Alac;
+        let codec = state
+            .codec
+            .lock()
+            .expect("zip codec poisoned")
+            .clone()
+            .or_else(|| (state.rendition == Rendition::Atmos).then(|| "ec-3".to_owned()))
+            .unwrap_or_else(|| default_codec.to_owned());
+        let album_codec = codec.parse::<Codec>().unwrap_or(default_enum_codec);
+
+        if complete && !(options.is_force && options.is_admin) {
+            if let Ok(existing_rows) = deps.find_albums(&ctx.zip_album_id, Some(album_codec)).await {
+                let matches_hash = state
+                    .generation_hash
+                    .as_deref()
+                    .map(|hash| existing_rows.iter().all(|r| r.generation_hash == hash))
+                    .unwrap_or(true);
+                let total_parts = existing_rows.first().map(|r| r.total_parts.max(1) as usize).unwrap_or(0);
+                let complete_parts = !existing_rows.is_empty()
+                    && existing_rows.len() == total_parts
+                    && (1..=total_parts).zip(&existing_rows).all(|(n, r)| r.part_index as usize == n);
+                if matches_hash && complete_parts {
+                    tracing::info!(
+                        album_id = %ctx.zip_album_id,
+                        codec = %album_codec.as_str(),
+                        "Album ZIP already exists in database cache; cancelling upload and delivering existing ZIP"
+                    );
+                    if ctx.zip_deliver && !options.is_cache_only {
+                        let (delivered, size) = deliver_cached_zip_rows(
+                            deps,
+                            shared,
+                            ctx,
+                            state.rendition,
+                            &existing_rows,
+                            job_controller,
+                        )
+                        .await?;
+                        if delivered > 0 {
+                            let codec = existing_rows[0].codec.as_str().to_owned();
+                            let info = ZipDeliveryInfo {
+                                album: ctx.zip_album.clone(),
+                                artist: ctx.zip_artist.clone(),
+                                release_year: ctx.zip_release_date.chars().take(4).collect(),
+                                total_tracks: expected_tracks,
+                                delivered_tracks: if state.rendition == Rendition::Primary {
+                                    Some(expected_tracks)
+                                } else {
+                                    ctx.zip_reuse_atmos_track_count
+                                },
+                                total_parts: delivered,
+                                size_bytes: size,
+                                is_partial: false,
+                                album_id: ctx.zip_album_id.clone(),
+                                album_url: ctx.zip_album_url.clone(),
+                                artwork_url: ctx.zip_artwork_url.clone(),
+                                genre: ctx.zip_genre.clone(),
+                                record_label: ctx.zip_record_label.clone(),
+                                copyright: ctx.zip_copyright.clone(),
+                                photo_delivered: false,
+                                codec: Some(codec),
+                            };
+                            if first_delivery.is_none() {
+                                first_delivery = Some(info.clone());
+                            }
+                            ctx.zip_delivery_infos.lock().unwrap().push(info);
+                        }
+                    }
+                    continue;
+                }
+            }
+        }
+
         let cover_bytes = match &ctx.zip_artwork_url {
             Some(url) => deps.fetch_artwork(url).await,
             None => None,
@@ -475,16 +548,6 @@ where
         let thumb_path_str = thumb_path
             .as_deref()
             .map(|path| path.to_string_lossy().into_owned());
-        let default_codec = "alac";
-        let default_enum_codec = Codec::Alac;
-        let codec = state
-            .codec
-            .lock()
-            .expect("zip codec poisoned")
-            .clone()
-            .or_else(|| (state.rendition == Rendition::Atmos).then(|| "ec-3".to_owned()))
-            .unwrap_or_else(|| default_codec.to_owned());
-        let album_codec = codec.parse::<Codec>().unwrap_or(default_enum_codec);
         let plans = match plan_zip_parts_with_codec(
             &ctx.zip_artist,
             &ctx.zip_album,

@@ -344,6 +344,111 @@ where
     let mut current_caption = caption.clone();
     let mut used_plain_caption = false;
 
+    if is_cancelled() {
+        return false;
+    }
+
+    let pre_cached = if !(options.is_force && options.is_admin) {
+        match find_cached_tracks_with_retry(
+            deps.as_ref(),
+            std::slice::from_ref(&track_id),
+            &ctx.config.storage_retry,
+        )
+        .await
+        {
+            Ok(existing_map) => {
+                let ripped_codec = rip_result.codec.parse::<Codec>().ok();
+                ripped_codec
+                    .and_then(|codec| existing_map.get(&(track_id.clone(), codec)).cloned())
+                    .or_else(|| {
+                        upload_item
+                            .rendition
+                            .accepted_cache_codecs()
+                            .iter()
+                            .find_map(|codec| existing_map.get(&(track_id.clone(), *codec)).cloned())
+                    })
+            }
+            Err(error) => {
+                tracing::warn!(track_id = %track_id, %error, "pre-upload cache lookup failed");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    if let Some(cached) = pre_cached {
+        if is_cancelled() {
+            return false;
+        }
+
+        let mut deliver_succeeded = true;
+        if !options.is_cache_only && !ctx.zip_deliver {
+            let reply_to = (options.delivery_chat_id == options.chat_id)
+                .then_some(options.reply_to_message_id)
+                .flatten();
+            let copy_result = tokio::select! {
+                result = deps.deliver_to_chat(ChatDelivery::DumpCopy {
+                    destination: ChatRef::new(options.delivery_chat_id),
+                    source: DumpMessageRef::new(cached.message_id),
+                    reply_to: reply_to.map(ChatMessageRef::new),
+                    silent: ctx.is_multi_track,
+                }) => result,
+                _ = job_controller.cancelled() => return false,
+            };
+
+            match copy_result {
+                Ok(DeliveryReceipt::Message(sent_id)) => {
+                    let mut guard = ctx.first_delivered_msg_id.lock().unwrap();
+                    if guard.is_none() {
+                        *guard = Some(sent_id);
+                    }
+                }
+                Ok(DeliveryReceipt::PreviewDelivered) => {
+                    tracing::warn!(
+                        track_id = %track_id,
+                        "cached track delivery returned preview receipt; deleting stale cache and falling back to upload"
+                    );
+                    let _ = deps.delete_track(&track_id, Some(cached.codec)).await;
+                    deliver_succeeded = false;
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        track_id = %track_id,
+                        %error,
+                        "cached track delivery failed; deleting stale cache and falling back to upload"
+                    );
+                    let _ = deps.delete_track(&track_id, Some(cached.codec)).await;
+                    deliver_succeeded = false;
+                }
+            }
+        }
+
+        if is_cancelled() {
+            return false;
+        }
+
+        if deliver_succeeded {
+            bus.set_upload(shared, None);
+            if upload_item.rendition == Rendition::Primary {
+                shared.lock().expect("job poisoned").job.cached_count += 1;
+            }
+            bus.set_job_activity(shared, Some(TaskActivity::CachedDelivered));
+            bus.emit_progress(shared);
+
+            tracing::info!(
+                track = format!("{} - {}", rip_result.title, rip_result.artist),
+                event = if options.is_cache_only {
+                    "Track already cached in dump"
+                } else {
+                    "Track delivered from existing cache"
+                },
+                "Cancelled track upload and delivered existing cached track"
+            );
+            return true;
+        }
+    }
+
     bus.set_upload(
         shared,
         Some(UploadLane::Track {
