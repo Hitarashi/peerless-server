@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 pub mod time;
 pub mod url;
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[cfg_attr(feature = "diesel", derive(diesel::AsExpression, diesel::FromSqlRow))]
 #[cfg_attr(feature = "diesel", diesel(sql_type = diesel::sql_types::VarChar))]
@@ -324,7 +323,6 @@ pub struct TrackRipResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-
 
     #[test]
     fn rendition_policy_constrains_atmos_to_an_optional_ec3_unit() {

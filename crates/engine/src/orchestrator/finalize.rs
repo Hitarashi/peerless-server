@@ -454,16 +454,22 @@ where
         let album_codec = codec.parse::<Codec>().unwrap_or(default_enum_codec);
 
         if complete && !(options.is_force && options.is_admin) {
-            if let Ok(existing_rows) = deps.find_albums(&ctx.zip_album_id, Some(album_codec)).await {
+            if let Ok(existing_rows) = deps.find_albums(&ctx.zip_album_id, Some(album_codec)).await
+            {
                 let matches_hash = state
                     .generation_hash
                     .as_deref()
                     .map(|hash| existing_rows.iter().all(|r| r.generation_hash == hash))
                     .unwrap_or(true);
-                let total_parts = existing_rows.first().map(|r| r.total_parts.max(1) as usize).unwrap_or(0);
+                let total_parts = existing_rows
+                    .first()
+                    .map(|r| r.total_parts.max(1) as usize)
+                    .unwrap_or(0);
                 let complete_parts = !existing_rows.is_empty()
                     && existing_rows.len() == total_parts
-                    && (1..=total_parts).zip(&existing_rows).all(|(n, r)| r.part_index as usize == n);
+                    && (1..=total_parts)
+                        .zip(&existing_rows)
+                        .all(|(n, r)| r.part_index as usize == n);
                 if matches_hash && complete_parts {
                     tracing::info!(
                         album_id = %ctx.zip_album_id,
@@ -863,28 +869,23 @@ where
                         );
                     }
                     transfer_zip_dump_messages(ctx, &rendition_dump_messages);
-                    let winner_rows = match deps
-                        .find_albums(
-                            &ctx.zip_album_id,
-                            Some(album_codec),
-                        )
-                        .await
-                    {
-                        Ok(rows) => rows,
-                        Err(error) if state.rendition == Rendition::Primary => {
-                            return Err(format!(
-                                "primary ZIP cache conflict winner lookup failed: {error}"
-                            ));
-                        }
-                        Err(error) => {
-                            tracing::warn!(
-                                %error,
-                                rendition = ?state.rendition,
-                                "optional Atmos cache conflict winner lookup failed"
-                            );
-                            Vec::new()
-                        }
-                    };
+                    let winner_rows =
+                        match deps.find_albums(&ctx.zip_album_id, Some(album_codec)).await {
+                            Ok(rows) => rows,
+                            Err(error) if state.rendition == Rendition::Primary => {
+                                return Err(format!(
+                                    "primary ZIP cache conflict winner lookup failed: {error}"
+                                ));
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    %error,
+                                    rendition = ?state.rendition,
+                                    "optional Atmos cache conflict winner lookup failed"
+                                );
+                                Vec::new()
+                            }
+                        };
                     if winner_rows.is_empty() {
                         if state.rendition == Rendition::Primary {
                             return Err(

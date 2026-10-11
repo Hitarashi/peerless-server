@@ -6,6 +6,7 @@ pub mod health;
 pub mod integrations;
 pub mod lookup;
 pub mod playback_sync;
+pub mod playlists;
 pub mod probe;
 pub mod rip_task_rpc;
 pub mod rip_tasks;
@@ -268,10 +269,7 @@ pub fn create_router(state: Arc<ServerState>) -> Router {
         .route("/api/v1/ws/sync", get(playback_sync::ws_handler))
         .route("/api/v1/lookup", post(lookup::lookup))
         .nest("/api/v1/integrations/lastfm", integrations::lastfm_router())
-        .nest(
-            "/api/v1/integrations/listenbrainz",
-            integrations::listenbrainz_router(),
-        )
+        .nest("/api/v1/playlists", playlists::router())
         .route("/api/v1/docs", get(docs::scalar_html))
         .route("/api/v1/docs.json", get(docs::openapi_json))
         .route("/api/v1/docs.yaml", get(docs::openapi_yaml))

@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS user_playlist_tracks CASCADE;
+DROP TABLE IF EXISTS user_playlists CASCADE;

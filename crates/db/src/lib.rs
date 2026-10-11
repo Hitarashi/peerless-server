@@ -14,6 +14,7 @@ mod albums;
 mod auth;
 mod migrations;
 mod models;
+mod playlists;
 mod schema;
 mod session;
 mod settings;
@@ -35,6 +36,10 @@ pub use models::{
     User, UserIntegration, UserSession,
 };
 pub use peerless_core::{CachedTrack, SaveTrackInput};
+pub use playlists::{
+    Playlist, PlaylistDetail, create_playlist, delete_playlist, get_playlist, import_playlist,
+    list_playlists, remove_playlist_track, rename_playlist, replace_playlist_tracks,
+};
 pub use session::{ClientMetadata, SessionIdentity, SessionManager, SessionTokens, hash_token};
 pub use settings::SettingsStore;
 pub use stats::{AlacStats, StatsRepository};

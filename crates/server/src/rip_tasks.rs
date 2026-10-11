@@ -13,10 +13,20 @@ pub struct RipTaskRequest {
 
 impl RipTaskRequest {
     pub fn target(&self) -> Option<(String, bool)> {
-        if let Some(album_id) = self.album_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(album_id) = self
+            .album_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             return Some((album_id.to_string(), true));
         }
-        if let Some(track_id) = self.track_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(track_id) = self
+            .track_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             return Some((track_id.to_string(), false));
         }
         None

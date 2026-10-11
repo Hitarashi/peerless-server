@@ -22,10 +22,7 @@ use engine::{
     },
     ripper::RipError,
     settings::{BotSettings, RippingMode, default_settings},
-    types::{
-        AlbumTracks, ArtistTracks, ParsedTargetItem, TargetKind, TrackMeta,
-        TrackRipResult,
-    },
+    types::{AlbumTracks, ArtistTracks, ParsedTargetItem, TargetKind, TrackMeta, TrackRipResult},
 };
 use music::{PlaylistData, PlaylistTrack};
 
@@ -35,11 +32,7 @@ impl ProviderPresentation for FakePresentation {
     fn default_job_header(&self) -> &str {
         "Apple Music Lossless Rip"
     }
-    fn album_url(
-        &self,
-        album_id: &str,
-        storefront: Storefront<'_>,
-    ) -> Option<String> {
+    fn album_url(&self, album_id: &str, storefront: Storefront<'_>) -> Option<String> {
         let storefront = storefront.get().unwrap_or("us");
         (!album_id.is_empty())
             .then(|| format!("https://music.apple.com/{storefront}/album/{album_id}"))
@@ -637,11 +630,7 @@ impl ProviderPresentation for FakeDeps {
         FakePresentation.default_job_header()
     }
 
-    fn album_url(
-        &self,
-        album_id: &str,
-        storefront: Storefront<'_>,
-    ) -> Option<String> {
+    fn album_url(&self, album_id: &str, storefront: Storefront<'_>) -> Option<String> {
         FakePresentation.album_url(album_id, storefront)
     }
 
@@ -4337,7 +4326,10 @@ async fn pre_upload_cache_hit_cancels_upload_and_delivers_existing_track() {
 
     // The upload to dump must be cancelled, and the existing track delivered
     assert_eq!(summary.cached_count, 1, "track must be counted as cached");
-    assert_eq!(summary.ripped_count, 0, "track must not be counted as ripped");
+    assert_eq!(
+        summary.ripped_count, 0,
+        "track must not be counted as ripped"
+    );
 
     let st = state.lock().unwrap();
     assert!(
@@ -4455,8 +4447,10 @@ async fn pre_upload_zip_cache_hit_cancels_zip_build_and_delivers_existing_zip() 
         "Must not build or upload fresh ZIP documents when album ZIP already exists in cache"
     );
     assert_eq!(summary.ripped_count, 2);
-    let delivery = summary.zip_delivery.as_ref().expect("zip delivery info present");
+    let delivery = summary
+        .zip_delivery
+        .as_ref()
+        .expect("zip delivery info present");
     assert_eq!(delivery.total_parts, 2);
     assert!(!delivery.is_partial);
 }
-

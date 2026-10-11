@@ -257,17 +257,11 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
                     let track_count = match item.kind {
                         engine::types::TargetKind::Track => Ok(1),
                         engine::types::TargetKind::Album => rip_deps
-                            .fetch_album_tracks(
-                                &item.id,
-                                storefront.into(),
-                            )
+                            .fetch_album_tracks(&item.id, storefront.into())
                             .await
                             .map(|album| album.tracks.len()),
                         engine::types::TargetKind::Playlist => rip_deps
-                            .fetch_playlist_tracks(
-                                &item.id,
-                                storefront.into(),
-                            )
+                            .fetch_playlist_tracks(&item.id, storefront.into())
                             .await
                             .map(|playlist| playlist.tracks.len()),
                         engine::types::TargetKind::Artist => {

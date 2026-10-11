@@ -350,8 +350,12 @@ pub fn transform_init_segment(init_data: &[u8]) -> Result<Vec<u8>, WrapperError>
     let Some((cur_moov_len, _, moov_hdr_size)) = read_box_header(&out, moov_off) else {
         return Err(WrapperError::Message("Cannot read moov header".into()));
     };
-    let mut pssh_in_moov =
-        find_all_child_boxes(&out, moov_off + moov_hdr_size, moov_off + cur_moov_len, b"pssh");
+    let mut pssh_in_moov = find_all_child_boxes(
+        &out,
+        moov_off + moov_hdr_size,
+        moov_off + cur_moov_len,
+        b"pssh",
+    );
     if !pssh_in_moov.is_empty() {
         let pssh_removed: usize = pssh_in_moov.iter().map(|(_, len)| *len).sum();
         pssh_in_moov.sort_by_key(|a| std::cmp::Reverse(a.0));
@@ -1296,14 +1300,20 @@ mod tests {
 
         // Verify top-level pssh is gone
         let top_pssh_boxes = find_all_child_boxes(&transformed, 0, transformed.len(), b"pssh");
-        assert!(top_pssh_boxes.is_empty(), "top-level pssh boxes must be stripped");
+        assert!(
+            top_pssh_boxes.is_empty(),
+            "top-level pssh boxes must be stripped"
+        );
 
         // Verify moov exists and moov pssh is gone
         let (moov_off, moov_len) =
             find_child_box(&transformed, 0, transformed.len(), b"moov").expect("moov box");
         let moov_pssh_boxes =
             find_all_child_boxes(&transformed, moov_off + 8, moov_off + moov_len, b"pssh");
-        assert!(moov_pssh_boxes.is_empty(), "pssh boxes in moov must be stripped");
+        assert!(
+            moov_pssh_boxes.is_empty(),
+            "pssh boxes in moov must be stripped"
+        );
 
         // Verify enca was converted to alac
         let (trak_off, trak_len) =
@@ -1319,13 +1329,21 @@ mod tests {
 
         let entry_start = stsd_off + 16;
         let (_, entry_type, _) = read_box_header(&transformed, entry_start).expect("entry header");
-        assert_eq!(&entry_type, b"alac", "sample entry must be transformed from enca to alac");
+        assert_eq!(
+            &entry_type, b"alac",
+            "sample entry must be transformed from enca to alac"
+        );
 
         // Verify sinf is removed
         assert!(
-            find_child_box(&transformed, entry_start + 36, entry_start + 36 + 20, b"sinf").is_none(),
+            find_child_box(
+                &transformed,
+                entry_start + 36,
+                entry_start + 36 + 20,
+                b"sinf"
+            )
+            .is_none(),
             "sinf box must be removed"
         );
     }
 }
-

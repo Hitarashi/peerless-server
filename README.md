@@ -101,9 +101,13 @@ mirrors with native client applications (such as [Peerless KMP](https://github.c
 | **Integrations** | `POST`     | `/api/v1/integrations/lastfm/login`                             | Connect Last.fm account (AES-256-GCM encrypted)              |
 |                  | `GET`      | `/api/v1/integrations/lastfm/status`                            | Get Last.fm connection status                                |
 |                  | `DELETE`   | `/api/v1/integrations/lastfm`                                   | Disconnect Last.fm account                                   |
-|                  | `POST`     | `/api/v1/integrations/listenbrainz/login`                       | Connect ListenBrainz account (AES-256-GCM encrypted)         |
-|                  | `GET`      | `/api/v1/integrations/listenbrainz/status`                      | Get ListenBrainz connection status                           |
-|                  | `DELETE`   | `/api/v1/integrations/listenbrainz`                             | Disconnect ListenBrainz account                              |
+| **Playlists**    | `GET`      | `/api/v1/playlists`                                              | List user-owned playlists and Favorites                     |
+|                  | `POST`     | `/api/v1/playlists`                                              | Create a playlist (maximum seven custom playlists)           |
+|                  | `POST`     | `/api/v1/playlists/import`                                       | Import matched tracks; repeat imports update the same list   |
+|                  | `GET`      | `/api/v1/playlists/{id}`                                         | Get playlist details and tracks                              |
+|                  | `PATCH`    | `/api/v1/playlists/{id}`                                         | Rename a playlist                                             |
+|                  | `DELETE`   | `/api/v1/playlists/{id}`                                         | Delete a custom playlist                                      |
+|                  | `PUT`      | `/api/v1/playlists/{id}/tracks`                                  | Replace playlist tracks                                      |
 | **Docs**         | `GET`      | `/api/v1/docs`                                                  | Interactive OpenAPI 3.1 Scalar documentation                 |
 |                  | `GET`      | `/api/v1/docs.json`                                             | OpenAPI document in JSON format                              |
 |                  | `GET`      | `/api/v1/docs.yaml`                                             | OpenAPI document in YAML format                              |
@@ -262,7 +266,7 @@ LOG_LEVEL=info
 # Optional: tracing-subscriber filter directives; also used as the log-level fallback when LOG_LEVEL is unset.
 # RUST_LOG=info
 
-# Required: used to sign stream tickets and to encrypt stored Last.fm/ListenBrainz session keys; startup fails if it is unset.
+# Required: used to sign stream tickets and to encrypt stored Last.fm session keys; startup fails if it is unset.
 # Must be a private, unique, high-entropy secret of at least 32 characters (e.g. `openssl rand -hex 32`); never share or commit it.
 # APP_KEY=replace-with-a-private-secret
 # Optional: fallback secret for the AES-256-GCM encryption of stored Telegram worker sessions.

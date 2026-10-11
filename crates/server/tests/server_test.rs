@@ -366,7 +366,6 @@ async fn test_auth_lifecycle() {
 
     let admin_id = 888_000_123;
     let _ = db::integrations::delete_integration(&pool, admin_id, "lastfm").await;
-    let _ = db::integrations::delete_integration(&pool, admin_id, "listenbrainz").await;
     let worker_pool = stream::StreamWorkerPool::empty();
     let stream_engine = Arc::new(stream::StreamEngine::new(
         worker_pool,
@@ -476,10 +475,11 @@ async fn test_auth_lifecycle() {
         .await
         .unwrap();
     let forbidden_res: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let forbidden_msg = forbidden_res["message"].as_str().unwrap();
     assert!(
-        forbidden_msg.contains("Last.fm") && forbidden_msg.contains("ListenBrainz"),
-        "with neither account connected the message must name both providers, got {forbidden_msg:?}"
+        forbidden_res["message"]
+            .as_str()
+            .unwrap()
+            .contains("Last.fm")
     );
 
     let cipher = db::crypto::CryptoCipher::new(app_key).unwrap();
@@ -494,68 +494,11 @@ async fn test_auth_lifecycle() {
         .body(Body::empty())
         .unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(res.status(), StatusCode::FORBIDDEN);
-    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let forbidden_res: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let forbidden_msg = forbidden_res["message"].as_str().unwrap();
-    assert!(
-        forbidden_msg.contains("ListenBrainz"),
-        "with only Last.fm connected the message must name ListenBrainz, got {forbidden_msg:?}"
+    assert_eq!(
+        res.status(),
+        StatusCode::OK,
+        "Last.fm alone must enable playback"
     );
-    assert!(
-        !forbidden_msg.contains("Last.fm"),
-        "with only Last.fm connected the message must not name the connected provider, got {forbidden_msg:?}"
-    );
-
-    let lb_enc_key = cipher.encrypt("test_lb_token_abc_123").unwrap();
-    db::integrations::save_integration(
-        &pool,
-        admin_id,
-        "listenbrainz",
-        "test_lb_user",
-        &lb_enc_key,
-    )
-    .await
-    .unwrap();
-    db::integrations::delete_integration(&pool, admin_id, "lastfm")
-        .await
-        .unwrap();
-
-    let req = Request::builder()
-        .uri(&playback_uri)
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
-    let res = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(res.status(), StatusCode::FORBIDDEN);
-    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let forbidden_res: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let forbidden_msg = forbidden_res["message"].as_str().unwrap();
-    assert!(
-        forbidden_msg.contains("Last.fm"),
-        "with only ListenBrainz connected the message must name Last.fm, got {forbidden_msg:?}"
-    );
-    assert!(
-        !forbidden_msg.contains("ListenBrainz"),
-        "with only ListenBrainz connected the message must not name the connected provider, got {forbidden_msg:?}"
-    );
-
-    db::integrations::save_integration(&pool, admin_id, "lastfm", "testuser", &enc_key)
-        .await
-        .unwrap();
-
-    let req = Request::builder()
-        .uri(&playback_uri)
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
-    let res = app.clone().oneshot(req).await.unwrap();
-    assert_ne!(res.status(), StatusCode::FORBIDDEN);
-    assert_eq!(res.status(), StatusCode::OK);
     let body = axum::body::to_bytes(res.into_body(), usize::MAX)
         .await
         .unwrap();
@@ -620,8 +563,8 @@ async fn test_auth_lifecycle() {
     let forbidden_res: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let forbidden_msg = forbidden_res["message"].as_str().unwrap();
     assert!(
-        forbidden_msg.contains("Last.fm") && !forbidden_msg.contains("ListenBrainz"),
-        "after disconnecting Last.fm only ListenBrainz remains, so only Last.fm should be named, got {forbidden_msg:?}"
+        forbidden_msg.contains("Last.fm"),
+        "disconnecting Last.fm must block stream ticket issuance, got {forbidden_msg:?}"
     );
 
     db::integrations::save_integration(&pool, admin_id, "lastfm", "testuser", &enc_key)
@@ -661,66 +604,6 @@ async fn test_auth_lifecycle() {
     assert_eq!(sessions[0]["client_name"], "Laboon");
     assert_eq!(sessions[0]["client_version"], "0.0.3");
 
-    db::integrations::delete_integration(&pool, admin_id, "listenbrainz")
-        .await
-        .unwrap();
-
-    let req = Request::builder()
-        .uri("/api/v1/integrations/listenbrainz/status")
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
-    let res = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let lb_status: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(lb_status["connected"], false);
-
-    let cipher = db::crypto::CryptoCipher::new(app_key).unwrap();
-    let encrypted = cipher.encrypt("test_lb_token_abc_123").unwrap();
-    db::integrations::save_integration(&pool, admin_id, "listenbrainz", "test_lb_user", &encrypted)
-        .await
-        .unwrap();
-
-    let req = Request::builder()
-        .uri("/api/v1/integrations/listenbrainz/status")
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
-    let res = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let lb_status: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(lb_status["connected"], true);
-    assert_eq!(lb_status["username"], "test_lb_user");
-    assert_eq!(lb_status["token"], "test_lb_token_abc_123");
-
-    let req = Request::builder()
-        .method("DELETE")
-        .uri("/api/v1/integrations/listenbrainz")
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
-    let res = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(res.status(), StatusCode::NO_CONTENT);
-
-    let req = Request::builder()
-        .uri("/api/v1/integrations/listenbrainz/status")
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
-    let res = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let lb_status: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(lb_status["connected"], false);
-
     let logout_payload = serde_json::json!({ "refresh_token": token });
     let req = Request::builder()
         .method("POST")
@@ -739,7 +622,6 @@ async fn test_auth_lifecycle() {
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     let _ = db::integrations::delete_integration(&pool, admin_id, "lastfm").await;
-    let _ = db::integrations::delete_integration(&pool, admin_id, "listenbrainz").await;
 }
 
 #[tokio::test]

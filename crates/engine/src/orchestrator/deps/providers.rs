@@ -80,11 +80,7 @@ pub trait ArtworkProvider: Send + Sync {
 
 pub trait ProviderPresentation: Send + Sync {
     fn default_job_header(&self) -> &str;
-    fn album_url(
-        &self,
-        album_id: &str,
-        storefront: Storefront<'_>,
-    ) -> Option<String>;
+    fn album_url(&self, album_id: &str, storefront: Storefront<'_>) -> Option<String>;
     fn unavailable_track_message(&self) -> &str;
     fn unavailable_track_log_message(&self) -> &str;
 }

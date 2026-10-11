@@ -568,9 +568,7 @@ impl AlacTrackRipper {
                 let timeout = self.config.lyrics_timeout;
                 let api_endpoint = self.config.lyricsporn_api_endpoint.clone();
                 async move {
-                    match fetch_lyrics(client, timeout, api_endpoint, &track_id)
-                        .await
-                    {
+                    match fetch_lyrics(client, timeout, api_endpoint, &track_id).await {
                         Some(l) => {
                             debug!(track_id, found = true, "Lyrics prefetch completed");
                             Some(l)

@@ -729,8 +729,7 @@ async fn wrapper_corruption_does_not_fallback_or_poison_mirror() {
         .rip(
             &stage,
             "42",
-            RipOptions::new("us")
-                .with_codec_preference(apple::CodecPreference::Atmos),
+            RipOptions::new("us").with_codec_preference(apple::CodecPreference::Atmos),
         )
         .await
         .expect_err("wrapper corruption should remain a failed rip");

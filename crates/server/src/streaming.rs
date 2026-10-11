@@ -148,7 +148,7 @@ pub struct PlaybackInfo {
     responses(
         (status = 200, description = "Signed stream ticket and audio format metadata", body = PlaybackInfo),
         (status = 401, description = "Unauthorized - Missing or invalid Bearer token"),
-        (status = 403, description = "Forbidden - Last.fm and ListenBrainz account connections required"),
+        (status = 403, description = "Forbidden - Last.fm account connection required"),
         (status = 404, description = "Track not found in database cache"),
         (status = 500, description = "Internal error while checking the Last.fm connection or resolving the track")
     ),
@@ -163,26 +163,10 @@ pub async fn issue_playback_ticket(
 ) -> Result<Json<PlaybackInfo>, ServerError> {
     let has_lastfm =
         db::integrations::has_integration(&state.db, user.telegram_id, "lastfm").await?;
-    let has_listenbrainz =
-        db::integrations::has_integration(&state.db, user.telegram_id, "listenbrainz").await?;
-
-    match (has_lastfm, has_listenbrainz) {
-        (true, true) => {}
-        (false, true) => {
-            return Err(ServerError::Forbidden(
-                "Connect your Last.fm account to stream audio".into(),
-            ));
-        }
-        (true, false) => {
-            return Err(ServerError::Forbidden(
-                "Connect your ListenBrainz account to stream audio".into(),
-            ));
-        }
-        (false, false) => {
-            return Err(ServerError::Forbidden(
-                "Connect your Last.fm and ListenBrainz accounts to stream audio".into(),
-            ));
-        }
+    if !has_lastfm {
+        return Err(ServerError::Forbidden(
+            "Connect your Last.fm account to stream audio".into(),
+        ));
     }
 
     let track = state

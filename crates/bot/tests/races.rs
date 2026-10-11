@@ -32,11 +32,7 @@ impl ProviderPresentation for RacePresentation {
         "Lossless Rip"
     }
 
-    fn album_url(
-        &self,
-        album_id: &str,
-        storefront: Storefront<'_>,
-    ) -> Option<String> {
+    fn album_url(&self, album_id: &str, storefront: Storefront<'_>) -> Option<String> {
         let storefront = storefront.get().unwrap_or_default();
         (!album_id.is_empty()).then(|| format!("{storefront}/album/{album_id}"))
     }
@@ -225,11 +221,7 @@ impl ProviderPresentation for RaceDeps {
         RacePresentation.default_job_header()
     }
 
-    fn album_url(
-        &self,
-        album_id: &str,
-        storefront: Storefront<'_>,
-    ) -> Option<String> {
+    fn album_url(&self, album_id: &str, storefront: Storefront<'_>) -> Option<String> {
         RacePresentation.album_url(album_id, storefront)
     }
 

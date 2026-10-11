@@ -115,11 +115,7 @@ impl ProviderPresentation for ProviderRegistry {
         "ALAC Lossless Rip"
     }
 
-    fn album_url(
-        &self,
-        album_id: &str,
-        storefront: Storefront<'_>,
-    ) -> Option<String> {
+    fn album_url(&self, album_id: &str, storefront: Storefront<'_>) -> Option<String> {
         ApplePresentation.album_url(album_id, self.storefront(storefront).into())
     }
 

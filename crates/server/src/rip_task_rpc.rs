@@ -155,8 +155,14 @@ async fn create_task(
             .await
         {
             Ok(parts) => {
-                let alac_parts: Vec<_> = parts.iter().filter(|p| p.codec == music::Codec::Alac).collect();
-                let aac_parts: Vec<_> = parts.iter().filter(|p| p.codec == music::Codec::Aac).collect();
+                let alac_parts: Vec<_> = parts
+                    .iter()
+                    .filter(|p| p.codec == music::Codec::Alac)
+                    .collect();
+                let aac_parts: Vec<_> = parts
+                    .iter()
+                    .filter(|p| p.codec == music::Codec::Aac)
+                    .collect();
                 let any_complete = crate::lookup::has_complete_archive_parts(&alac_parts)
                     || crate::lookup::has_complete_archive_parts(&aac_parts);
                 (any_complete, None)
@@ -166,11 +172,7 @@ async fn create_task(
             }
         }
     } else {
-        let cached_tracks = match state
-            .tracks_repo
-            .find_all_by_track_id(&target_id)
-            .await
-        {
+        let cached_tracks = match state.tracks_repo.find_all_by_track_id(&target_id).await {
             Ok(tracks) => tracks,
             Err(error) => {
                 return Err(map_cache_lookup_error(Some(request_id), error));
@@ -322,8 +324,7 @@ fn cancel_task(
 
 fn reserve_task(tasks: &TaskRegistry, meta: ServerTaskMeta) -> Result<String, String> {
     tasks.insert_unique(meta, |existing, candidate| {
-        existing.is_album == candidate.is_album
-            && existing.track_id == candidate.track_id
+        existing.is_album == candidate.is_album && existing.track_id == candidate.track_id
     })
 }
 

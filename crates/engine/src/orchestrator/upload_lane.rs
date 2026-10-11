@@ -365,7 +365,9 @@ where
                             .rendition
                             .accepted_cache_codecs()
                             .iter()
-                            .find_map(|codec| existing_map.get(&(track_id.clone(), *codec)).cloned())
+                            .find_map(|codec| {
+                                existing_map.get(&(track_id.clone(), *codec)).cloned()
+                            })
                     })
             }
             Err(error) => {

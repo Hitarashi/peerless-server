@@ -142,9 +142,7 @@ impl CollectionResolver for RipDeps {
         id: &str,
         storefront: Storefront<'_>,
     ) -> Result<AlbumTracks, String> {
-        self.providers
-            .fetch_album_tracks(id, storefront)
-            .await
+        self.providers.fetch_album_tracks(id, storefront).await
     }
 
     async fn fetch_artist_tracks(
@@ -152,9 +150,7 @@ impl CollectionResolver for RipDeps {
         id: &str,
         storefront: Storefront<'_>,
     ) -> Result<ArtistTracks, String> {
-        self.providers
-            .fetch_artist_tracks(id, storefront)
-            .await
+        self.providers.fetch_artist_tracks(id, storefront).await
     }
 
     async fn fetch_artist_album_ids(
@@ -162,9 +158,7 @@ impl CollectionResolver for RipDeps {
         id: &str,
         storefront: Storefront<'_>,
     ) -> Result<Vec<String>, String> {
-        self.providers
-            .fetch_artist_album_ids(id, storefront)
-            .await
+        self.providers.fetch_artist_album_ids(id, storefront).await
     }
 
     async fn fetch_playlist_tracks(
@@ -172,9 +166,7 @@ impl CollectionResolver for RipDeps {
         id: &str,
         storefront: Storefront<'_>,
     ) -> Result<PlaylistData, String> {
-        self.providers
-            .fetch_playlist_tracks(id, storefront)
-            .await
+        self.providers.fetch_playlist_tracks(id, storefront).await
     }
 }
 
@@ -203,11 +195,7 @@ impl ProviderPresentation for RipDeps {
         self.providers.default_job_header()
     }
 
-    fn album_url(
-        &self,
-        album_id: &str,
-        storefront: Storefront<'_>,
-    ) -> Option<String> {
+    fn album_url(&self, album_id: &str, storefront: Storefront<'_>) -> Option<String> {
         self.providers.album_url(album_id, storefront)
     }
 

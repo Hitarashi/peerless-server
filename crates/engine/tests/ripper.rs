@@ -201,11 +201,7 @@ async fn happy_path_progress_and_result_mapping() {
     let ripper = AlacTrackRipper::new(config(dir.path(), 3, 1));
     let (cb, log) = record();
     let result = ripper
-        .rip(
-            &deps,
-            "42",
-            RipOptions::new("us").with_progress(&cb),
-        )
+        .rip(&deps, "42", RipOptions::new("us").with_progress(&cb))
         .await
         .unwrap();
 
@@ -282,11 +278,7 @@ async fn retry_succeeds_after_two_failures() {
     let ripper = AlacTrackRipper::new(config(dir.path(), 3, 1));
     let (cb, log) = record();
     let result = ripper
-        .rip(
-            &deps,
-            "42",
-            RipOptions::new("us").with_progress(&cb),
-        )
+        .rip(&deps, "42", RipOptions::new("us").with_progress(&cb))
         .await
         .unwrap();
     assert_eq!(result.title, "Title");
@@ -369,11 +361,7 @@ async fn cancelled_error_bypasses_retries() {
 
     let stage = CancelledStage(FakeStage::ok());
     let error = ripper
-        .rip(
-            &stage,
-            "42",
-            RipOptions::new("us").with_progress(&cb),
-        )
+        .rip(&stage, "42", RipOptions::new("us").with_progress(&cb))
         .await
         .unwrap_err();
     assert!(matches!(error, RipError::Cancelled));
@@ -388,11 +376,7 @@ async fn cancellation_mid_rip_no_retry() {
     let token = CancellationToken::new();
     token.cancel();
     let error = ripper
-        .rip(
-            &deps,
-            "42",
-            RipOptions::new("us").with_signal(token),
-        )
+        .rip(&deps, "42", RipOptions::new("us").with_signal(token))
         .await
         .unwrap_err();
     assert!(matches!(error, RipError::Cancelled));
@@ -504,11 +488,7 @@ async fn progress_totals_with_content_length() {
     let ripper = AlacTrackRipper::new(config(dir.path(), 3, 1));
     let (cb, log) = record();
     ripper
-        .rip(
-            &deps,
-            "42",
-            RipOptions::new("us").with_progress(&cb),
-        )
+        .rip(&deps, "42", RipOptions::new("us").with_progress(&cb))
         .await
         .unwrap();
     let log = log.lock().unwrap();
@@ -604,11 +584,7 @@ async fn local_io_error_is_non_retryable() {
     let (cb, log) = record();
 
     let error = ripper
-        .rip(
-            &deps,
-            "42",
-            RipOptions::new("us").with_progress(&cb),
-        )
+        .rip(&deps, "42", RipOptions::new("us").with_progress(&cb))
         .await
         .expect_err("a local io error should fail without retries");
 
@@ -635,11 +611,7 @@ async fn progress_throttles_to_one_per_second() {
     let (cb, log) = record();
     tokio::time::pause();
     ripper
-        .rip(
-            &deps,
-            "42",
-            RipOptions::new("us").with_progress(&cb),
-        )
+        .rip(&deps, "42", RipOptions::new("us").with_progress(&cb))
         .await
         .unwrap();
     let log = log.lock().unwrap();

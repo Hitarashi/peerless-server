@@ -152,10 +152,7 @@ impl RipOrchestrator {
                     Ok(())
                 }
                 TargetKind::Album => match deps
-                    .fetch_album_tracks(
-                        &item.id,
-                        effective_sf.as_str().into(),
-                    )
+                    .fetch_album_tracks(&item.id, effective_sf.as_str().into())
                     .await
                 {
                     Ok(AlbumTracks { album, tracks }) => {
@@ -189,10 +186,7 @@ impl RipOrchestrator {
                 },
                 TargetKind::Artist => {
                     match deps
-                        .fetch_artist_tracks(
-                            &item.id,
-                            effective_sf.as_str().into(),
-                        )
+                        .fetch_artist_tracks(&item.id, effective_sf.as_str().into())
                         .await
                     {
                         Ok(ArtistTracks {
@@ -219,10 +213,7 @@ impl RipOrchestrator {
                 }
                 TargetKind::Playlist => {
                     match deps
-                        .fetch_playlist_tracks(
-                            &item.id,
-                            effective_sf.as_str().into(),
-                        )
+                        .fetch_playlist_tracks(&item.id, effective_sf.as_str().into())
                         .await
                     {
                         Ok(data) => {
@@ -301,8 +292,7 @@ impl RipOrchestrator {
         let header = match (non_empty(&album_name), non_empty(&album_artist)) {
             (Some(name), Some(artist)) => {
                 if let (Some(id), Some(sf)) = (&album_id, &album_sf) {
-                    let album_url =
-                        deps.album_url(id, sf.as_str().into());
+                    let album_url = deps.album_url(id, sf.as_str().into());
                     if let Some(album_url) = album_url {
                         format!(
                             "Album: <a href=\"{album_url}\"><b>{}</b></a> by <b>{}</b>",
@@ -446,10 +436,7 @@ impl RipOrchestrator {
         let first_delivered_msg_id: Option<ChatMessageRef> = None;
 
         let existing_album_rows = if zip_build {
-            match deps
-                .find_albums(&options.parsed_items[0].id, None)
-                .await
-            {
+            match deps.find_albums(&options.parsed_items[0].id, None).await {
                 Ok(rows) => rows,
                 Err(error) => {
                     return Err(OrchestratorError::Message(format!(
@@ -579,8 +566,8 @@ impl RipOrchestrator {
         let mut uncached_items = pipeline_items;
         let has_fresh = uncached_items.iter().any(|item| item.cached.is_none());
         let cache_hits_present = uncached_items.iter().any(|item| item.cached.is_some());
-        let can_rip_live = settings.can_rip_live(options.is_admin)
-            && settings.can_rip_apple(options.is_admin);
+        let can_rip_live =
+            settings.can_rip_live(options.is_admin) && settings.can_rip_apple(options.is_admin);
 
         if !can_rip_live
             && !settings.can_rip_apple(options.is_admin)
@@ -854,10 +841,9 @@ impl RipOrchestrator {
                                             .map(|i| i.id.clone())
                                             .unwrap_or_default(),
                                         album_url: match (&album_id, &album_sf) {
-                                            (Some(id), Some(storefront)) => deps.album_url(
-                                                id,
-                                                storefront.as_str().into(),
-                                            ),
+                                            (Some(id), Some(storefront)) => {
+                                                deps.album_url(id, storefront.as_str().into())
+                                            }
                                             _ => None,
                                         },
                                         artwork_url: album_artwork_url
@@ -982,9 +968,7 @@ impl RipOrchestrator {
                 .map(|item| item.id.clone())
                 .unwrap_or_default(),
             zip_album_url: match (&album_id, &album_sf) {
-                (Some(id), Some(storefront)) => {
-                    deps.album_url(id, storefront.as_str().into())
-                }
+                (Some(id), Some(storefront)) => deps.album_url(id, storefront.as_str().into()),
                 _ => None,
             },
             zip_genre: album_genre.clone(),
