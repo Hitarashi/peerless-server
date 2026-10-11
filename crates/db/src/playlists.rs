@@ -275,7 +275,7 @@ async fn lock_user_playlists(
     connection: &mut AsyncPgConnection,
     telegram_id: i64,
 ) -> Result<(), DbError> {
-    sql_query("SELECT 1 AS count FROM (SELECT pg_advisory_xact_lock($1)) AS user_lock")
+    sql_query("SELECT 1::BIGINT AS count FROM (SELECT pg_advisory_xact_lock($1)) AS user_lock")
         .bind::<BigInt, _>(telegram_id)
         .get_result::<CountRow>(connection)
         .await?;
