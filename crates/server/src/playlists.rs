@@ -36,6 +36,7 @@ pub struct PlaylistResponse {
     pub is_favorites: bool,
     pub source_url: Option<String>,
     pub track_count: i64,
+    pub preview_track_ids: Vec<String>,
 }
 
 impl From<db::Playlist> for PlaylistResponse {
@@ -46,6 +47,7 @@ impl From<db::Playlist> for PlaylistResponse {
             is_favorites: playlist.is_favorites,
             source_url: playlist.source_url,
             track_count: playlist.track_count,
+            preview_track_ids: playlist.preview_track_ids,
         }
     }
 }

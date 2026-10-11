@@ -33,6 +33,7 @@ async fn import_playlist_persists_and_replaces_tracks_for_same_source() {
     .await
     .expect("first import");
     assert_eq!(first_import.track_count, 2);
+    assert_eq!(first_import.preview_track_ids, ["1559885421", "1440643709"]);
 
     let second_import = import_playlist(
         &pool,
@@ -46,6 +47,7 @@ async fn import_playlist_persists_and_replaces_tracks_for_same_source() {
     assert_eq!(second_import.id, first_import.id);
     assert_eq!(second_import.name, "Updated mix");
     assert_eq!(second_import.track_count, 1);
+    assert_eq!(second_import.preview_track_ids, ["1559885421"]);
 
     let detail = get_playlist(&pool, telegram_id, &second_import.id)
         .await

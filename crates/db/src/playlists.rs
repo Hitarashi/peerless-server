@@ -15,6 +15,7 @@ pub struct Playlist {
     pub is_favorites: bool,
     pub source_url: Option<String>,
     pub track_count: i64,
+    pub preview_track_ids: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -37,6 +38,8 @@ struct PlaylistRow {
     source_url: Option<String>,
     #[diesel(sql_type = BigInt)]
     track_count: i64,
+    #[diesel(sql_type = Array<Text>)]
+    preview_track_ids: Vec<String>,
     #[diesel(sql_type = Timestamptz)]
     created_at: DateTime<Utc>,
     #[diesel(sql_type = Timestamptz)]
@@ -57,6 +60,7 @@ impl From<PlaylistRow> for Playlist {
             is_favorites: row.is_favorites,
             source_url: row.source_url,
             track_count: row.track_count,
+            preview_track_ids: row.preview_track_ids,
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
@@ -376,7 +380,7 @@ async fn finish_transaction<T>(
 
 fn playlist_select(where_clause: &str) -> String {
     format!(
-        "SELECT p.id, p.name, p.is_favorites, p.source_url, (SELECT COUNT(*) FROM user_playlist_tracks t WHERE t.playlist_id = p.id) AS track_count, p.created_at, p.updated_at FROM user_playlists p {where_clause}"
+        "SELECT p.id, p.name, p.is_favorites, p.source_url, (SELECT COUNT(*) FROM user_playlist_tracks t WHERE t.playlist_id = p.id) AS track_count, ARRAY(SELECT t.track_id FROM user_playlist_tracks t WHERE t.playlist_id = p.id ORDER BY t.position LIMIT 4) AS preview_track_ids, p.created_at, p.updated_at FROM user_playlists p {where_clause}"
     )
 }
 
