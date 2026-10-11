@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use diesel::{OptionalExtension, QueryableByName, sql_query, sql_types::*};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use serde::Serialize;
+use std::collections::HashSet;
 
 use crate::{DbError, DbPool};
 
@@ -48,6 +49,12 @@ struct PlaylistRow {
 
 #[derive(QueryableByName)]
 struct PlaylistTrackRow {
+    #[diesel(sql_type = Text)]
+    track_id: String,
+}
+
+#[derive(QueryableByName)]
+struct FavoriteTrackRow {
     #[diesel(sql_type = Text)]
     track_id: String,
 }
@@ -183,6 +190,27 @@ pub async fn get_playlist(
         playlist,
         track_ids,
     })
+}
+
+/// Returns the requested Apple track IDs present in a user's Favorites playlist with one query.
+pub async fn get_favorite_track_ids(
+    pool: &DbPool,
+    telegram_id: i64,
+    track_ids: &[String],
+) -> Result<HashSet<String>, DbError> {
+    if track_ids.is_empty() {
+        return Ok(HashSet::new());
+    }
+
+    let mut connection = pool.connection().await?;
+    let rows = sql_query(
+        "SELECT t.track_id FROM user_playlist_tracks t JOIN user_playlists p ON p.id = t.playlist_id WHERE p.telegram_id = $1 AND p.is_favorites = TRUE AND t.track_id = ANY($2::TEXT[])",
+    )
+    .bind::<BigInt, _>(telegram_id)
+    .bind::<Array<Text>, _>(track_ids)
+    .load::<FavoriteTrackRow>(&mut *connection)
+    .await?;
+    Ok(rows.into_iter().map(|row| row.track_id).collect())
 }
 
 pub async fn rename_playlist(

@@ -33,6 +33,8 @@ pub struct TrackLookupResult {
     #[schema(example = "1440832410")]
     pub apple_track_id: String,
 
+    pub is_favorite: bool,
+
     pub formats: Vec<TrackFormatResult>,
 }
 
@@ -76,7 +78,7 @@ pub struct LookupResponse {
     path = "/api/v1/lookup",
     tag = "lookup",
     summary = "Look Up Cached Apple Tracks and Album ZIPs",
-    description = "Checks local Apple Music cache entries by provider-native IDs. Each track format includes its database track ID for requesting playback, and its exact file size when media metadata can be resolved. Album results include whether a complete ZIP rendition is available and list each part of every complete rendition with its database row ID, size, part number, and total part count. Unavailable tracks are omitted; every requested album is returned. At least one of `track_ids` or `album_ids` must contain an ID.",
+    description = "Checks local Apple Music cache entries and Favorites membership by provider-native IDs. Every requested track is returned, including uncached tracks with an empty formats array. Each format includes its database track ID for requesting playback, and its exact file size when media metadata can be resolved. Album results include whether a complete ZIP rendition is available and list each part of every complete rendition with its database row ID, size, part number, and total part count. Every requested album is returned. At least one of `track_ids` or `album_ids` must contain an ID.",
     request_body = LookupRequest,
     responses(
         (status = 200, description = "Cached track formats and file sizes, plus album ZIP availability and per-part IDs, sizes, and counts", body = LookupResponse),
@@ -88,7 +90,7 @@ pub struct LookupResponse {
 )]
 pub async fn lookup(
     State(state): State<std::sync::Arc<ServerState>>,
-    _user: AuthedUser,
+    user: AuthedUser,
     Json(request): Json<LookupRequest>,
 ) -> Result<Json<LookupResponse>, ServerError> {
     let track_ids = normalize_ids(request.track_ids, "track_ids")?;
@@ -99,10 +101,12 @@ pub async fn lookup(
         ));
     }
 
-    let track_rows = state.tracks_repo.find_track_formats(&track_ids).await?;
-    let album_rows = db::AlbumsRepository::new(state.db.clone())
-        .find_album_parts_by_ids(&album_ids)
-        .await?;
+    let albums_repo = db::AlbumsRepository::new(state.db.clone());
+    let (track_rows, favorite_track_ids, album_rows) = tokio::try_join!(
+        state.tracks_repo.find_track_formats(&track_ids),
+        db::get_favorite_track_ids(&state.db, user.telegram_id, &track_ids),
+        albums_repo.find_album_parts_by_ids(&album_ids),
+    )?;
 
     let mut track_formats = HashMap::<String, HashMap<Codec, (i32, Option<u64>)>>::new();
     for (db_track_id, track_id, codec) in track_rows {
@@ -121,15 +125,16 @@ pub async fn lookup(
     }
     let tracks = track_ids
         .into_iter()
-        .filter_map(|apple_track_id| {
+        .map(|apple_track_id| {
             let formats = track_formats
                 .remove(&apple_track_id)
                 .map(ordered_track_formats)
                 .unwrap_or_default();
-            (!formats.is_empty()).then_some(TrackLookupResult {
+            TrackLookupResult {
+                is_favorite: favorite_track_ids.contains(&apple_track_id),
                 apple_track_id,
                 formats,
-            })
+            }
         })
         .collect();
 

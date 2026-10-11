@@ -332,8 +332,15 @@ async fn test_lookup_requires_authenticated_session() {
     let token = exchange_res["token"].as_str().unwrap().to_string();
     assert!(!token.is_empty());
 
+    let test_track_id = format!(
+        "{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    );
     let lookup_payload = serde_json::json!({
-        "track_ids": ["2147483000"],
+        "track_ids": [&test_track_id],
         "album_ids": ["test_album"]
     });
     let body = Body::from(serde_json::to_vec(&lookup_payload).unwrap());
@@ -356,6 +363,41 @@ async fn test_lookup_requires_authenticated_session() {
         .unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let lookup_res: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(lookup_res["tracks"].as_array().unwrap().len(), 1);
+    assert_eq!(lookup_res["tracks"][0]["apple_track_id"], test_track_id);
+    assert_eq!(lookup_res["tracks"][0]["is_favorite"], false);
+    assert_eq!(lookup_res["tracks"][0]["formats"], serde_json::json!([]));
+
+    let _ = db::list_playlists(&pool, user_id).await.unwrap();
+    let fav_playlist_id = format!("favorites-{user_id}");
+    db::replace_playlist_tracks(
+        &pool,
+        user_id,
+        &fav_playlist_id,
+        &[test_track_id.clone()],
+    )
+    .await
+    .unwrap();
+
+    let body = Body::from(serde_json::to_vec(&lookup_payload).unwrap());
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/lookup")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(body)
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let lookup_res: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(lookup_res["tracks"][0]["is_favorite"], true);
 }
 
 #[tokio::test]
