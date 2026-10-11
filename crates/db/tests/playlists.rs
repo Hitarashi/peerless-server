@@ -1,4 +1,4 @@
-use db::{connect_test_isolated, get_playlist, import_playlist, migrate};
+use db::{connect_test_isolated, get_playlist, import_playlist, list_playlists, migrate};
 use diesel::{
     sql_query,
     sql_types::{BigInt, Text},
@@ -53,4 +53,11 @@ async fn import_playlist_persists_and_replaces_tracks_for_same_source() {
         .await
         .expect("read imported playlist");
     assert_eq!(detail.track_ids, ["1559885421"]);
+
+    let playlists = list_playlists(&pool, telegram_id)
+        .await
+        .expect("list user playlists");
+    assert_eq!(playlists.len(), 1);
+    assert_eq!(playlists[0].id, second_import.id);
+    assert!(!playlists[0].is_favorites);
 }

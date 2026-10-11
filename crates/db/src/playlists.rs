@@ -71,7 +71,7 @@ pub async fn list_playlists(pool: &DbPool, telegram_id: i64) -> Result<Vec<Playl
     let mut connection = pool.connection().await?;
     ensure_favorites(&mut connection, telegram_id).await?;
     let rows = sql_query(playlist_select(
-        "WHERE p.telegram_id = $1 ORDER BY p.is_favorites DESC, p.updated_at DESC",
+        "WHERE p.telegram_id = $1 AND p.is_favorites = FALSE ORDER BY p.updated_at DESC",
     ))
     .bind::<BigInt, _>(telegram_id)
     .load::<PlaylistRow>(&mut *connection)
