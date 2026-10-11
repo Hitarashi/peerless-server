@@ -302,11 +302,14 @@ async fn replace_tracks_for_playlist(
         .bind::<Text, _>(playlist_id)
         .execute(&mut *connection)
         .await?;
-    for (position, track_id) in track_ids.iter().enumerate() {
-        sql_query("INSERT INTO user_playlist_tracks (playlist_id, position, track_id) VALUES ($1, $2, $3)")
+    if !track_ids.is_empty() {
+        let track_ids = track_ids
+            .iter()
+            .map(|track_id| track_id.trim().to_owned())
+            .collect::<Vec<_>>();
+        sql_query("INSERT INTO user_playlist_tracks (playlist_id, position, track_id) SELECT $1, (tracks.ordinality - 1)::INTEGER, tracks.track_id FROM UNNEST($2::TEXT[]) WITH ORDINALITY AS tracks(track_id, ordinality)")
             .bind::<Text, _>(playlist_id)
-            .bind::<Integer, _>(position as i32)
-            .bind::<Text, _>(track_id.trim())
+            .bind::<Array<Text>, _>(&track_ids)
             .execute(&mut *connection)
             .await?;
     }
