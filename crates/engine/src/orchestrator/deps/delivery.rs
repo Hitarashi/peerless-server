@@ -2,7 +2,7 @@ use std::{fmt, path::Path, sync::Arc};
 
 use super::BoxFuture;
 
-pub type UploadProgressCallback = Arc<dyn Fn(u64, u64) + Send + Sync>;
+pub type UploadProgressCallback = Arc<dyn Fn(u64, u64, Option<usize>, Option<i32>) + Send + Sync>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ChatRef(pub i64);

@@ -528,6 +528,7 @@ async fn dispatch_rip_task_rpc(
                             job_stage: Some(crate::rip_tasks::RipTaskStage::new("completed")),
                             download: None,
                             upload: None,
+                            uploads: Vec::new(),
                             percent: Some(100.0),
                             result_track_id,
                             is_cached: Some(true),

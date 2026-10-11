@@ -323,6 +323,8 @@ pub enum UploadLane {
     Track {
         track: TrackLabel,
         progress: ByteProgress,
+        worker_id: Option<usize>,
+        dc_id: Option<i32>,
     },
     ArchiveBuild {
         archive: String,
@@ -331,6 +333,8 @@ pub enum UploadLane {
     ArchiveUpload {
         archive: String,
         progress: ByteProgress,
+        worker_id: Option<usize>,
+        dc_id: Option<i32>,
     },
 }
 
@@ -343,6 +347,27 @@ impl UploadLane {
             Self::Track { progress, .. }
             | Self::ArchiveBuild { progress, .. }
             | Self::ArchiveUpload { progress, .. } => progress,
+        }
+    }
+
+    pub fn worker_id(&self) -> Option<usize> {
+        match self {
+            Self::Track { worker_id, .. } | Self::ArchiveUpload { worker_id, .. } => *worker_id,
+            Self::ArchiveBuild { .. } => None,
+        }
+    }
+
+    pub fn dc_id(&self) -> Option<i32> {
+        match self {
+            Self::Track { dc_id, .. } | Self::ArchiveUpload { dc_id, .. } => *dc_id,
+            Self::ArchiveBuild { .. } => None,
+        }
+    }
+
+    pub fn track_index(&self) -> Option<u32> {
+        match self {
+            Self::Track { track, .. } => track.track_index,
+            _ => None,
         }
     }
 
@@ -409,6 +434,7 @@ pub struct RipTaskProgress {
     pub job_activity: Option<TaskActivity>,
     pub download: Option<DownloadLane>,
     pub upload: Option<UploadLane>,
+    pub uploads: Vec<UploadLane>,
     pub codec: Option<String>,
 }
 
@@ -662,6 +688,8 @@ mod task_state_tests {
         let track_upload = UploadLane::Track {
             track: TrackLabel::new("Song", "Artist"),
             progress: ByteProgress::new(1, Some(2)),
+            worker_id: None,
+            dc_id: None,
         };
         assert_eq!(track_upload.stage_name(), "uploading_track");
         assert!(!track_upload.is_archive());
@@ -678,6 +706,8 @@ mod task_state_tests {
                 UploadLane::ArchiveUpload {
                     archive: "Album.zip".to_owned(),
                     progress: ByteProgress::new(1, Some(2)),
+                    worker_id: None,
+                    dc_id: None,
                 },
                 UploadLane::ARCHIVE_UPLOAD_STAGE,
             ),

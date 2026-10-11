@@ -69,6 +69,7 @@ impl ServerTaskMeta {
             job_stage: progress.job_stage.clone(),
             download: progress.download.clone(),
             upload: progress.upload.clone(),
+            uploads: progress.uploads.clone(),
             percent: progress.percent,
             result_track_id: self.result_track_id,
             is_cached: None,
@@ -109,6 +110,9 @@ pub struct RipTaskSnapshot {
     pub download: Option<RipTaskDownloadLane>,
 
     pub upload: Option<RipTaskUploadLane>,
+
+    #[serde(default)]
+    pub uploads: Vec<RipTaskUploadLane>,
 
     pub percent: Option<f32>,
     pub result_track_id: Option<i32>,
@@ -239,6 +243,12 @@ pub struct RipTaskUploadLane {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_tracks: Option<u32>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_id: Option<usize>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dc_id: Option<i32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -246,6 +256,7 @@ pub struct RipTaskProgress {
     pub job_stage: Option<RipTaskStage>,
     pub download: Option<RipTaskDownloadLane>,
     pub upload: Option<RipTaskUploadLane>,
+    pub uploads: Vec<RipTaskUploadLane>,
     pub percent: Option<f32>,
     pub current_track_title: Option<String>,
     pub current_track_artist: Option<String>,
@@ -279,6 +290,8 @@ mod tests {
         UploadLane::Track {
             track: TrackLabel::new("Track Three", "Artist Three"),
             progress: ByteProgress::new(75, Some(100)),
+            worker_id: None,
+            dc_id: None,
         }
     }
 
@@ -307,6 +320,8 @@ mod tests {
             codec: Some("alac".to_owned()),
             track_index: Some(3),
             total_tracks: Some(8),
+            worker_id: None,
+            dc_id: None,
         };
         let task = ServerTaskMeta {
             task_id: "task-1".to_owned(),
@@ -325,6 +340,7 @@ mod tests {
                 job_stage: None,
                 download: Some(download.clone()),
                 upload: Some(upload.clone()),
+                uploads: vec![upload.clone()],
                 percent: Some(43.75),
                 current_track_title: Some("Track Three".to_owned()),
                 current_track_artist: Some("Artist Three".to_owned()),
@@ -343,7 +359,8 @@ mod tests {
         let snapshot = task.snapshot(true);
         assert_eq!(snapshot.owner_id, Some(task.owner_id));
         assert_eq!(snapshot.download, Some(download));
-        assert_eq!(snapshot.upload, Some(upload));
+        assert_eq!(snapshot.upload, Some(upload.clone()));
+        assert_eq!(snapshot.uploads, vec![upload]);
     }
 
     /// The canonical model's stage names are the JSON contract. This test pins
@@ -408,6 +425,8 @@ mod tests {
                 UploadLane::ArchiveUpload {
                     archive: "Album.zip".to_owned(),
                     progress: ByteProgress::new(1, Some(2)),
+                    worker_id: None,
+                    dc_id: None,
                 },
                 "uploading_archive",
             ),
@@ -483,6 +502,8 @@ mod tests {
                 UploadLane::ArchiveUpload {
                     archive: "Album.zip".to_owned(),
                     progress: ByteProgress::new(0, None),
+                    worker_id: None,
+                    dc_id: None,
                 },
                 true,
             ),

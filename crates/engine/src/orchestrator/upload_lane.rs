@@ -1,6 +1,21 @@
 //! Serialised upload lane: lane task plumbing, track publication, cache rollback, and ZIP staging.
 
+use std::sync::atomic::Ordering;
+
 use super::*;
+
+struct PendingUploadGuard {
+    pending_uploads: Arc<std::sync::atomic::AtomicUsize>,
+    uploads_finished: Arc<tokio::sync::Notify>,
+}
+
+impl Drop for PendingUploadGuard {
+    fn drop(&mut self) {
+        if self.pending_uploads.fetch_sub(1, Ordering::SeqCst) == 1 {
+            self.uploads_finished.notify_waiters();
+        }
+    }
+}
 
 pub(super) fn record_lane_task_panic(
     shared: &Arc<Mutex<TaskShared>>,
@@ -93,32 +108,70 @@ impl RipOrchestrator {
         if let Some(tx) = guard.as_ref() {
             return tx.clone();
         }
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<LaneTask>(16);
-        tokio::spawn(async move {
-            while let Some(task) = rx.recv().await {
-                let LaneTask {
-                    run,
-                    label,
-                    on_panic,
-                } = task;
-                let result = futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
-                    async move { run().await },
-                ))
-                .await;
-                if let Err(panic) = result {
-                    let message = panic_message(panic);
-                    if let Some(on_panic) = on_panic {
-                        on_panic(message.clone());
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<LaneTask>(32);
+        let concurrency = self.config.upload_concurrency;
+        if concurrency <= 1 {
+            tokio::spawn(async move {
+                while let Some(task) = rx.recv().await {
+                    let LaneTask {
+                        run,
+                        label,
+                        on_panic,
+                    } = task;
+                    let result = futures_util::FutureExt::catch_unwind(
+                        std::panic::AssertUnwindSafe(async move { run().await }),
+                    )
+                    .await;
+                    if let Err(panic) = result {
+                        let message = panic_message(panic);
+                        if let Some(on_panic) = on_panic {
+                            on_panic(message.clone());
+                        }
+                        tracing::error!(
+                            lane = "upload",
+                            item = label,
+                            error = %message,
+                            "upload lane task panicked; lane continues"
+                        );
                     }
-                    tracing::error!(
-                        lane = "upload",
-                        item = label,
-                        error = %message,
-                        "upload lane task panicked; lane continues"
-                    );
                 }
-            }
-        });
+            });
+        } else {
+            let upload_semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
+            tokio::spawn(async move {
+                while let Some(task) = rx.recv().await {
+                    let LaneTask {
+                        run,
+                        label,
+                        on_panic,
+                    } = task;
+                    let permit = if label == "upload_track" {
+                        upload_semaphore.clone().acquire_owned().await.ok()
+                    } else {
+                        None
+                    };
+                    tokio::spawn(async move {
+                        let _permit = permit;
+                        let result = futures_util::FutureExt::catch_unwind(
+                            std::panic::AssertUnwindSafe(async move { run().await }),
+                        )
+                        .await;
+                        if let Err(panic) = result {
+                            let message = panic_message(panic);
+                            if let Some(on_panic) = on_panic {
+                                on_panic(message.clone());
+                            }
+                            tracing::error!(
+                                lane = "upload",
+                                item = label,
+                                error = %message,
+                                "upload lane task panicked; lane continues"
+                            );
+                        }
+                    });
+                }
+            });
+        }
         *guard = Some(tx.clone());
         tx
     }
@@ -149,6 +202,7 @@ where
         upload_lane,
         upload_item,
     } = input;
+    ctx.pending_uploads.fetch_add(1, Ordering::SeqCst);
     let panic_shared = Arc::clone(&shared);
     let panic_ctx = Arc::clone(&ctx);
     let panic_track_id = upload_item.track_id.clone();
@@ -157,7 +211,7 @@ where
     let panic_artist = upload_item.rip_result.artist.clone();
     let item_ctx = Arc::clone(&ctx);
     let task_controller = job_controller.clone();
-    push_lane_task(
+    let pushed = push_lane_task(
         &upload_lane,
         "upload_track",
         Some(Box::new(move |message| {
@@ -177,11 +231,20 @@ where
         queue_cancellation.as_ref(),
         move || {
             Box::pin(async move {
+                let guard = PendingUploadGuard {
+                    pending_uploads: Arc::clone(&item_ctx.pending_uploads),
+                    uploads_finished: Arc::clone(&item_ctx.uploads_finished),
+                };
                 run_upload_item(deps, bus, shared, item_ctx, task_controller, upload_item).await;
+                drop(guard);
             })
         },
     )
-    .await
+    .await;
+    if !pushed && ctx.pending_uploads.fetch_sub(1, Ordering::SeqCst) == 1 {
+        ctx.uploads_finished.notify_waiters();
+    }
+    pushed
 }
 
 pub(super) async fn run_upload_item<D>(
@@ -299,6 +362,99 @@ pub(super) async fn rollback_cancelled<D>(
     }
 }
 
+pub(super) async fn deliver_sequenced<D>(
+    deps: &Arc<D>,
+    ctx: &Arc<TaskContext>,
+    track_index: Option<u32>,
+    message: Option<DumpMessageRef>,
+) -> Result<(), String>
+where
+    D: Delivery,
+{
+    if ctx.options.is_cache_only || ctx.zip_deliver {
+        return Ok(());
+    }
+
+    let Some(idx) = track_index else {
+        if let Some(msg) = message {
+            let reply_to = (ctx.options.delivery_chat_id == ctx.options.chat_id)
+                .then_some(ctx.options.reply_to_message_id)
+                .flatten();
+            let sent_id = deps
+                .deliver_to_chat(ChatDelivery::DumpCopy {
+                    destination: ChatRef::new(ctx.options.delivery_chat_id),
+                    source: msg,
+                    reply_to: reply_to.map(ChatMessageRef::new),
+                    silent: ctx.is_multi_track,
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+            let DeliveryReceipt::Message(sent_id) = sent_id else {
+                return Err("track delivery returned a preview receipt".to_owned());
+            };
+            let mut guard = ctx.first_delivered_msg_id.lock().unwrap();
+            if guard.is_none() {
+                *guard = Some(sent_id);
+            }
+        }
+        return Ok(());
+    };
+
+    // Multi-track: record into pending map
+    {
+        let mut pending = ctx.pending_deliveries.lock().unwrap();
+        pending.insert(idx, message);
+    }
+
+    // Acquire lock to drain sequenced deliveries
+    let _lock = ctx.delivery_lock.lock().await;
+
+    loop {
+        let next_idx = *ctx.next_deliver_index.lock().unwrap();
+        let next_entry = {
+            let mut pending = ctx.pending_deliveries.lock().unwrap();
+            pending.remove(&next_idx)
+        };
+
+        match next_entry {
+            Some(Some(dump_msg)) => {
+                let reply_to = (ctx.options.delivery_chat_id == ctx.options.chat_id)
+                    .then_some(ctx.options.reply_to_message_id)
+                    .flatten();
+                let sent_id = deps
+                    .deliver_to_chat(ChatDelivery::DumpCopy {
+                        destination: ChatRef::new(ctx.options.delivery_chat_id),
+                        source: dump_msg,
+                        reply_to: reply_to.map(ChatMessageRef::new),
+                        silent: ctx.is_multi_track,
+                    })
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let DeliveryReceipt::Message(sent_id) = sent_id else {
+                    return Err("track delivery returned a preview receipt".to_owned());
+                };
+                {
+                    let mut guard = ctx.first_delivered_msg_id.lock().unwrap();
+                    if guard.is_none() {
+                        *guard = Some(sent_id);
+                    }
+                }
+                *ctx.next_deliver_index.lock().unwrap() += 1;
+            }
+            Some(None) => {
+                // Track failed or cancelled: advance sequencer so subsequent tracks aren't blocked
+                *ctx.next_deliver_index.lock().unwrap() += 1;
+            }
+            None => {
+                // Next index not yet ready
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 pub(super) async fn upload_one<D>(
     deps: &Arc<D>,
     bus: &EventBus,
@@ -386,34 +542,15 @@ where
 
         let mut deliver_succeeded = true;
         if !options.is_cache_only && !ctx.zip_deliver {
-            let reply_to = (options.delivery_chat_id == options.chat_id)
-                .then_some(options.reply_to_message_id)
-                .flatten();
-            let copy_result = tokio::select! {
-                result = deps.deliver_to_chat(ChatDelivery::DumpCopy {
-                    destination: ChatRef::new(options.delivery_chat_id),
-                    source: DumpMessageRef::new(cached.message_id),
-                    reply_to: reply_to.map(ChatMessageRef::new),
-                    silent: ctx.is_multi_track,
-                }) => result,
-                _ = job_controller.cancelled() => return false,
-            };
-
-            match copy_result {
-                Ok(DeliveryReceipt::Message(sent_id)) => {
-                    let mut guard = ctx.first_delivered_msg_id.lock().unwrap();
-                    if guard.is_none() {
-                        *guard = Some(sent_id);
-                    }
-                }
-                Ok(DeliveryReceipt::PreviewDelivered) => {
-                    tracing::warn!(
-                        track_id = %track_id,
-                        "cached track delivery returned preview receipt; deleting stale cache and falling back to upload"
-                    );
-                    let _ = deps.delete_track(&track_id, Some(cached.codec)).await;
-                    deliver_succeeded = false;
-                }
+            match deliver_sequenced(
+                deps,
+                ctx,
+                upload_item.track_index,
+                Some(DumpMessageRef::new(cached.message_id)),
+            )
+            .await
+            {
+                Ok(()) => {}
                 Err(error) => {
                     tracing::warn!(
                         track_id = %track_id,
@@ -431,7 +568,8 @@ where
         }
 
         if deliver_succeeded {
-            bus.set_upload(shared, None);
+            let upload_key = format!("track_{}_{:?}", upload_item.track_id, upload_item.rendition);
+            bus.remove_upload(shared, &upload_key);
             if upload_item.rendition == Rendition::Primary {
                 shared.lock().expect("job poisoned").job.cached_count += 1;
             }
@@ -451,15 +589,19 @@ where
         }
     }
 
-    bus.set_upload(
+    let upload_key = format!("track_{}_{:?}", upload_item.track_id, upload_item.rendition);
+    bus.upsert_upload(
         shared,
-        Some(UploadLane::Track {
+        &upload_key,
+        UploadLane::Track {
             track: track_label.clone(),
             progress: ByteProgress {
                 completed: 0,
                 total: None,
             },
-        }),
+            worker_id: None,
+            dc_id: None,
+        },
     );
     bus.emit_progress(shared);
 
@@ -476,16 +618,20 @@ where
             let shared = Arc::clone(shared);
             let bus = bus.clone();
             let label = track_label.clone();
-            Arc::new(move |uploaded, total| {
-                bus.set_upload(
+            let key = upload_key.clone();
+            Arc::new(move |uploaded, total, worker_id, dc_id| {
+                bus.upsert_upload(
                     &shared,
-                    Some(UploadLane::Track {
+                    &key,
+                    UploadLane::Track {
                         track: label.clone(),
                         progress: ByteProgress {
                             completed: uploaded,
-                            total: Some(total),
+                            total: (total > 0).then_some(total),
                         },
-                    }),
+                        worker_id,
+                        dc_id,
+                    },
                 );
                 bus.emit_progress(&shared);
             })
@@ -559,7 +705,8 @@ where
                         });
                         shared.lock().expect("job poisoned").job.failed_count = failures.len();
                     }
-                    bus.set_upload(shared, None);
+                    let _ = deliver_sequenced(deps, ctx, upload_item.track_index, None).await;
+                    bus.remove_upload(shared, &upload_key);
                     bus.emit_progress(shared);
                     return false;
                 }
@@ -568,7 +715,8 @@ where
     }
 
     let Some(outcome) = outcome else {
-        bus.set_upload(shared, None);
+        let _ = deliver_sequenced(deps, ctx, upload_item.track_index, None).await;
+        bus.remove_upload(shared, &upload_key);
         bus.emit_progress(shared);
         return false;
     };
@@ -609,25 +757,13 @@ where
         }
 
         if !options.is_cache_only && !ctx.zip_deliver {
-            let reply_to = (options.delivery_chat_id == options.chat_id)
-                .then_some(options.reply_to_message_id)
-                .flatten();
-            let sent_id = deps
-                .deliver_to_chat(ChatDelivery::DumpCopy {
-                    destination: ChatRef::new(options.delivery_chat_id),
-                    source: dump_upload.message,
-                    reply_to: reply_to.map(ChatMessageRef::new),
-                    silent: ctx.is_multi_track,
-                })
-                .await
-                .map_err(|e| e.to_string())?;
-            let DeliveryReceipt::Message(sent_id) = sent_id else {
-                return Err("track delivery returned a preview receipt".to_owned());
-            };
-            let mut guard = ctx.first_delivered_msg_id.lock().unwrap();
-            if guard.is_none() {
-                *guard = Some(sent_id);
-            }
+            deliver_sequenced(
+                deps,
+                ctx,
+                upload_item.track_index,
+                Some(dump_upload.message),
+            )
+            .await?;
         }
 
         if is_cancelled() {
@@ -649,7 +785,7 @@ where
 
     match post_upload {
         Ok(total_duration_ms) => {
-            bus.set_upload(shared, None);
+            bus.remove_upload(shared, &upload_key);
             if upload_item.rendition == Rendition::Primary {
                 let new_count = ctx
                     .ripped_count
@@ -673,7 +809,8 @@ where
             true
         }
         Err(err_msg) => {
-            bus.set_upload(shared, None);
+            bus.remove_upload(shared, &upload_key);
+            let _ = deliver_sequenced(deps, ctx, upload_item.track_index, None).await;
             if is_cancelled() {
                 return false;
             }

@@ -378,7 +378,7 @@ async fn test_lookup_requires_authenticated_session() {
         &pool,
         user_id,
         &fav_playlist_id,
-        &[test_track_id.clone()],
+        std::slice::from_ref(&test_track_id),
     )
     .await
     .unwrap();

@@ -177,19 +177,20 @@ where
         bus.emit_progress(shared);
         let progress_bus = bus.clone();
         let progress_shared = Arc::clone(shared);
-        let materialization_progress: UploadProgressCallback = Arc::new(move |completed, total| {
-            progress_bus.set_download(
-                &progress_shared,
-                Some(DownloadLane::Rip(RipActivity::MaterializingCachedMedia {
-                    track: track.clone(),
-                    progress: ByteProgress {
-                        completed,
-                        total: (total > 0).then_some(total),
-                    },
-                })),
-            );
-            progress_bus.emit_progress(&progress_shared);
-        });
+        let materialization_progress: UploadProgressCallback =
+            Arc::new(move |completed, total, _worker_id, _dc_id| {
+                progress_bus.set_download(
+                    &progress_shared,
+                    Some(DownloadLane::Rip(RipActivity::MaterializingCachedMedia {
+                        track: track.clone(),
+                        progress: ByteProgress {
+                            completed,
+                            total: (total > 0).then_some(total),
+                        },
+                    })),
+                );
+                progress_bus.emit_progress(&progress_shared);
+            });
         let download_result = tokio::select! {
             result = deps.materialize_cached(
                 DumpMessageRef::new(cached.message_id),

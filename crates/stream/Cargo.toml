@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 ferogram.workspace = true
+base64.workspace = true
 db = { path = "../db" }
 music = { path = "../music" }
 peerless-core = { path = "../core" }

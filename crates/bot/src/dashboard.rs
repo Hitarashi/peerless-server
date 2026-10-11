@@ -241,21 +241,49 @@ fn render_rip_activity(activity: &RipActivity) -> String {
 
 fn render_upload_lane(lane: &UploadLane) -> String {
     match lane {
-        UploadLane::Track { track, progress } => format!(
-            "<b>⬆️ Uploading:</b> <b>{}</b> <code>{}</code>\n",
-            track_text(track),
-            byte_progress(progress)
-        ),
+        UploadLane::Track {
+            track,
+            progress,
+            worker_id,
+            dc_id,
+        } => {
+            let meta = match (dc_id, worker_id) {
+                (Some(dc), Some(worker)) => format!(" [DC{dc} • Bot #{worker}]"),
+                (Some(dc), None) => format!(" [DC{dc}]"),
+                (None, Some(worker)) => format!(" [Bot #{worker}]"),
+                (None, None) => String::new(),
+            };
+            format!(
+                "<b>⬆️ Uploading:</b> <b>{}</b> <code>{}{}</code>\n",
+                track_text(track),
+                byte_progress(progress),
+                meta,
+            )
+        }
         UploadLane::ArchiveBuild { archive, progress } => format!(
             "<b>📦 Zipping:</b> <b>{}</b> <code>{}</code>\n",
             esc(archive),
             byte_progress(progress)
         ),
-        UploadLane::ArchiveUpload { archive, progress } => format!(
-            "<b>⬆️ Uploading ZIP:</b> <b>{}</b> <code>{}</code>\n",
-            esc(archive),
-            byte_progress(progress)
-        ),
+        UploadLane::ArchiveUpload {
+            archive,
+            progress,
+            worker_id,
+            dc_id,
+        } => {
+            let meta = match (dc_id, worker_id) {
+                (Some(dc), Some(worker)) => format!(" [DC{dc} • Bot #{worker}]"),
+                (Some(dc), None) => format!(" [DC{dc}]"),
+                (None, Some(worker)) => format!(" [Bot #{worker}]"),
+                (None, None) => String::new(),
+            };
+            format!(
+                "<b>⬆️ Uploading ZIP:</b> <b>{}</b> <code>{}{}</code>\n",
+                esc(archive),
+                byte_progress(progress),
+                meta,
+            )
+        }
     }
 }
 
@@ -531,6 +559,8 @@ mod tests {
                 completed: 1_048_576,
                 total: Some(2_097_152),
             },
+            worker_id: None,
+            dc_id: None,
         }
     }
 
@@ -657,6 +687,8 @@ mod tests {
                     completed: 0,
                     total: None,
                 },
+                worker_id: None,
+                dc_id: None,
             }),
             ..DashboardSnapshot::default()
         };
@@ -783,6 +815,8 @@ mod tests {
                     completed: 1_048_576,
                     total: Some(2_097_152),
                 },
+                worker_id: None,
+                dc_id: None,
             }),
             jobs: vec![base_job.clone()],
             ..DashboardSnapshot::default()

@@ -10,7 +10,9 @@ pub use circuit_breaker::CircuitBreaker;
 pub use engine::{AudioStreamHeaders, AudioStreamResponse, StreamEngine, TrackMediaMetadata};
 pub use metrics::{StreamMetrics, StreamMetricsSnapshot};
 pub use pipe::{ByteRange, ChunkStream, LocationRefresher, StreamPipeParams, create_stream_pipe};
-pub use worker_pool::{StreamWorkerPool, hash_bot_token};
+pub use worker_pool::{
+    StreamWorkerPool, UploadWorkerLease, extract_dc_from_session_str, hash_bot_token,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StreamError {

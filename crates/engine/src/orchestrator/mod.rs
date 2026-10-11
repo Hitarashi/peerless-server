@@ -151,6 +151,11 @@ struct TaskContext {
     failed_tracks: Arc<Mutex<Vec<FailedTrack>>>,
     first_delivered_msg_id: Arc<Mutex<Option<ChatMessageRef>>>,
     zip_delivery_infos: Arc<Mutex<Vec<ZipDeliveryInfo>>>,
+    pub(super) pending_uploads: Arc<std::sync::atomic::AtomicUsize>,
+    pub(super) uploads_finished: Arc<tokio::sync::Notify>,
+    pub(super) delivery_lock: Arc<tokio::sync::Mutex<()>>,
+    pub(super) next_deliver_index: Arc<Mutex<u32>>,
+    pub(super) pending_deliveries: Arc<Mutex<HashMap<u32, Option<DumpMessageRef>>>>,
 }
 
 impl TaskContext {
@@ -184,7 +189,7 @@ struct TaskShared {
 struct PipelineState {
     job_activity: Mutex<Option<TaskActivity>>,
     download: Mutex<Option<DownloadLane>>,
-    upload: Mutex<Option<UploadLane>>,
+    uploads: Mutex<HashMap<String, UploadLane>>,
     codec: Mutex<Option<String>>,
 }
 

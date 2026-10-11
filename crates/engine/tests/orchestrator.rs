@@ -299,8 +299,8 @@ impl Delivery for FakeSink {
                 } => {
                     let bytes = std::fs::read(&file_path).unwrap_or_default();
                     if let Some(callback) = on_upload_progress {
-                        callback(0, bytes.len() as u64);
-                        callback(bytes.len() as u64, bytes.len() as u64);
+                        callback(0, bytes.len() as u64, None, None);
+                        callback(bytes.len() as u64, bytes.len() as u64, None, None);
                     }
                     let mut st = state.lock().unwrap();
                     st.sent_documents.push(file_path);
@@ -387,8 +387,8 @@ impl Delivery for FakeSink {
                 } => {
                     let bytes = std::fs::read(&file_path).unwrap_or_default();
                     if let Some(callback) = on_upload_progress {
-                        callback(0, bytes.len() as u64);
-                        callback(bytes.len() as u64, bytes.len() as u64);
+                        callback(0, bytes.len() as u64, None, None);
+                        callback(bytes.len() as u64, bytes.len() as u64, None, None);
                     }
                     let mut st = state.lock().unwrap();
                     st.sent_documents.push(file_path);
@@ -437,7 +437,7 @@ impl Delivery for FakeSink {
             std::fs::write(destination, bytes)
                 .map_err(|error| DeliveryError::LocalIo(error.to_string()))?;
             if let Some(callback) = progress {
-                callback(bytes.len() as u64, bytes.len() as u64);
+                callback(bytes.len() as u64, bytes.len() as u64, None, None);
             }
             Ok(())
         })
@@ -1002,6 +1002,7 @@ fn setup_with_upload_retries(
     let orch = RipOrchestrator::new(OrchestratorConfig {
         storage_retry: StorageRetryPolicy::test(),
         upload_retry: RetryConfig::new(upload_max_retries, 0),
+        upload_concurrency: 1,
     });
     let events = EventLog::attach(&orch);
     (orch, deps, state, events)

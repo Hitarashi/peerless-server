@@ -51,13 +51,29 @@ impl EventBus {
             .expect("download progress poisoned") = lane;
     }
 
-    pub(super) fn set_upload(&self, shared: &Arc<Mutex<TaskShared>>, lane: Option<UploadLane>) {
+    pub(super) fn upsert_upload(
+        &self,
+        shared: &Arc<Mutex<TaskShared>>,
+        key: &str,
+        lane: UploadLane,
+    ) {
         let guard = shared.lock().expect("job poisoned");
-        *guard
+        guard
             .progress
-            .upload
+            .uploads
             .lock()
-            .expect("upload progress poisoned") = lane;
+            .expect("uploads progress poisoned")
+            .insert(key.to_string(), lane);
+    }
+
+    pub(super) fn remove_upload(&self, shared: &Arc<Mutex<TaskShared>>, key: &str) {
+        let guard = shared.lock().expect("job poisoned");
+        guard
+            .progress
+            .uploads
+            .lock()
+            .expect("uploads progress poisoned")
+            .remove(key);
     }
 
     pub(super) fn set_codec(&self, shared: &Arc<Mutex<TaskShared>>, codec: Option<String>) {
@@ -80,6 +96,20 @@ impl EventBus {
             } else {
                 0
             };
+            let mut uploads: Vec<UploadLane> = guard
+                .progress
+                .uploads
+                .lock()
+                .expect("uploads progress poisoned")
+                .values()
+                .cloned()
+                .collect();
+            uploads.sort_by(|a, b| {
+                a.track_index()
+                    .cmp(&b.track_index())
+                    .then_with(|| a.stage_name().cmp(b.stage_name()))
+            });
+            let upload = uploads.first().cloned();
             let progress = RipTaskProgress {
                 job_id: guard.job.id.clone(),
                 total_tracks: guard.job.total_tracks,
@@ -101,12 +131,8 @@ impl EventBus {
                     .lock()
                     .expect("download progress poisoned")
                     .clone(),
-                upload: guard
-                    .progress
-                    .upload
-                    .lock()
-                    .expect("upload progress poisoned")
-                    .clone(),
+                upload,
+                uploads,
                 codec: guard.progress.codec.lock().expect("codec poisoned").clone(),
             };
             (guard.job.clone(), progress)

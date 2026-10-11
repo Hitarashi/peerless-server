@@ -47,9 +47,38 @@ impl<'a> Drop for InFlightGuard<'a> {
 pub struct WorkerInstance {
     pub id: usize,
     pub client: ferogram::Client,
-    pub in_flight: AtomicUsize,
+    pub in_flight: Arc<AtomicUsize>,
     pub username: Option<String>,
     pub dc_lock: Arc<Mutex<()>>,
+    pub home_dc: i32,
+    pub slow_until: Arc<Mutex<Option<Instant>>>,
+}
+
+pub fn extract_dc_from_session_str(session_str: &str) -> Option<i32> {
+    use base64::Engine;
+    let s = session_str.trim();
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(s)
+        .or_else(|_| base64::engine::general_purpose::STANDARD.decode(s))
+        .ok()?;
+    if decoded.len() >= 2 {
+        Some(decoded[1] as i32)
+    } else {
+        None
+    }
+}
+
+pub struct UploadWorkerLease {
+    pub worker_id: usize,
+    pub client: ferogram::Client,
+    pub home_dc: i32,
+    counter: Arc<AtomicUsize>,
+}
+
+impl Drop for UploadWorkerLease {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 pub struct StreamWorkerPool {
@@ -92,13 +121,28 @@ impl StreamWorkerPool {
                     "No STREAM_WORKER_BOT_TOKENS configured. Falling back to primary bot client for streaming."
                 );
                 let me = primary.get_me().await.ok();
+                let primary_dc = primary
+                    .export_session_string()
+                    .await
+                    .ok()
+                    .as_deref()
+                    .and_then(extract_dc_from_session_str)
+                    .unwrap_or(0);
+                tracing::info!(
+                    worker_id = 0,
+                    username = ?me.as_ref().and_then(|u| u.username.as_deref()),
+                    home_dc = primary_dc,
+                    "Primary fallback worker initialized as sole worker"
+                );
                 (
                     vec![WorkerInstance {
                         id: 0,
                         client: primary,
-                        in_flight: AtomicUsize::new(0),
+                        in_flight: Arc::new(AtomicUsize::new(0)),
                         username: me.and_then(|u| u.username),
                         dc_lock: Arc::new(Mutex::new(())),
+                        home_dc: primary_dc,
+                        slow_until: Arc::new(Mutex::new(None)),
                     }],
                     None,
                 )
@@ -108,12 +152,27 @@ impl StreamWorkerPool {
         } else {
             let primary_worker = if let Some(ref primary) = primary_fallback {
                 let me = primary.get_me().await.ok();
+                let primary_dc = primary
+                    .export_session_string()
+                    .await
+                    .ok()
+                    .as_deref()
+                    .and_then(extract_dc_from_session_str)
+                    .unwrap_or(0);
+                tracing::info!(
+                    worker_id = usize::MAX,
+                    username = ?me.as_ref().and_then(|u| u.username.as_deref()),
+                    home_dc = primary_dc,
+                    "Primary fallback worker initialized"
+                );
                 Some(WorkerInstance {
                     id: usize::MAX,
                     client: primary.clone(),
-                    in_flight: AtomicUsize::new(0),
+                    in_flight: Arc::new(AtomicUsize::new(0)),
                     username: me.and_then(|u| u.username),
                     dc_lock: Arc::new(Mutex::new(())),
+                    home_dc: primary_dc,
+                    slow_until: Arc::new(Mutex::new(None)),
                 })
             } else {
                 None
@@ -137,6 +196,11 @@ impl StreamWorkerPool {
                 } else {
                     None
                 };
+
+                let mut home_dc = saved_session
+                    .as_deref()
+                    .and_then(extract_dc_from_session_str)
+                    .unwrap_or(0);
 
                 let client = if let Some(ref session_data) = saved_session {
                     let connect_res = ferogram::Client::builder()
@@ -196,20 +260,30 @@ impl StreamWorkerPool {
                     .await?
                 };
 
+                if home_dc == 0
+                    && let Ok(exported) = client.export_session_string().await
+                    && let Some(dc) = extract_dc_from_session_str(&exported)
+                {
+                    home_dc = dc;
+                }
+
                 let me = client.get_me().await.ok();
                 let username = me.and_then(|u| u.username);
                 tracing::info!(
                     worker_id = idx,
                     username = ?username,
+                    home_dc,
                     "Auxiliary stream worker initialized"
                 );
 
                 workers.push(WorkerInstance {
                     id: idx,
                     client,
-                    in_flight: AtomicUsize::new(0),
+                    in_flight: Arc::new(AtomicUsize::new(0)),
                     username,
                     dc_lock: Arc::new(Mutex::new(())),
+                    home_dc,
+                    slow_until: Arc::new(Mutex::new(None)),
                 });
             }
 
@@ -275,6 +349,101 @@ impl StreamWorkerPool {
                 Err(error)
             }
         })
+    }
+
+    pub fn lease_upload_worker(
+        &self,
+        prefer_fast_dc: bool,
+    ) -> Result<UploadWorkerLease, StreamError> {
+        let now = Instant::now();
+        let eligible: Vec<&WorkerInstance> = self
+            .workers
+            .iter()
+            .filter(|worker| {
+                if !self.circuit_breaker.is_available(worker.id) {
+                    return false;
+                }
+                match worker.slow_until.try_lock() {
+                    Ok(guard) => match *guard {
+                        Some(until) => now >= until,
+                        None => true,
+                    },
+                    Err(_) => true,
+                }
+            })
+            .collect();
+
+        let chosen = if prefer_fast_dc {
+            let fast_candidates: Vec<&WorkerInstance> = eligible
+                .iter()
+                .copied()
+                .filter(|w| w.home_dc != 5 && w.home_dc > 0)
+                .collect();
+
+            if !fast_candidates.is_empty() {
+                fast_candidates
+                    .into_iter()
+                    .min_by_key(|w| w.in_flight.load(Ordering::Relaxed))
+            } else if !eligible.is_empty() {
+                eligible
+                    .into_iter()
+                    .min_by_key(|w| w.in_flight.load(Ordering::Relaxed))
+            } else {
+                self.primary_fallback.as_ref().filter(|primary| {
+                    match primary.slow_until.try_lock() {
+                        Ok(guard) => match *guard {
+                            Some(until) => now >= until,
+                            None => true,
+                        },
+                        Err(_) => true,
+                    }
+                })
+            }
+        } else if !eligible.is_empty() {
+            eligible
+                .into_iter()
+                .min_by_key(|w| w.in_flight.load(Ordering::Relaxed))
+        } else {
+            self.primary_fallback
+                .as_ref()
+                .filter(|primary| match primary.slow_until.try_lock() {
+                    Ok(guard) => match *guard {
+                        Some(until) => now >= until,
+                        None => true,
+                    },
+                    Err(_) => true,
+                })
+        };
+
+        let worker = chosen.ok_or(StreamError::AllWorkersUnavailable)?;
+        worker.in_flight.fetch_add(1, Ordering::SeqCst);
+        Ok(UploadWorkerLease {
+            worker_id: worker.id,
+            client: worker.client.clone(),
+            home_dc: worker.home_dc,
+            counter: Arc::clone(&worker.in_flight),
+        })
+    }
+
+    pub fn mark_worker_slow(&self, worker_id: usize, duration: Duration) {
+        if let Some(worker) = self.worker_by_id(worker_id) {
+            let until = Instant::now() + duration;
+            if let Ok(mut guard) = worker.slow_until.try_lock() {
+                *guard = Some(until);
+                tracing::warn!(worker_id, ?duration, "MTProto worker marked as slow");
+            } else {
+                let slow_until = Arc::clone(&worker.slow_until);
+                tokio::spawn(async move {
+                    let mut guard = slow_until.lock().await;
+                    *guard = Some(until);
+                });
+                tracing::warn!(
+                    worker_id,
+                    ?duration,
+                    "MTProto worker marked as slow (deferred lock)"
+                );
+            }
+        }
     }
 
     pub async fn get_messages_for_worker(
@@ -781,4 +950,31 @@ async fn create_fresh_client_and_sign_in(
         }
     }
     Ok(client)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_dc_from_session_str() {
+        use base64::Engine;
+        // Version 2, DC 4
+        let raw = vec![2u8, 4u8, 0, 0, 0];
+        let encoded_url_safe = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&raw);
+        assert_eq!(extract_dc_from_session_str(&encoded_url_safe), Some(4));
+
+        let encoded_std = base64::engine::general_purpose::STANDARD.encode(&raw);
+        assert_eq!(extract_dc_from_session_str(&encoded_std), Some(4));
+
+        // Version 1, DC 2
+        let raw_dc2 = vec![1u8, 2u8];
+        let enc2 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&raw_dc2);
+        assert_eq!(extract_dc_from_session_str(&enc2), Some(2));
+
+        // Invalid / too short
+        assert_eq!(extract_dc_from_session_str(""), None);
+        let single_byte = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([1u8]);
+        assert_eq!(extract_dc_from_session_str(&single_byte), None);
+    }
 }

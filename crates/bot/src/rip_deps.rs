@@ -105,6 +105,11 @@ impl RipDeps {
         })
     }
 
+    pub fn with_worker_pool(mut self, pool: Arc<stream::StreamWorkerPool>) -> Self {
+        self.sink = self.sink.with_worker_pool(pool);
+        self
+    }
+
     pub async fn probe_mirror_health(&self) -> crate::mirror_health::HealthReport {
         use crate::mirror_health::{MirrorHealthProbe, PolicyProbe};
 

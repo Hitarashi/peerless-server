@@ -1,8 +1,9 @@
+use std::collections::HashSet;
+
 use chrono::{DateTime, Utc};
 use diesel::{OptionalExtension, QueryableByName, sql_query, sql_types::*};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use serde::Serialize;
-use std::collections::HashSet;
 
 use crate::{DbError, DbPool};
 
@@ -109,7 +110,7 @@ pub async fn create_playlist(
             .bind::<Text, _>(&name)
             .execute(&mut *connection)
             .await?;
-        Ok(find_playlist(&mut connection, telegram_id, &id).await?)
+        find_playlist(&mut connection, telegram_id, &id).await
     }
     .await;
     finish_transaction(&mut connection, result).await

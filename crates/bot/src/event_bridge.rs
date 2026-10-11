@@ -597,6 +597,7 @@ mod tests {
             job_activity: None,
             download: None,
             upload: None,
+            uploads: Vec::new(),
             codec: None,
         }
     }

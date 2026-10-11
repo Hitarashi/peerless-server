@@ -1,4 +1,9 @@
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{
+    collections::VecDeque,
+    path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use engine::orchestrator::deps::{
     AlbumDetailsCaption, BoxFuture, ChatDelivery, ChatMessageRef, Delivery, DeliveryError,
@@ -12,6 +17,83 @@ use ferogram::{
 const MAX_CAPTION_UTF16_LEN: usize = 1024;
 
 const MAX_TELEGRAM_TRACK_BYTES: u64 = 2_000_000_000;
+
+const DEFAULT_MIN_UPLOAD_SPEED_BYTES_PER_SEC: u64 = 1_000_000;
+const WATCHDOG_WARMUP: Duration = Duration::from_secs(5);
+const MAX_UPLOAD_ATTEMPTS: usize = 3;
+
+fn min_upload_speed_from_env() -> u64 {
+    std::env::var("MIN_UPLOAD_SPEED_BYTES_PER_SEC")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_MIN_UPLOAD_SPEED_BYTES_PER_SEC)
+}
+
+pub fn speed_watchdog_task(
+    handle: &TransferHandle,
+    min_bytes_per_sec: u64,
+    warmup: Duration,
+) -> tokio::task::JoinHandle<()> {
+    let handle = handle.clone();
+    let min_speed = if min_bytes_per_sec == 0 {
+        min_upload_speed_from_env()
+    } else {
+        min_bytes_per_sec
+    };
+    tokio::spawn(async move {
+        let warmup_deadline = tokio::time::Instant::now() + warmup;
+        while tokio::time::Instant::now() < warmup_deadline {
+            if handle.is_cancelled() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+
+        let mut history: VecDeque<(Instant, u64)> = VecDeque::new();
+        let mut interval = tokio::time::interval(Duration::from_millis(500));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            interval.tick().await;
+            if handle.is_cancelled() {
+                break;
+            }
+            let progress = handle.progress();
+            if progress.total > 0 && progress.done >= progress.total {
+                break;
+            }
+            let now = Instant::now();
+            history.push_back((now, progress.done));
+
+            while let Some(&(t, _)) = history.front() {
+                if now.saturating_duration_since(t) > Duration::from_secs(2) {
+                    history.pop_front();
+                } else {
+                    break;
+                }
+            }
+
+            if let Some(&(oldest_t, oldest_done)) = history.front() {
+                let dt = now.saturating_duration_since(oldest_t);
+                if dt >= Duration::from_millis(1500) {
+                    let bytes_transferred = progress.done.saturating_sub(oldest_done);
+                    let speed = (bytes_transferred as f64 / dt.as_secs_f64()) as u64;
+                    if progress.total > 2_000_000 && speed < min_speed {
+                        tracing::warn!(
+                            speed_bytes_sec = speed,
+                            min_bytes_sec = min_speed,
+                            total = progress.total,
+                            done = progress.done,
+                            "Upload speed watchdog tripped: cancelling slow transfer"
+                        );
+                        handle.cancel();
+                        break;
+                    }
+                }
+            }
+        }
+    })
+}
 
 fn clamp_plain_text(text: &str, max_utf16: usize) -> String {
     let mut curr_len = 0;
@@ -93,6 +175,7 @@ pub struct FerogramTelegramSink {
     client: Arc<ferogram::Client>,
     dump_peer: PeerRef,
     dump_peer_native_id: i64,
+    worker_pool: Option<Arc<stream::StreamWorkerPool>>,
 }
 
 fn map_invocation(error: InvocationError) -> DeliveryError {
@@ -122,6 +205,8 @@ fn map_invocation(error: InvocationError) -> DeliveryError {
 fn progress_task(
     handle: &TransferHandle,
     callback: Option<&UploadProgressCallback>,
+    worker_id: Option<usize>,
+    dc_id: Option<i32>,
 ) -> Option<tokio::task::JoinHandle<()>> {
     callback.map(|callback| {
         let callback = Arc::clone(callback);
@@ -129,7 +214,7 @@ fn progress_task(
         tokio::spawn(async move {
             loop {
                 let progress = handle.progress();
-                callback(progress.done, progress.total);
+                callback(progress.done, progress.total, worker_id, dc_id);
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
         })
@@ -153,7 +238,13 @@ impl FerogramTelegramSink {
             client,
             dump_peer: PeerRef::from(dump_peer),
             dump_peer_native_id,
+            worker_pool: None,
         })
+    }
+
+    pub fn with_worker_pool(mut self, pool: Arc<stream::StreamWorkerPool>) -> Self {
+        self.worker_pool = Some(pool);
+        self
     }
 
     fn file_ids(document: &ferogram::media::Document) -> (String, String) {
@@ -168,12 +259,11 @@ impl FerogramTelegramSink {
         )
     }
 
-    async fn upload_thumbnail(
-        &self,
+    async fn upload_thumbnail_with_client(
+        client: &ferogram::Client,
         thumb_path: &str,
     ) -> Result<ferogram::tl::enums::InputFile, DeliveryError> {
-        let uploaded = self
-            .client
+        let uploaded = client
             .upload_file(thumb_path)
             .await
             .map_err(map_invocation)?;
@@ -184,6 +274,13 @@ impl FerogramTelegramSink {
         Ok(photo.file)
     }
 
+    async fn upload_thumbnail(
+        &self,
+        thumb_path: &str,
+    ) -> Result<ferogram::tl::enums::InputFile, DeliveryError> {
+        Self::upload_thumbnail_with_client(&self.client, thumb_path).await
+    }
+
     async fn upload_zip_media(
         &self,
         file_path: &str,
@@ -191,7 +288,7 @@ impl FerogramTelegramSink {
         on_upload_progress: Option<&UploadProgressCallback>,
     ) -> Result<ferogram::tl::enums::InputMedia, DeliveryError> {
         let handle = TransferHandle::new();
-        let progress = progress_task(&handle, on_upload_progress);
+        let progress = progress_task(&handle, on_upload_progress, None, None);
         let upload_result = self.client.upload_file(file_path).handle(&handle).await;
         stop_progress(progress);
         let uploaded = upload_result.map_err(map_invocation)?;
@@ -291,59 +388,111 @@ impl Delivery for FerogramTelegramSink {
                             "track exceeds Telegram's 2000 MB per-track upload limit ({size} bytes)"
                         ))));
                     }
-                    let handle = TransferHandle::new();
-                    let progress = progress_task(&handle, on_upload_progress.as_ref());
-                    let upload_result = self.client.upload_file(&file_path).handle(&handle).await;
-                    stop_progress(progress);
-                    let uploaded = upload_result.map_err(map_invocation)?;
                     let duration = i32::try_from(duration).map_err(|error| {
                         DeliveryError::LocalIo(format!("duration out of range: {error}"))
                     })?;
-                    let mut media = uploaded.as_auto_media();
-                    if let ferogram::tl::enums::InputMedia::UploadedDocument(document) = &mut media
-                    {
-                        force_audio_document(
-                            document,
-                            std::path::Path::new(&file_path),
-                            duration,
-                            &title,
-                            &performer,
-                        );
+
+                    let min_speed = min_upload_speed_from_env();
+                    let mut last_error = None;
+
+                    for attempt in 0..MAX_UPLOAD_ATTEMPTS {
+                        let lease = self
+                            .worker_pool
+                            .as_ref()
+                            .and_then(|pool| pool.lease_upload_worker(true).ok());
+                        let worker_client =
+                            lease.as_ref().map(|l| &l.client).unwrap_or(&self.client);
+
+                        let handle = TransferHandle::new();
+                        let worker_id = lease.as_ref().map(|l| l.worker_id);
+                        let dc_id = lease.as_ref().map(|l| l.home_dc);
+                        let progress =
+                            progress_task(&handle, on_upload_progress.as_ref(), worker_id, dc_id);
+                        let watchdog = speed_watchdog_task(&handle, min_speed, WATCHDOG_WARMUP);
+                        let upload_result =
+                            worker_client.upload_file(&file_path).handle(&handle).await;
+                        stop_progress(progress);
+                        stop_progress(Some(watchdog));
+
+                        if handle.is_cancelled() {
+                            if let (Some(pool), Some(lease)) = (&self.worker_pool, &lease) {
+                                pool.mark_worker_slow(lease.worker_id, Duration::from_secs(120));
+                            }
+                            tracing::warn!(
+                                attempt = attempt + 1,
+                                max_attempts = MAX_UPLOAD_ATTEMPTS,
+                                "Track audio upload cancelled by speed watchdog; retrying with another worker"
+                            );
+                            last_error = Some(DeliveryError::Transient(
+                                "Upload cancelled due to slow speed".to_string(),
+                            ));
+                            continue;
+                        }
+
+                        let uploaded = match upload_result {
+                            Ok(res) => res,
+                            Err(err) => {
+                                let mapped = map_invocation(err);
+                                tracing::warn!(attempt = attempt + 1, %mapped, "Track audio upload failed");
+                                last_error = Some(mapped);
+                                if attempt + 1 < MAX_UPLOAD_ATTEMPTS {
+                                    continue;
+                                } else {
+                                    return Err(last_error.unwrap());
+                                }
+                            }
+                        };
+
+                        let mut media = uploaded.as_auto_media();
+                        if let ferogram::tl::enums::InputMedia::UploadedDocument(document) =
+                            &mut media
+                        {
+                            force_audio_document(
+                                document,
+                                std::path::Path::new(&file_path),
+                                duration,
+                                &title,
+                                &performer,
+                            );
+                        }
+                        let message = worker_client
+                            .send_message(
+                                self.dump_peer.clone(),
+                                prepare_media_caption(&caption_html)
+                                    .silent(true)
+                                    .copy_media(media),
+                            )
+                            .await
+                            .map_err(map_invocation)?;
+                        if message.peer_id().map(ferogram::PeerExt::bare_id)
+                            != Some(self.dump_peer_native_id)
+                        {
+                            return Err(DeliveryError::Unavailable(format!(
+                                "dump upload landed in unexpected peer (expected {}, got {:?})",
+                                self.dump_peer_native_id,
+                                message.peer_id().map(ferogram::PeerExt::bare_id)
+                            )));
+                        }
+                        let Some(document) = message.document() else {
+                            return Err(DeliveryError::UnexpectedMedia);
+                        };
+                        let is_audio = document.raw.attributes.iter().any(|attribute| {
+                            matches!(attribute, ferogram::tl::enums::DocumentAttribute::Audio(_))
+                        });
+                        if !is_audio {
+                            return Err(DeliveryError::UnexpectedMedia);
+                        }
+                        let (file_id, file_unique_id) = Self::file_ids(&document);
+                        return Ok(DumpPublication {
+                            message: DumpMessageRef::new(i64::from(message.id())),
+                            file_id,
+                            file_unique_id,
+                        });
                     }
-                    let message = self
-                        .client
-                        .send_message(
-                            self.dump_peer.clone(),
-                            prepare_media_caption(&caption_html)
-                                .silent(true)
-                                .copy_media(media),
-                        )
-                        .await
-                        .map_err(map_invocation)?;
-                    if message.peer_id().map(ferogram::PeerExt::bare_id)
-                        != Some(self.dump_peer_native_id)
-                    {
-                        return Err(DeliveryError::Unavailable(format!(
-                            "dump upload landed in unexpected peer (expected {}, got {:?})",
-                            self.dump_peer_native_id,
-                            message.peer_id().map(ferogram::PeerExt::bare_id)
-                        )));
-                    }
-                    let Some(document) = message.document() else {
-                        return Err(DeliveryError::UnexpectedMedia);
-                    };
-                    let is_audio = document.raw.attributes.iter().any(|attribute| {
-                        matches!(attribute, ferogram::tl::enums::DocumentAttribute::Audio(_))
-                    });
-                    if !is_audio {
-                        return Err(DeliveryError::UnexpectedMedia);
-                    }
-                    let (file_id, file_unique_id) = Self::file_ids(&document);
-                    Ok(DumpPublication {
-                        message: DumpMessageRef::new(i64::from(message.id())),
-                        file_id,
-                        file_unique_id,
-                    })
+
+                    Err(last_error.unwrap_or_else(|| {
+                        DeliveryError::Transient("All worker upload attempts failed".to_string())
+                    }))
                 }
                 DumpPublish::ZipDocument {
                     file_path,
@@ -352,32 +501,99 @@ impl Delivery for FerogramTelegramSink {
                     on_upload_progress,
                 } => {
                     let caption_html = render_zip_caption(&caption);
-                    let media = self
-                        .upload_zip_media(
-                            &file_path,
-                            thumb_path.as_deref(),
-                            on_upload_progress.as_ref(),
-                        )
-                        .await?;
-                    let message = self
-                        .client
-                        .send_message(
-                            self.dump_peer.clone(),
-                            prepare_media_caption(&caption_html)
-                                .silent(true)
-                                .copy_media(media),
-                        )
-                        .await
-                        .map_err(map_invocation)?;
-                    let Some(document) = message.document() else {
-                        return Err(DeliveryError::UnexpectedMedia);
-                    };
-                    let (file_id, file_unique_id) = Self::file_ids(&document);
-                    Ok(DumpPublication {
-                        message: DumpMessageRef::new(i64::from(message.id())),
-                        file_id,
-                        file_unique_id,
-                    })
+                    let min_speed = min_upload_speed_from_env();
+                    let mut last_error = None;
+
+                    for attempt in 0..MAX_UPLOAD_ATTEMPTS {
+                        let lease = self
+                            .worker_pool
+                            .as_ref()
+                            .and_then(|pool| pool.lease_upload_worker(false).ok());
+                        let worker_client =
+                            lease.as_ref().map(|l| &l.client).unwrap_or(&self.client);
+
+                        let handle = TransferHandle::new();
+                        let worker_id = lease.as_ref().map(|l| l.worker_id);
+                        let dc_id = lease.as_ref().map(|l| l.home_dc);
+                        let progress =
+                            progress_task(&handle, on_upload_progress.as_ref(), worker_id, dc_id);
+                        let watchdog = speed_watchdog_task(&handle, min_speed, WATCHDOG_WARMUP);
+                        let upload_result =
+                            worker_client.upload_file(&file_path).handle(&handle).await;
+                        stop_progress(progress);
+                        stop_progress(Some(watchdog));
+
+                        if handle.is_cancelled() {
+                            if let (Some(pool), Some(lease)) = (&self.worker_pool, &lease) {
+                                pool.mark_worker_slow(lease.worker_id, Duration::from_secs(120));
+                            }
+                            tracing::warn!(
+                                attempt = attempt + 1,
+                                max_attempts = MAX_UPLOAD_ATTEMPTS,
+                                "ZIP document upload cancelled by speed watchdog; retrying with another worker"
+                            );
+                            last_error = Some(DeliveryError::Transient(
+                                "Upload cancelled due to slow speed".to_string(),
+                            ));
+                            continue;
+                        }
+
+                        let uploaded = match upload_result {
+                            Ok(res) => res,
+                            Err(err) => {
+                                let mapped = map_invocation(err);
+                                tracing::warn!(attempt = attempt + 1, %mapped, "ZIP upload failed");
+                                last_error = Some(mapped);
+                                if attempt + 1 < MAX_UPLOAD_ATTEMPTS {
+                                    continue;
+                                } else {
+                                    return Err(last_error.unwrap());
+                                }
+                            }
+                        };
+
+                        let mut media = uploaded.as_document_media();
+                        if let Some(thumb_path) = thumb_path.as_deref() {
+                            match Self::upload_thumbnail_with_client(worker_client, thumb_path)
+                                .await
+                            {
+                                Ok(thumb) => {
+                                    if let ferogram::tl::enums::InputMedia::UploadedDocument(
+                                        document,
+                                    ) = &mut media
+                                    {
+                                        document.thumb = Some(thumb);
+                                    }
+                                }
+                                Err(error) => {
+                                    tracing::warn!(%error, "ZIP thumbnail upload failed; sending without");
+                                }
+                            }
+                        }
+
+                        let message = worker_client
+                            .send_message(
+                                self.dump_peer.clone(),
+                                prepare_media_caption(&caption_html)
+                                    .silent(true)
+                                    .copy_media(media),
+                            )
+                            .await
+                            .map_err(map_invocation)?;
+                        let Some(document) = message.document() else {
+                            return Err(DeliveryError::UnexpectedMedia);
+                        };
+                        let (file_id, file_unique_id) = Self::file_ids(&document);
+                        return Ok(DumpPublication {
+                            message: DumpMessageRef::new(i64::from(message.id())),
+                            file_id,
+                            file_unique_id,
+                        });
+                    }
+
+                    Err(last_error.unwrap_or_else(|| {
+                        DeliveryError::Transient("All worker upload attempts failed".to_string())
+                    }))
                 }
             }
         })
@@ -524,7 +740,7 @@ impl Delivery for FerogramTelegramSink {
                 .ok_or(DeliveryError::UnexpectedMedia)?;
             let document = message.document().ok_or(DeliveryError::UnexpectedMedia)?;
             let handle = TransferHandle::new();
-            let progress_task = progress_task(&handle, progress);
+            let progress_task = progress_task(&handle, progress, None, None);
             let download_result = self
                 .client
                 .download_file(&document, destination)
@@ -783,5 +999,14 @@ mod tests {
         assert_eq!(audio_mime_for(std::path::Path::new("a.mp3")), "audio/mpeg");
 
         assert!(audio_mime_for(std::path::Path::new("a.bin")).starts_with("audio/"));
+    }
+
+    #[tokio::test]
+    async fn speed_watchdog_exits_cleanly_on_cancellation() {
+        let handle = TransferHandle::new();
+        handle.cancel();
+        let watchdog = speed_watchdog_task(&handle, 1_000_000, Duration::from_millis(50));
+        let res = tokio::time::timeout(Duration::from_millis(300), watchdog).await;
+        assert!(res.is_ok());
     }
 }

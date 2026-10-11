@@ -364,6 +364,8 @@ mod tests {
                 completed: 1_048_576,
                 total: Some(2_097_152),
             },
+            worker_id: None,
+            dc_id: None,
         };
         let mut contexts = JobContexts::new();
         contexts.remember(&job);
@@ -379,6 +381,7 @@ mod tests {
             job_activity: Some(TaskActivity::ProcessingNext),
             download: Some(download.clone()),
             upload: Some(upload.clone()),
+            uploads: vec![upload.clone()],
             codec: None,
         });
 
@@ -404,6 +407,8 @@ mod tests {
                 completed: 4 * 1_048_576,
                 total: None,
             },
+            worker_id: None,
+            dc_id: None,
         };
         contexts.remember_progress(&RipTaskProgress {
             job_id: job.id.clone(),
@@ -417,6 +422,7 @@ mod tests {
             job_activity: None,
             download: None,
             upload: Some(upload.clone()),
+            uploads: vec![upload.clone()],
             codec: None,
         });
 
@@ -438,6 +444,8 @@ mod tests {
                 completed: 1_048_576,
                 total: Some(2_097_152),
             },
+            worker_id: None,
+            dc_id: None,
         };
         contexts.remember_progress(&RipTaskProgress {
             job_id: job.id.clone(),
@@ -451,6 +459,7 @@ mod tests {
             job_activity: None,
             download: None,
             upload: Some(upload.clone()),
+            uploads: vec![upload.clone()],
             codec: None,
         });
 

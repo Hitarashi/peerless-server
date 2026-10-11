@@ -72,14 +72,33 @@ fn same_progress_phase(
                 previous.stage == current.stage
                     && previous.title == current.title
                     && previous.artist == current.artist
+                    && previous.worker_id == current.worker_id
+                    && previous.dc_id == current.dc_id
             }
             (None, None) => true,
             _ => false,
         }
     }
 
+    fn same_uploads_phase(
+        previous: &[server::rip_tasks::RipTaskUploadLane],
+        current: &[server::rip_tasks::RipTaskUploadLane],
+    ) -> bool {
+        if previous.len() != current.len() {
+            return false;
+        }
+        previous.iter().zip(current.iter()).all(|(p, c)| {
+            p.stage == c.stage
+                && p.title == c.title
+                && p.artist == c.artist
+                && p.worker_id == c.worker_id
+                && p.dc_id == c.dc_id
+        })
+    }
+
     same_download_phase(&previous.download, &current.download)
         && same_upload_phase(&previous.upload, &current.upload)
+        && same_uploads_phase(&previous.uploads, &current.uploads)
         && previous.job_stage == current.job_stage
         && previous.current_track_title == current.current_track_title
         && previous.current_track_artist == current.current_track_artist
@@ -267,6 +286,17 @@ async fn main() -> Result<()> {
     let me = client.get_me().await.context("get bot identity")?;
     info!(username = ?me.username, bot_id = me.id, dump_channel = env.dump_channel_id, "Bot started successfully");
 
+    let session_store = db::WorkerSessionStore::from_env(database.clone());
+    let worker_pool = stream::StreamWorkerPool::new(
+        Some(client.clone()),
+        &env.stream_worker_bot_tokens,
+        env.api_id,
+        &env.api_hash,
+        Some(session_store),
+    )
+    .await
+    .context("initialize stream worker pool")?;
+
     let settings_store = Arc::new(db::SettingsStore::new(database.clone()));
     let rip_deps = Arc::new(
         bot::rip_deps::RipDeps::new(
@@ -278,23 +308,13 @@ async fn main() -> Result<()> {
         )
         .await
         .map_err(|error| anyhow!(error))
-        .context("initialize rip dependencies")?,
+        .context("initialize rip dependencies")?
+        .with_worker_pool(worker_pool.clone()),
     );
 
     let orchestrator = Arc::new(engine::orchestrator::RipOrchestrator::new(
         bot::rip_deps::orchestrator_config(),
     ));
-
-    let session_store = db::WorkerSessionStore::from_env(database.clone());
-    let worker_pool = stream::StreamWorkerPool::new(
-        Some(client.clone()),
-        &env.stream_worker_bot_tokens,
-        env.api_id,
-        &env.api_hash,
-        Some(session_store),
-    )
-    .await
-    .context("initialize stream worker pool")?;
 
     let stream_engine = Arc::new(stream::StreamEngine::new(
         worker_pool,
@@ -509,6 +529,7 @@ async fn main() -> Result<()> {
                     ),
                     download: None,
                     upload: None,
+                    uploads: Vec::new(),
                     percent: Some(0.0),
                     current_track_title: None,
                     current_track_artist: None,
@@ -583,7 +604,7 @@ async fn main() -> Result<()> {
                         }
                     });
 
-                    let upload = progress.upload.as_ref().map(|upload_lane| {
+                    let map_upload_lane = |upload_lane: &UploadLane| {
                         let byte_progress = upload_lane.byte_progress();
                         let (title, artist, artwork_url, track_index, total_tracks, codec) =
                             match upload_lane {
@@ -622,8 +643,14 @@ async fn main() -> Result<()> {
                             codec,
                             track_index,
                             total_tracks,
+                            worker_id: upload_lane.worker_id(),
+                            dc_id: upload_lane.dc_id(),
                         }
-                    });
+                    };
+
+                    let uploads: Vec<server::rip_tasks::RipTaskUploadLane> =
+                        progress.uploads.iter().map(map_upload_lane).collect();
+                    let upload = uploads.first().cloned();
 
                     let is_archive = progress
                         .upload
@@ -697,6 +724,7 @@ async fn main() -> Result<()> {
                         job_stage: progress.job_activity.clone().map(Into::into),
                         download,
                         upload,
+                        uploads,
                         percent: overall_percent,
                         current_track_title,
                         current_track_artist,
@@ -912,6 +940,7 @@ mod tests {
                 total_tracks: None,
             }),
             upload: None,
+            uploads: Vec::new(),
             percent: Some(bytes_done as f32),
             current_track_title: Some("Track".to_owned()),
             current_track_artist: Some("Artist".to_owned()),

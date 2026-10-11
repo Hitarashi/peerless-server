@@ -31,6 +31,8 @@ pub struct OrchestratorConfig {
     pub storage_retry: StorageRetryPolicy,
     /// Retries for publishing to the dump channel.
     pub upload_retry: RetryConfig,
+    /// Maximum concurrent track uploads to dump channel.
+    pub upload_concurrency: usize,
 }
 
 impl OrchestratorConfig {
@@ -38,15 +40,21 @@ impl OrchestratorConfig {
         Self {
             storage_retry: StorageRetryPolicy::test(),
             upload_retry: RetryConfig::new(0, 0),
+            upload_concurrency: 1,
         }
     }
 }
 
 impl Default for OrchestratorConfig {
     fn default() -> Self {
+        let concurrency = std::env::var("MAX_CONCURRENT_UPLOADS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(4);
         Self {
             storage_retry: StorageRetryPolicy::default(),
             upload_retry: RetryConfig::DEFAULT,
+            upload_concurrency: concurrency,
         }
     }
 }

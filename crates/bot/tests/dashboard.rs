@@ -99,6 +99,8 @@ fn header_renders_both_lane_lines_independently() {
                 completed: 0,
                 total: None,
             },
+            worker_id: None,
+            dc_id: None,
         }),
         jobs: vec![job(0, true)],
     };
@@ -138,6 +140,8 @@ fn upload_only_header_does_not_render_a_downloading_lane() {
                 completed: 4 * 1_048_576,
                 total: None,
             },
+            worker_id: None,
+            dc_id: None,
         }),
         jobs: vec![job(0, true)],
         ..DashboardSnapshot::default()

@@ -182,6 +182,16 @@ pub(super) async fn finalize_job<D>(
 where
     D: AlbumCache + Delivery + ProviderDeps,
 {
+    while ctx
+        .pending_uploads
+        .load(std::sync::atomic::Ordering::SeqCst)
+        > 0
+    {
+        tokio::select! {
+            _ = ctx.uploads_finished.notified() => {}
+            _ = job_controller.cancelled() => break,
+        }
+    }
     if let Some(error) = fatal_error(&ctx) {
         return Err(error);
     }
@@ -453,71 +463,71 @@ where
             .unwrap_or_else(|| default_codec.to_owned());
         let album_codec = codec.parse::<Codec>().unwrap_or(default_enum_codec);
 
-        if complete && !(options.is_force && options.is_admin) {
-            if let Ok(existing_rows) = deps.find_albums(&ctx.zip_album_id, Some(album_codec)).await
-            {
-                let matches_hash = state
-                    .generation_hash
-                    .as_deref()
-                    .map(|hash| existing_rows.iter().all(|r| r.generation_hash == hash))
-                    .unwrap_or(true);
-                let total_parts = existing_rows
-                    .first()
-                    .map(|r| r.total_parts.max(1) as usize)
-                    .unwrap_or(0);
-                let complete_parts = !existing_rows.is_empty()
-                    && existing_rows.len() == total_parts
-                    && (1..=total_parts)
-                        .zip(&existing_rows)
-                        .all(|(n, r)| r.part_index as usize == n);
-                if matches_hash && complete_parts {
-                    tracing::info!(
-                        album_id = %ctx.zip_album_id,
-                        codec = %album_codec.as_str(),
-                        "Album ZIP already exists in database cache; cancelling upload and delivering existing ZIP"
-                    );
-                    if ctx.zip_deliver && !options.is_cache_only {
-                        let (delivered, size) = deliver_cached_zip_rows(
-                            deps,
-                            shared,
-                            ctx,
-                            state.rendition,
-                            &existing_rows,
-                            job_controller,
-                        )
-                        .await?;
-                        if delivered > 0 {
-                            let codec = existing_rows[0].codec.as_str().to_owned();
-                            let info = ZipDeliveryInfo {
-                                album: ctx.zip_album.clone(),
-                                artist: ctx.zip_artist.clone(),
-                                release_year: ctx.zip_release_date.chars().take(4).collect(),
-                                total_tracks: expected_tracks,
-                                delivered_tracks: if state.rendition == Rendition::Primary {
-                                    Some(expected_tracks)
-                                } else {
-                                    ctx.zip_reuse_atmos_track_count
-                                },
-                                total_parts: delivered,
-                                size_bytes: size,
-                                is_partial: false,
-                                album_id: ctx.zip_album_id.clone(),
-                                album_url: ctx.zip_album_url.clone(),
-                                artwork_url: ctx.zip_artwork_url.clone(),
-                                genre: ctx.zip_genre.clone(),
-                                record_label: ctx.zip_record_label.clone(),
-                                copyright: ctx.zip_copyright.clone(),
-                                photo_delivered: false,
-                                codec: Some(codec),
-                            };
-                            if first_delivery.is_none() {
-                                first_delivery = Some(info.clone());
-                            }
-                            ctx.zip_delivery_infos.lock().unwrap().push(info);
+        if complete
+            && !(options.is_force && options.is_admin)
+            && let Ok(existing_rows) = deps.find_albums(&ctx.zip_album_id, Some(album_codec)).await
+        {
+            let matches_hash = state
+                .generation_hash
+                .as_deref()
+                .map(|hash| existing_rows.iter().all(|r| r.generation_hash == hash))
+                .unwrap_or(true);
+            let total_parts = existing_rows
+                .first()
+                .map(|r| r.total_parts.max(1) as usize)
+                .unwrap_or(0);
+            let complete_parts = !existing_rows.is_empty()
+                && existing_rows.len() == total_parts
+                && (1..=total_parts)
+                    .zip(&existing_rows)
+                    .all(|(n, r)| r.part_index as usize == n);
+            if matches_hash && complete_parts {
+                tracing::info!(
+                    album_id = %ctx.zip_album_id,
+                    codec = %album_codec.as_str(),
+                    "Album ZIP already exists in database cache; cancelling upload and delivering existing ZIP"
+                );
+                if ctx.zip_deliver && !options.is_cache_only {
+                    let (delivered, size) = deliver_cached_zip_rows(
+                        deps,
+                        shared,
+                        ctx,
+                        state.rendition,
+                        &existing_rows,
+                        job_controller,
+                    )
+                    .await?;
+                    if delivered > 0 {
+                        let codec = existing_rows[0].codec.as_str().to_owned();
+                        let info = ZipDeliveryInfo {
+                            album: ctx.zip_album.clone(),
+                            artist: ctx.zip_artist.clone(),
+                            release_year: ctx.zip_release_date.chars().take(4).collect(),
+                            total_tracks: expected_tracks,
+                            delivered_tracks: if state.rendition == Rendition::Primary {
+                                Some(expected_tracks)
+                            } else {
+                                ctx.zip_reuse_atmos_track_count
+                            },
+                            total_parts: delivered,
+                            size_bytes: size,
+                            is_partial: false,
+                            album_id: ctx.zip_album_id.clone(),
+                            album_url: ctx.zip_album_url.clone(),
+                            artwork_url: ctx.zip_artwork_url.clone(),
+                            genre: ctx.zip_genre.clone(),
+                            record_label: ctx.zip_record_label.clone(),
+                            copyright: ctx.zip_copyright.clone(),
+                            photo_delivered: false,
+                            codec: Some(codec),
+                        };
+                        if first_delivery.is_none() {
+                            first_delivery = Some(info.clone());
                         }
+                        ctx.zip_delivery_infos.lock().unwrap().push(info);
                     }
-                    continue;
                 }
+                continue;
             }
         }
 
@@ -597,31 +607,37 @@ where
                 return Ok(first_delivery);
             }
             bus.set_codec(shared, Some(album_codec.as_str().to_string()));
+            let build_archive_key =
+                format!("archive_build_{:?}_{}", state.rendition, plan.part_index);
+            let build_archive_key_clone = build_archive_key.clone();
             let build = tokio::task::spawn_blocking(move || {
-                bus_clone.set_upload(
+                bus_clone.upsert_upload(
                     &shared_clone,
-                    Some(UploadLane::ArchiveBuild {
+                    &build_archive_key_clone,
+                    UploadLane::ArchiveBuild {
                         archive: title_clone.clone(),
                         progress: ByteProgress {
                             completed: 0,
                             total: None,
                         },
-                    }),
+                    },
                 );
                 bus_clone.emit_progress(&shared_clone);
                 let progress_bus = bus_clone.clone();
                 let progress_shared = Arc::clone(&shared_clone);
                 let progress_title = title_clone.clone();
+                let progress_key = build_archive_key_clone.clone();
                 let on_progress = move |uploaded: u64, total: u64| {
-                    progress_bus.set_upload(
+                    progress_bus.upsert_upload(
                         &progress_shared,
-                        Some(UploadLane::ArchiveBuild {
+                        &progress_key,
+                        UploadLane::ArchiveBuild {
                             archive: progress_title.clone(),
                             progress: ByteProgress {
                                 completed: uploaded,
                                 total: Some(total),
                             },
-                        }),
+                        },
                     );
                     progress_bus.emit_progress(&progress_shared);
                 };
@@ -631,7 +647,7 @@ where
                     Some(&on_progress),
                     Some(&cancel),
                 );
-                bus_clone.set_upload(&shared_clone, None);
+                bus_clone.remove_upload(&shared_clone, &build_archive_key_clone);
                 bus_clone.emit_progress(&shared_clone);
                 result
             })
@@ -683,34 +699,43 @@ where
                 let _ = tokio::fs::remove_file(&output).await;
                 return Ok(first_delivery);
             }
+            let upload_archive_key =
+                format!("archive_upload_{:?}_{}", state.rendition, plan.part_index);
             let on_upload: UploadProgressCallback = {
                 let shared = Arc::clone(shared);
                 let bus = bus.clone();
                 let title = archive_name.as_str().to_string();
-                Arc::new(move |uploaded, total| {
-                    bus.set_upload(
+                let key = upload_archive_key.clone();
+                Arc::new(move |uploaded, total, worker_id, dc_id| {
+                    bus.upsert_upload(
                         &shared,
-                        Some(UploadLane::ArchiveUpload {
+                        &key,
+                        UploadLane::ArchiveUpload {
                             archive: title.clone(),
                             progress: ByteProgress {
                                 completed: uploaded,
-                                total: Some(total),
+                                total: (total > 0).then_some(total),
                             },
-                        }),
+                            worker_id,
+                            dc_id,
+                        },
                     );
                     bus.emit_progress(&shared);
                 })
             };
             bus.set_codec(shared, Some(album_codec.as_str().to_string()));
-            bus.set_upload(
+            bus.upsert_upload(
                 shared,
-                Some(UploadLane::ArchiveUpload {
+                &upload_archive_key,
+                UploadLane::ArchiveUpload {
                     archive: archive_name.as_str().to_string(),
                     progress: ByteProgress {
                         completed: 0,
                         total: None,
                     },
-                }),
+                    worker_id: None,
+                    dc_id: None,
+                },
             );
             bus.emit_progress(shared);
             let upload: Result<ZipSendOutcome, DeliveryError> = if complete {
@@ -722,7 +747,7 @@ where
                         on_upload_progress: Some(Arc::clone(&on_upload)),
                     }) => result.map(ZipSendOutcome::Published),
                     _ = job_controller.cancelled() => {
-                        bus.set_upload(shared, None);
+                        bus.remove_upload(shared, &upload_archive_key);
                         bus.emit_progress(shared);
                         return Ok(first_delivery);
                     }
@@ -737,7 +762,7 @@ where
                         on_upload_progress: Some(Arc::clone(&on_upload)),
                     }) => result,
                     _ = job_controller.cancelled() => {
-                        bus.set_upload(shared, None);
+                        bus.remove_upload(shared, &upload_archive_key);
                         bus.emit_progress(shared);
                         return Ok(first_delivery);
                     }
@@ -754,7 +779,7 @@ where
                     Err(error) => Err(error),
                 }
             };
-            bus.set_upload(shared, None);
+            bus.remove_upload(shared, &upload_archive_key);
             bus.emit_progress(shared);
             match upload {
                 Ok(ZipSendOutcome::Published(upload)) if complete => {

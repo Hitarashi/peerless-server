@@ -990,6 +990,11 @@ impl RipOrchestrator {
             failed_tracks: Arc::new(Mutex::new(Vec::new())),
             first_delivered_msg_id: Arc::new(Mutex::new(None)),
             zip_delivery_infos: Arc::new(Mutex::new(Vec::new())),
+            pending_uploads: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            uploads_finished: Arc::new(tokio::sync::Notify::new()),
+            delivery_lock: Arc::new(tokio::sync::Mutex::new(())),
+            next_deliver_index: Arc::new(Mutex::new(1)),
+            pending_deliveries: Arc::new(Mutex::new(HashMap::new())),
         });
 
         let rip_job_dir =

@@ -299,6 +299,7 @@ async fn cancel_during_active_rip_emits_exactly_one_cancelled_terminal() {
     let orch = Arc::new(RipOrchestrator::new(OrchestratorConfig {
         storage_retry: StorageRetryPolicy::test(),
         upload_retry: RetryConfig::new(0, 0),
+        upload_concurrency: 1,
     }));
     let terminals = terminal_recorder(&orch);
     let deps = Arc::new(RaceDeps {
@@ -329,6 +330,7 @@ async fn settled_failed_job_is_no_longer_cancellable() {
     let orch = Arc::new(RipOrchestrator::new(OrchestratorConfig {
         storage_retry: StorageRetryPolicy::test(),
         upload_retry: RetryConfig::new(0, 0),
+        upload_concurrency: 1,
     }));
     let terminals = terminal_recorder(&orch);
     let deps = Arc::new(RaceDeps {
@@ -367,6 +369,7 @@ fn unresolved_progress_has_zero_total_tracks() {
         job_activity: None,
         download: None,
         upload: None,
+        uploads: Vec::new(),
         codec: None,
     };
     assert_eq!(progress.total_tracks, 0);
