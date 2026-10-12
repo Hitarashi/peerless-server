@@ -53,6 +53,10 @@ pub fn speed_watchdog_task(
         let mut interval = tokio::time::interval(Duration::from_millis(500));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+        const WINDOW_DURATION: Duration = Duration::from_secs(10);
+        const MIN_SAMPLE_DURATION: Duration = Duration::from_secs(8);
+        const COMPLETION_GRACE_BYTES: u64 = 5 * 1024 * 1024; // 5 MB
+
         loop {
             interval.tick().await;
             if handle.is_cancelled() {
@@ -62,11 +66,23 @@ pub fn speed_watchdog_task(
             if progress.total > 0 && progress.done >= progress.total {
                 break;
             }
+
+            // Do not trip the speed watchdog near completion (>= 95% done or <= 5 MB remaining).
+            // A brief pause waiting for the last chunk's ACK or server processing should never
+            // cancel an entire multi-hundred megabyte upload that is practically finished.
+            if progress.total > 0 {
+                let remaining = progress.total.saturating_sub(progress.done);
+                let pct = (progress.done as f64) / (progress.total as f64);
+                if remaining <= COMPLETION_GRACE_BYTES || pct >= 0.95 {
+                    continue;
+                }
+            }
+
             let now = Instant::now();
             history.push_back((now, progress.done));
 
             while let Some(&(t, _)) = history.front() {
-                if now.saturating_duration_since(t) > Duration::from_secs(2) {
+                if now.saturating_duration_since(t) > WINDOW_DURATION {
                     history.pop_front();
                 } else {
                     break;
@@ -75,7 +91,7 @@ pub fn speed_watchdog_task(
 
             if let Some(&(oldest_t, oldest_done)) = history.front() {
                 let dt = now.saturating_duration_since(oldest_t);
-                if dt >= Duration::from_millis(1500) {
+                if dt >= MIN_SAMPLE_DURATION {
                     let bytes_transferred = progress.done.saturating_sub(oldest_done);
                     let speed = (bytes_transferred as f64 / dt.as_secs_f64()) as u64;
                     if progress.total > 2_000_000 && speed < min_speed {
@@ -416,7 +432,7 @@ impl Delivery for FerogramTelegramSink {
                         } else {
                             self.worker_pool
                                 .as_ref()
-                                .and_then(|pool| pool.lease_upload_worker(true).ok())
+                                .and_then(|pool| pool.lease_upload_worker().ok())
                         };
                         let worker_client =
                             lease.as_ref().map(|l| &l.client).unwrap_or(&self.client);
@@ -547,7 +563,7 @@ impl Delivery for FerogramTelegramSink {
                         } else {
                             self.worker_pool
                                 .as_ref()
-                                .and_then(|pool| pool.lease_upload_worker(false).ok())
+                                .and_then(|pool| pool.lease_upload_worker().ok())
                         };
                         let worker_client =
                             lease.as_ref().map(|l| &l.client).unwrap_or(&self.client);

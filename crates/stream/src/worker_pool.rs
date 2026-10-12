@@ -370,10 +370,7 @@ impl StreamWorkerPool {
         })
     }
 
-    pub fn lease_upload_worker(
-        &self,
-        prefer_fast_dc: bool,
-    ) -> Result<UploadWorkerLease, StreamError> {
+    pub fn lease_upload_worker(&self) -> Result<UploadWorkerLease, StreamError> {
         let now = Instant::now();
         let eligible: Vec<&WorkerInstance> = self
             .workers
@@ -392,33 +389,7 @@ impl StreamWorkerPool {
             })
             .collect();
 
-        let chosen = if prefer_fast_dc {
-            let fast_candidates: Vec<&WorkerInstance> = eligible
-                .iter()
-                .copied()
-                .filter(|w| w.home_dc != 5 && w.home_dc > 0)
-                .collect();
-
-            if !fast_candidates.is_empty() {
-                fast_candidates
-                    .into_iter()
-                    .min_by_key(|w| w.in_flight.load(Ordering::Relaxed))
-            } else if !eligible.is_empty() {
-                eligible
-                    .into_iter()
-                    .min_by_key(|w| w.in_flight.load(Ordering::Relaxed))
-            } else {
-                self.primary_fallback.as_ref().filter(|primary| {
-                    match primary.slow_until.try_lock() {
-                        Ok(guard) => match *guard {
-                            Some(until) => now >= until,
-                            None => true,
-                        },
-                        Err(_) => true,
-                    }
-                })
-            }
-        } else if !eligible.is_empty() {
+        let chosen = if !eligible.is_empty() {
             eligible
                 .into_iter()
                 .min_by_key(|w| w.in_flight.load(Ordering::Relaxed))
