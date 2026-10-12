@@ -20,7 +20,7 @@ license = "MIT"
 [workspace.dependencies]
 ferogram = {
     git = "https://github.com/sayeed205/ferogram",
-    rev = "b8d1e1f934199dd74dbcd48a26aea52c45fd52eb",
+    rev = "e2a42f682eb2ef7cbbe43a7ac6d811bb10f6435f",
     features = ["html"],
 }
 diesel = { version = "2", features = ["postgres", "chrono", "serde_json"] }
