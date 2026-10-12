@@ -207,6 +207,10 @@ impl StreamWorkerPool {
                         .api_id(api_id)
                         .api_hash(api_hash)
                         .catch_up(false)
+                        .experimental_features(ferogram::ExperimentalFeatures {
+                            allow_zero_hash: true,
+                            ..Default::default()
+                        })
                         .session_string(session_data)
                         .connect()
                         .await;
@@ -310,6 +314,21 @@ impl StreamWorkerPool {
 
     pub fn available_worker_count(&self) -> usize {
         self.circuit_breaker.healthy_worker_count()
+    }
+
+    pub async fn warm_channel_peer(&self, peer: &PeerRef) {
+        for worker in &self.workers {
+            if let Err(error) = peer.clone().resolve(&worker.client).await {
+                tracing::warn!(
+                    worker_id = worker.id,
+                    %error,
+                    "Failed to pre-resolve channel peer for worker"
+                );
+            }
+        }
+        if let Some(ref primary) = self.primary_fallback {
+            let _ = peer.clone().resolve(&primary.client).await;
+        }
     }
 
     pub fn metrics(&self) -> &Arc<StreamMetrics> {
@@ -931,6 +950,10 @@ async fn create_fresh_client_and_sign_in(
         .api_id(api_id)
         .api_hash(api_hash)
         .catch_up(false)
+        .experimental_features(ferogram::ExperimentalFeatures {
+            allow_zero_hash: true,
+            ..Default::default()
+        })
         .session_string("")
         .connect()
         .await?;

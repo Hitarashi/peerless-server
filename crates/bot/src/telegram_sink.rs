@@ -180,25 +180,30 @@ pub struct FerogramTelegramSink {
 
 fn map_invocation(error: InvocationError) -> DeliveryError {
     let detail = error.to_string();
-    match error.kind() {
-        ErrorKind::FloodWait(_)
-        | ErrorKind::Network
-        | ErrorKind::Migration(_)
-        | ErrorKind::Transfer => DeliveryError::Transient(detail),
+    match error {
+        InvocationError::StaleHash | InvocationError::PeerNotCached(_) => {
+            DeliveryError::Transient(detail)
+        }
+        error => match error.kind() {
+            ErrorKind::FloodWait(_)
+            | ErrorKind::Network
+            | ErrorKind::Migration(_)
+            | ErrorKind::Transfer => DeliveryError::Transient(detail),
 
-        ErrorKind::FileReferenceExpired => DeliveryError::Transient(detail),
-        ErrorKind::Rpc { code, .. } if code >= 500 => DeliveryError::Transient(detail),
-        ErrorKind::Rpc { name, .. } if name == "ENTITY_BOUNDS_INVALID" => {
-            DeliveryError::Rejected(DeliveryRejection::EntityBoundsInvalid)
-        }
-        ErrorKind::Rpc { name, .. } if name == "MEDIA_CAPTION_TOO_LONG" => {
-            DeliveryError::Rejected(DeliveryRejection::CaptionTooLong)
-        }
-        ErrorKind::Rpc { .. } => DeliveryError::Rejected(DeliveryRejection::Other(detail)),
-        ErrorKind::Auth | ErrorKind::Cancelled | ErrorKind::Other => {
-            DeliveryError::Unavailable(detail)
-        }
-        _ => DeliveryError::Unavailable(detail),
+            ErrorKind::FileReferenceExpired => DeliveryError::Transient(detail),
+            ErrorKind::Rpc { code, .. } if code >= 500 => DeliveryError::Transient(detail),
+            ErrorKind::Rpc { name, .. } if name == "ENTITY_BOUNDS_INVALID" => {
+                DeliveryError::Rejected(DeliveryRejection::EntityBoundsInvalid)
+            }
+            ErrorKind::Rpc { name, .. } if name == "MEDIA_CAPTION_TOO_LONG" => {
+                DeliveryError::Rejected(DeliveryRejection::CaptionTooLong)
+            }
+            ErrorKind::Rpc { .. } => DeliveryError::Rejected(DeliveryRejection::Other(detail)),
+            ErrorKind::Auth | ErrorKind::Cancelled | ErrorKind::Other => {
+                DeliveryError::Unavailable(detail)
+            }
+            _ => DeliveryError::Unavailable(detail),
+        },
     }
 }
 
@@ -232,11 +237,21 @@ impl FerogramTelegramSink {
         client: Arc<ferogram::Client>,
         dump_peer: PeerRef,
     ) -> Result<Self, DeliveryError> {
-        let dump_peer = dump_peer.resolve(&client).await.map_err(map_invocation)?;
-        let dump_peer_native_id = ferogram::PeerExt::bare_id(&dump_peer);
+        let resolved = dump_peer
+            .clone()
+            .resolve(&client)
+            .await
+            .map_err(map_invocation)?;
+        let dump_peer_native_id = ferogram::PeerExt::bare_id(&resolved);
+        let resolvable_dump_peer = match &resolved {
+            ferogram::tl::enums::Peer::Channel(c) => {
+                PeerRef::from(-1_000_000_000_000 - c.channel_id)
+            }
+            _ => dump_peer,
+        };
         Ok(Self {
             client,
-            dump_peer: PeerRef::from(dump_peer),
+            dump_peer: resolvable_dump_peer,
             dump_peer_native_id,
             worker_pool: None,
         })
@@ -396,10 +411,13 @@ impl Delivery for FerogramTelegramSink {
                     let mut last_error = None;
 
                     for attempt in 0..MAX_UPLOAD_ATTEMPTS {
-                        let lease = self
-                            .worker_pool
-                            .as_ref()
-                            .and_then(|pool| pool.lease_upload_worker(true).ok());
+                        let lease = if attempt == MAX_UPLOAD_ATTEMPTS - 1 {
+                            None
+                        } else {
+                            self.worker_pool
+                                .as_ref()
+                                .and_then(|pool| pool.lease_upload_worker(true).ok())
+                        };
                         let worker_client =
                             lease.as_ref().map(|l| &l.client).unwrap_or(&self.client);
 
@@ -455,15 +473,34 @@ impl Delivery for FerogramTelegramSink {
                                 &performer,
                             );
                         }
-                        let message = worker_client
+                        let send_res = worker_client
                             .send_message(
                                 self.dump_peer.clone(),
                                 prepare_media_caption(&caption_html)
                                     .silent(true)
                                     .copy_media(media),
                             )
-                            .await
-                            .map_err(map_invocation)?;
+                            .await;
+
+                        let message = match send_res {
+                            Ok(msg) => msg,
+                            Err(err) => {
+                                let mapped = map_invocation(err);
+                                tracing::warn!(
+                                    attempt = attempt + 1,
+                                    max_attempts = MAX_UPLOAD_ATTEMPTS,
+                                    %mapped,
+                                    "Track audio send_message to dump failed; retrying"
+                                );
+                                last_error = Some(mapped);
+                                if attempt + 1 < MAX_UPLOAD_ATTEMPTS {
+                                    continue;
+                                } else {
+                                    return Err(last_error.unwrap());
+                                }
+                            }
+                        };
+
                         if message.peer_id().map(ferogram::PeerExt::bare_id)
                             != Some(self.dump_peer_native_id)
                         {
@@ -505,10 +542,13 @@ impl Delivery for FerogramTelegramSink {
                     let mut last_error = None;
 
                     for attempt in 0..MAX_UPLOAD_ATTEMPTS {
-                        let lease = self
-                            .worker_pool
-                            .as_ref()
-                            .and_then(|pool| pool.lease_upload_worker(false).ok());
+                        let lease = if attempt == MAX_UPLOAD_ATTEMPTS - 1 {
+                            None
+                        } else {
+                            self.worker_pool
+                                .as_ref()
+                                .and_then(|pool| pool.lease_upload_worker(false).ok())
+                        };
                         let worker_client =
                             lease.as_ref().map(|l| &l.client).unwrap_or(&self.client);
 
@@ -571,15 +611,34 @@ impl Delivery for FerogramTelegramSink {
                             }
                         }
 
-                        let message = worker_client
+                        let send_res = worker_client
                             .send_message(
                                 self.dump_peer.clone(),
                                 prepare_media_caption(&caption_html)
                                     .silent(true)
                                     .copy_media(media),
                             )
-                            .await
-                            .map_err(map_invocation)?;
+                            .await;
+
+                        let message = match send_res {
+                            Ok(msg) => msg,
+                            Err(err) => {
+                                let mapped = map_invocation(err);
+                                tracing::warn!(
+                                    attempt = attempt + 1,
+                                    max_attempts = MAX_UPLOAD_ATTEMPTS,
+                                    %mapped,
+                                    "ZIP send_message to dump failed; retrying"
+                                );
+                                last_error = Some(mapped);
+                                if attempt + 1 < MAX_UPLOAD_ATTEMPTS {
+                                    continue;
+                                } else {
+                                    return Err(last_error.unwrap());
+                                }
+                            }
+                        };
+
                         let Some(document) = message.document() else {
                             return Err(DeliveryError::UnexpectedMedia);
                         };
@@ -796,6 +855,18 @@ impl Delivery for FerogramTelegramSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_hash_and_peer_not_cached_are_transient() {
+        assert!(matches!(
+            map_invocation(InvocationError::StaleHash),
+            DeliveryError::Transient(_)
+        ));
+        assert!(matches!(
+            map_invocation(InvocationError::PeerNotCached("test channel".into())),
+            DeliveryError::Transient(_)
+        ));
+    }
 
     #[test]
     fn server_rpc_errors_are_transient() {

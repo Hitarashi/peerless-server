@@ -296,6 +296,9 @@ async fn main() -> Result<()> {
     )
     .await
     .context("initialize stream worker pool")?;
+    worker_pool
+        .warm_channel_peer(&PeerRef::from(env.dump_channel_id))
+        .await;
 
     let settings_store = Arc::new(db::SettingsStore::new(database.clone()));
     let rip_deps = Arc::new(
