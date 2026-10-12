@@ -299,6 +299,15 @@ LASTFM_SHARED_SECRET=
 
 ```
 
+Track and ZIP publications share an upload limit derived from the initialized
+worker bots plus the main bot: three workers allow four concurrent uploads,
+and no workers allow one. Each bot session handles one upload at a time.
+An upload that makes no byte progress for 45 seconds
+is dropped and retried, including while waiting for its final chunk. Thumbnail
+uploads, message publication, and final dump-message lookup have a 90-second
+deadline. Slow transfers that continue making progress are allowed to finish.
+
+
 ---
 
 ## Quick Start

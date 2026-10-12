@@ -19,9 +19,10 @@ use peerless_core::retry::RetryConfig;
 
 use crate::{providers::ProviderRegistry, telegram_sink::FerogramTelegramSink};
 
-pub fn orchestrator_config() -> OrchestratorConfig {
+pub fn orchestrator_config(upload_sessions: usize) -> OrchestratorConfig {
     OrchestratorConfig {
         upload_retry: RetryConfig::from_env(),
+        upload_concurrency: upload_sessions.max(1),
         ..OrchestratorConfig::default()
     }
 }

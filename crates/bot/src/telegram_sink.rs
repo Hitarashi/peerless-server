@@ -1,9 +1,4 @@
-use std::{
-    collections::VecDeque,
-    path::Path,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{path::Path, sync::Arc, time::Duration};
 
 use engine::orchestrator::deps::{
     AlbumDetailsCaption, BoxFuture, ChatDelivery, ChatMessageRef, Delivery, DeliveryError,
@@ -18,97 +13,95 @@ const MAX_CAPTION_UTF16_LEN: usize = 1024;
 
 const MAX_TELEGRAM_TRACK_BYTES: u64 = 2_000_000_000;
 
-const DEFAULT_MIN_UPLOAD_SPEED_BYTES_PER_SEC: u64 = 1_000_000;
-const WATCHDOG_WARMUP: Duration = Duration::from_secs(5);
 const MAX_UPLOAD_ATTEMPTS: usize = 3;
+const UPLOAD_STALL_TIMEOUT: Duration = Duration::from_secs(45);
+const TELEGRAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
 
-fn min_upload_speed_from_env() -> u64 {
-    std::env::var("MIN_UPLOAD_SPEED_BYTES_PER_SEC")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_MIN_UPLOAD_SPEED_BYTES_PER_SEC)
-}
-
-pub fn speed_watchdog_task(
-    handle: &TransferHandle,
-    min_bytes_per_sec: u64,
-    warmup: Duration,
-) -> tokio::task::JoinHandle<()> {
-    let handle = handle.clone();
-    let min_speed = if min_bytes_per_sec == 0 {
-        min_upload_speed_from_env()
-    } else {
-        min_bytes_per_sec
-    };
-    tokio::spawn(async move {
-        let warmup_deadline = tokio::time::Instant::now() + warmup;
-        while tokio::time::Instant::now() < warmup_deadline {
-            if handle.is_cancelled() {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-
-        let mut history: VecDeque<(Instant, u64)> = VecDeque::new();
-        let mut interval = tokio::time::interval(Duration::from_millis(500));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-        const WINDOW_DURATION: Duration = Duration::from_secs(10);
-        const MIN_SAMPLE_DURATION: Duration = Duration::from_secs(8);
-        const COMPLETION_GRACE_BYTES: u64 = 5 * 1024 * 1024; // 5 MB
-
-        loop {
-            interval.tick().await;
-            if handle.is_cancelled() {
-                break;
-            }
-            let progress = handle.progress();
-            if progress.total > 0 && progress.done >= progress.total {
-                break;
-            }
-
-            // Do not trip the speed watchdog near completion (>= 95% done or <= 5 MB remaining).
-            // A brief pause waiting for the last chunk's ACK or server processing should never
-            // cancel an entire multi-hundred megabyte upload that is practically finished.
-            if progress.total > 0 {
-                let remaining = progress.total.saturating_sub(progress.done);
-                let pct = (progress.done as f64) / (progress.total as f64);
-                if remaining <= COMPLETION_GRACE_BYTES || pct >= 0.95 {
-                    continue;
-                }
-            }
-
-            let now = Instant::now();
-            history.push_back((now, progress.done));
-
-            while let Some(&(t, _)) = history.front() {
-                if now.saturating_duration_since(t) > WINDOW_DURATION {
-                    history.pop_front();
-                } else {
-                    break;
-                }
-            }
-
-            if let Some(&(oldest_t, oldest_done)) = history.front() {
-                let dt = now.saturating_duration_since(oldest_t);
-                if dt >= MIN_SAMPLE_DURATION {
-                    let bytes_transferred = progress.done.saturating_sub(oldest_done);
-                    let speed = (bytes_transferred as f64 / dt.as_secs_f64()) as u64;
-                    if progress.total > 2_000_000 && speed < min_speed {
-                        tracing::warn!(
-                            speed_bytes_sec = speed,
-                            min_bytes_sec = min_speed,
-                            total = progress.total,
-                            done = progress.done,
-                            "Upload speed watchdog tripped: cancelling slow transfer"
-                        );
-                        handle.cancel();
-                        break;
+// Unlike a detached watchdog, this deadline drops the pending upload future.
+// Keep watching until the future completes, even if its byte counter says 100%.
+async fn monitor_upload<T>(
+    upload: impl std::future::Future<Output = Result<T, DeliveryError>>,
+    mut progress: impl FnMut() -> (u64, u64),
+    callback: Option<&UploadProgressCallback>,
+    worker_id: Option<usize>,
+    dc_id: Option<i32>,
+    stall_timeout: Duration,
+) -> Result<T, DeliveryError> {
+    tokio::pin!(upload);
+    let mut interval = tokio::time::interval(Duration::from_millis(500));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut last_done = progress().0;
+    let deadline = tokio::time::sleep(stall_timeout);
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            biased;
+            result = &mut upload => {
+                if result.is_ok() {
+                    let (done, total) = progress();
+                    if total > 0 && done > total {
+                        return Err(DeliveryError::Transient(format!(
+                            "invalid upload progress: {done} exceeds {total} bytes"
+                        )));
+                    }
+                    if let Some(callback) = callback {
+                        callback(done, total, worker_id, dc_id);
                     }
                 }
+                return result;
+            }
+            _ = &mut deadline => {
+                let (done, total) = progress();
+                // An ACK may arrive between the last sample and this deadline.
+                if done != last_done {
+                    last_done = done;
+                    deadline.as_mut().reset(tokio::time::Instant::now() + stall_timeout);
+                    continue;
+                }
+                tracing::warn!(worker_id, dc_id, done, total,
+                    stall_seconds = stall_timeout.as_secs(),
+                    "Upload stalled: dropping pending transfer and retrying");
+                return Err(DeliveryError::Transient(format!(
+                    "upload made no progress for {} seconds ({done}/{total} bytes)",
+                    stall_timeout.as_secs()
+                )));
+            }
+            _ = interval.tick() => {
+                let (done, total) = progress();
+                if total > 0 && done > total {
+                    return Err(DeliveryError::Transient(format!(
+                        "invalid upload progress: {done} exceeds {total} bytes"
+                    )));
+                }
+                if done != last_done {
+                    last_done = done;
+                    deadline.as_mut().reset(tokio::time::Instant::now() + stall_timeout);
+                }
+                if let Some(callback) = callback {
+                    callback(done, total, worker_id, dc_id);
+                }
             }
         }
-    })
+    }
+}
+
+// Cancelling a job drops its transfer as well as its semaphore permits.
+struct TransferGuard(TransferHandle);
+
+impl Drop for TransferGuard {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
+async fn telegram_request<T>(
+    stage: &str,
+    request: impl std::future::IntoFuture<Output = Result<T, InvocationError>>,
+) -> Result<T, DeliveryError> {
+    tokio::time::timeout(TELEGRAM_REQUEST_TIMEOUT, request.into_future())
+        .await
+        .map_err(|_| DeliveryError::Transient(format!("{stage} timed out after 90 seconds")))?
+        .map_err(map_invocation)
 }
 
 fn clamp_plain_text(text: &str, max_utf16: usize) -> String {
@@ -192,6 +185,8 @@ pub struct FerogramTelegramSink {
     dump_peer: PeerRef,
     dump_peer_native_id: i64,
     worker_pool: Option<Arc<stream::StreamWorkerPool>>,
+    upload_slots: tokio::sync::Semaphore,
+    primary_upload_slot: Arc<tokio::sync::Semaphore>,
 }
 
 fn map_invocation(error: InvocationError) -> DeliveryError {
@@ -228,8 +223,8 @@ fn progress_task(
     callback: Option<&UploadProgressCallback>,
     worker_id: Option<usize>,
     dc_id: Option<i32>,
-) -> Option<tokio::task::JoinHandle<()>> {
-    callback.map(|callback| {
+) -> ProgressTaskGuard {
+    ProgressTaskGuard(callback.map(|callback| {
         let callback = Arc::clone(callback);
         let handle = handle.clone();
         tokio::spawn(async move {
@@ -239,12 +234,16 @@ fn progress_task(
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
         })
-    })
+    }))
 }
 
-fn stop_progress(task: Option<tokio::task::JoinHandle<()>>) {
-    if let Some(task) = task {
-        task.abort();
+struct ProgressTaskGuard(Option<tokio::task::JoinHandle<()>>);
+
+impl Drop for ProgressTaskGuard {
+    fn drop(&mut self) {
+        if let Some(task) = &self.0 {
+            task.abort();
+        }
     }
 }
 
@@ -270,12 +269,54 @@ impl FerogramTelegramSink {
             dump_peer: resolvable_dump_peer,
             dump_peer_native_id,
             worker_pool: None,
+            upload_slots: tokio::sync::Semaphore::new(1),
+            primary_upload_slot: Arc::new(tokio::sync::Semaphore::new(1)),
         })
     }
 
     pub fn with_worker_pool(mut self, pool: Arc<stream::StreamWorkerPool>) -> Self {
+        self.upload_slots = tokio::sync::Semaphore::new(pool.upload_session_count());
+        self.primary_upload_slot = pool.primary_upload_slot();
         self.worker_pool = Some(pool);
         self
+    }
+
+    async fn upload_file(
+        client: &ferogram::Client,
+        file_path: &str,
+        callback: Option<&UploadProgressCallback>,
+        worker_id: Option<usize>,
+        dc_id: Option<i32>,
+    ) -> Result<ferogram::media::UploadedFile, DeliveryError> {
+        let handle = TransferHandle::new();
+        let _guard = TransferGuard(handle.clone());
+        tracing::info!(file_path, worker_id, dc_id, "Upload attempt started");
+        let uploaded = monitor_upload(
+            async {
+                client
+                    .upload_file(file_path)
+                    .handle(&handle)
+                    .await
+                    .map_err(map_invocation)
+            },
+            || {
+                let p = handle.progress();
+                (p.done, p.total)
+            },
+            callback,
+            worker_id,
+            dc_id,
+            UPLOAD_STALL_TIMEOUT,
+        )
+        .await?;
+        tracing::info!(
+            file_path,
+            worker_id,
+            dc_id,
+            bytes = handle.progress().done,
+            "Upload bytes acknowledged; publishing message"
+        );
+        Ok(uploaded)
     }
 
     fn file_ids(document: &ferogram::media::Document) -> (String, String) {
@@ -294,10 +335,7 @@ impl FerogramTelegramSink {
         client: &ferogram::Client,
         thumb_path: &str,
     ) -> Result<ferogram::tl::enums::InputFile, DeliveryError> {
-        let uploaded = client
-            .upload_file(thumb_path)
-            .await
-            .map_err(map_invocation)?;
+        let uploaded = telegram_request("thumbnail upload", client.upload_file(thumb_path)).await?;
         let ferogram::tl::enums::InputMedia::UploadedPhoto(photo) = uploaded.as_photo_media()
         else {
             return Err(DeliveryError::UnexpectedMedia);
@@ -318,11 +356,8 @@ impl FerogramTelegramSink {
         thumb_path: Option<&str>,
         on_upload_progress: Option<&UploadProgressCallback>,
     ) -> Result<ferogram::tl::enums::InputMedia, DeliveryError> {
-        let handle = TransferHandle::new();
-        let progress = progress_task(&handle, on_upload_progress, None, None);
-        let upload_result = self.client.upload_file(file_path).handle(&handle).await;
-        stop_progress(progress);
-        let uploaded = upload_result.map_err(map_invocation)?;
+        let uploaded =
+            Self::upload_file(&self.client, file_path, on_upload_progress, None, None).await?;
         let mut media = uploaded.as_document_media();
         if let Some(thumb_path) = thumb_path {
             match self.upload_thumbnail(thumb_path).await {
@@ -400,6 +435,11 @@ impl Delivery for FerogramTelegramSink {
         publication: DumpPublish,
     ) -> BoxFuture<'a, Result<DumpPublication, DeliveryError>> {
         Box::pin(async move {
+            let _upload_slot = self
+                .upload_slots
+                .acquire()
+                .await
+                .map_err(|_| DeliveryError::Unavailable("upload limiter closed".into()))?;
             match publication {
                 DumpPublish::TrackAudio {
                     file_path,
@@ -423,7 +463,6 @@ impl Delivery for FerogramTelegramSink {
                         DeliveryError::LocalIo(format!("duration out of range: {error}"))
                     })?;
 
-                    let min_speed = min_upload_speed_from_env();
                     let mut last_error = None;
 
                     for attempt in 0..MAX_UPLOAD_ATTEMPTS {
@@ -436,38 +475,36 @@ impl Delivery for FerogramTelegramSink {
                         };
                         let worker_client =
                             lease.as_ref().map(|l| &l.client).unwrap_or(&self.client);
+                        let _primary_slot = if lease.is_none() {
+                            Some(self.primary_upload_slot.acquire().await.map_err(|_| {
+                                DeliveryError::Unavailable("primary upload limiter closed".into())
+                            })?)
+                        } else {
+                            None
+                        };
 
-                        let handle = TransferHandle::new();
                         let worker_id = lease.as_ref().map(|l| l.worker_id);
                         let dc_id = lease.as_ref().map(|l| l.home_dc);
-                        let progress =
-                            progress_task(&handle, on_upload_progress.as_ref(), worker_id, dc_id);
-                        let watchdog = speed_watchdog_task(&handle, min_speed, WATCHDOG_WARMUP);
-                        let upload_result =
-                            worker_client.upload_file(&file_path).handle(&handle).await;
-                        stop_progress(progress);
-                        stop_progress(Some(watchdog));
-
-                        if handle.is_cancelled() {
-                            if let (Some(pool), Some(lease)) = (&self.worker_pool, &lease) {
-                                pool.mark_worker_slow(lease.worker_id, Duration::from_secs(120));
-                            }
-                            tracing::warn!(
-                                attempt = attempt + 1,
-                                max_attempts = MAX_UPLOAD_ATTEMPTS,
-                                "Track audio upload cancelled by speed watchdog; retrying with another worker"
-                            );
-                            last_error = Some(DeliveryError::Transient(
-                                "Upload cancelled due to slow speed".to_string(),
-                            ));
-                            continue;
-                        }
+                        let upload_result = Self::upload_file(
+                            worker_client,
+                            &file_path,
+                            on_upload_progress.as_ref(),
+                            worker_id,
+                            dc_id,
+                        )
+                        .await;
 
                         let uploaded = match upload_result {
                             Ok(res) => res,
                             Err(err) => {
-                                let mapped = map_invocation(err);
-                                tracing::warn!(attempt = attempt + 1, %mapped, "Track audio upload failed");
+                                let mapped = err;
+                                if let (Some(pool), Some(lease)) = (&self.worker_pool, &lease) {
+                                    pool.mark_worker_slow(
+                                        lease.worker_id,
+                                        Duration::from_secs(120),
+                                    );
+                                }
+                                tracing::warn!(attempt = attempt + 1, worker_id, dc_id, %mapped, "Track audio upload failed");
                                 last_error = Some(mapped);
                                 if attempt + 1 < MAX_UPLOAD_ATTEMPTS {
                                     continue;
@@ -489,19 +526,21 @@ impl Delivery for FerogramTelegramSink {
                                 &performer,
                             );
                         }
-                        let send_res = worker_client
-                            .send_message(
+                        let send_res = telegram_request(
+                            "message publication",
+                            worker_client.send_message(
                                 self.dump_peer.clone(),
                                 prepare_media_caption(&caption_html)
                                     .silent(true)
                                     .copy_media(media),
-                            )
-                            .await;
+                            ),
+                        )
+                        .await;
 
                         let message = match send_res {
                             Ok(msg) => msg,
                             Err(err) => {
-                                let mapped = map_invocation(err);
+                                let mapped = err;
                                 tracing::warn!(
                                     attempt = attempt + 1,
                                     max_attempts = MAX_UPLOAD_ATTEMPTS,
@@ -526,6 +565,14 @@ impl Delivery for FerogramTelegramSink {
                                 message.peer_id().map(ferogram::PeerExt::bare_id)
                             )));
                         }
+                        tracing::info!(
+                            attempt = attempt + 1,
+                            worker_id,
+                            dc_id,
+                            message_id = message.id(),
+                            file_path,
+                            "Upload published to dump"
+                        );
                         let Some(document) = message.document() else {
                             return Err(DeliveryError::UnexpectedMedia);
                         };
@@ -554,7 +601,6 @@ impl Delivery for FerogramTelegramSink {
                     on_upload_progress,
                 } => {
                     let caption_html = render_zip_caption(&caption);
-                    let min_speed = min_upload_speed_from_env();
                     let mut last_error = None;
 
                     for attempt in 0..MAX_UPLOAD_ATTEMPTS {
@@ -567,38 +613,36 @@ impl Delivery for FerogramTelegramSink {
                         };
                         let worker_client =
                             lease.as_ref().map(|l| &l.client).unwrap_or(&self.client);
+                        let _primary_slot = if lease.is_none() {
+                            Some(self.primary_upload_slot.acquire().await.map_err(|_| {
+                                DeliveryError::Unavailable("primary upload limiter closed".into())
+                            })?)
+                        } else {
+                            None
+                        };
 
-                        let handle = TransferHandle::new();
                         let worker_id = lease.as_ref().map(|l| l.worker_id);
                         let dc_id = lease.as_ref().map(|l| l.home_dc);
-                        let progress =
-                            progress_task(&handle, on_upload_progress.as_ref(), worker_id, dc_id);
-                        let watchdog = speed_watchdog_task(&handle, min_speed, WATCHDOG_WARMUP);
-                        let upload_result =
-                            worker_client.upload_file(&file_path).handle(&handle).await;
-                        stop_progress(progress);
-                        stop_progress(Some(watchdog));
-
-                        if handle.is_cancelled() {
-                            if let (Some(pool), Some(lease)) = (&self.worker_pool, &lease) {
-                                pool.mark_worker_slow(lease.worker_id, Duration::from_secs(120));
-                            }
-                            tracing::warn!(
-                                attempt = attempt + 1,
-                                max_attempts = MAX_UPLOAD_ATTEMPTS,
-                                "ZIP document upload cancelled by speed watchdog; retrying with another worker"
-                            );
-                            last_error = Some(DeliveryError::Transient(
-                                "Upload cancelled due to slow speed".to_string(),
-                            ));
-                            continue;
-                        }
+                        let upload_result = Self::upload_file(
+                            worker_client,
+                            &file_path,
+                            on_upload_progress.as_ref(),
+                            worker_id,
+                            dc_id,
+                        )
+                        .await;
 
                         let uploaded = match upload_result {
                             Ok(res) => res,
                             Err(err) => {
-                                let mapped = map_invocation(err);
-                                tracing::warn!(attempt = attempt + 1, %mapped, "ZIP upload failed");
+                                let mapped = err;
+                                if let (Some(pool), Some(lease)) = (&self.worker_pool, &lease) {
+                                    pool.mark_worker_slow(
+                                        lease.worker_id,
+                                        Duration::from_secs(120),
+                                    );
+                                }
+                                tracing::warn!(attempt = attempt + 1, worker_id, dc_id, %mapped, "ZIP upload failed");
                                 last_error = Some(mapped);
                                 if attempt + 1 < MAX_UPLOAD_ATTEMPTS {
                                     continue;
@@ -627,19 +671,21 @@ impl Delivery for FerogramTelegramSink {
                             }
                         }
 
-                        let send_res = worker_client
-                            .send_message(
+                        let send_res = telegram_request(
+                            "message publication",
+                            worker_client.send_message(
                                 self.dump_peer.clone(),
                                 prepare_media_caption(&caption_html)
                                     .silent(true)
                                     .copy_media(media),
-                            )
-                            .await;
+                            ),
+                        )
+                        .await;
 
                         let message = match send_res {
                             Ok(msg) => msg,
                             Err(err) => {
-                                let mapped = map_invocation(err);
+                                let mapped = err;
                                 tracing::warn!(
                                     attempt = attempt + 1,
                                     max_attempts = MAX_UPLOAD_ATTEMPTS,
@@ -655,6 +701,14 @@ impl Delivery for FerogramTelegramSink {
                             }
                         };
 
+                        tracing::info!(
+                            attempt = attempt + 1,
+                            worker_id,
+                            dc_id,
+                            message_id = message.id(),
+                            file_path,
+                            "Upload published to dump"
+                        );
                         let Some(document) = message.document() else {
                             return Err(DeliveryError::UnexpectedMedia);
                         };
@@ -702,14 +756,15 @@ impl Delivery for FerogramTelegramSink {
                                 "reply message id out of range: {error}"
                             ))
                         })?;
-                    let source = self
-                        .client
-                        .get_messages(self.dump_peer.clone(), &[source_id])
-                        .await
-                        .map_err(map_invocation)?
-                        .into_iter()
-                        .next()
-                        .ok_or(DeliveryError::UnexpectedMedia)?;
+                    let source = telegram_request(
+                        "dump message lookup",
+                        self.client
+                            .get_messages(self.dump_peer.clone(), &[source_id]),
+                    )
+                    .await?
+                    .into_iter()
+                    .next()
+                    .ok_or(DeliveryError::UnexpectedMedia)?;
                     let media: ferogram::tl::enums::InputMedia = if let Some(photo) = source.photo()
                     {
                         photo.to_input_media().into()
@@ -718,17 +773,17 @@ impl Delivery for FerogramTelegramSink {
                     } else {
                         return Err(DeliveryError::UnexpectedMedia);
                     };
-                    let message = self
-                        .client
-                        .send_message(
+                    let message = telegram_request(
+                        "message publication",
+                        self.client.send_message(
                             PeerRef::from(destination.id()),
                             InputMessage::text("")
                                 .reply_to(reply_to)
                                 .silent(silent)
                                 .copy_media(media),
-                        )
-                        .await
-                        .map_err(map_invocation)?;
+                        ),
+                    )
+                    .await?;
                     Ok(DeliveryReceipt::Message(ChatMessageRef::new(i64::from(
                         message.id(),
                     ))))
@@ -746,6 +801,13 @@ impl Delivery for FerogramTelegramSink {
                             "destination chat id cannot be 0".to_string(),
                         ));
                     }
+                    let _upload_slot =
+                        self.upload_slots.acquire().await.map_err(|_| {
+                            DeliveryError::Unavailable("upload limiter closed".into())
+                        })?;
+                    let _primary_slot = self.primary_upload_slot.acquire().await.map_err(|_| {
+                        DeliveryError::Unavailable("primary upload limiter closed".into())
+                    })?;
                     let media = self
                         .upload_zip_media(
                             &file_path,
@@ -753,14 +815,14 @@ impl Delivery for FerogramTelegramSink {
                             on_upload_progress.as_ref(),
                         )
                         .await?;
-                    let message = self
-                        .client
-                        .send_message(
+                    let message = telegram_request(
+                        "message publication",
+                        self.client.send_message(
                             PeerRef::from(destination.id()),
                             prepare_media_caption(&caption_html).copy_media(media),
-                        )
-                        .await
-                        .map_err(map_invocation)?;
+                        ),
+                    )
+                    .await?;
                     Ok(DeliveryReceipt::Message(ChatMessageRef::new(i64::from(
                         message.id(),
                     ))))
@@ -776,19 +838,28 @@ impl Delivery for FerogramTelegramSink {
                             "destination chat id cannot be 0".to_string(),
                         ));
                     }
-                    let uploaded = self
-                        .client
-                        .upload(std::io::Cursor::new(image_bytes), "cover.jpg")
-                        .await
-                        .map_err(map_invocation)?;
+                    let _upload_slot =
+                        self.upload_slots.acquire().await.map_err(|_| {
+                            DeliveryError::Unavailable("upload limiter closed".into())
+                        })?;
+                    let _primary_slot = self.primary_upload_slot.acquire().await.map_err(|_| {
+                        DeliveryError::Unavailable("primary upload limiter closed".into())
+                    })?;
+                    let uploaded = telegram_request(
+                        "cover upload",
+                        self.client
+                            .upload(std::io::Cursor::new(image_bytes), "cover.jpg"),
+                    )
+                    .await?;
                     let media = uploaded.as_photo_media();
-                    self.client
-                        .send_message(
+                    telegram_request(
+                        "message publication",
+                        self.client.send_message(
                             PeerRef::from(destination.id()),
                             prepare_media_caption(&caption_html).copy_media(media),
-                        )
-                        .await
-                        .map_err(map_invocation)?;
+                        ),
+                    )
+                    .await?;
                     Ok(DeliveryReceipt::PreviewDelivered)
                 }
             }
@@ -815,13 +886,14 @@ impl Delivery for FerogramTelegramSink {
                 .ok_or(DeliveryError::UnexpectedMedia)?;
             let document = message.document().ok_or(DeliveryError::UnexpectedMedia)?;
             let handle = TransferHandle::new();
+            let _transfer_guard = TransferGuard(handle.clone());
             let progress_task = progress_task(&handle, progress, None, None);
             let download_result = self
                 .client
                 .download_file(&document, destination)
                 .handle(&handle)
                 .await;
-            stop_progress(progress_task);
+            drop(progress_task);
             download_result.map(|_| ()).map_err(map_invocation)
         })
     }
@@ -1088,12 +1160,148 @@ mod tests {
         assert!(audio_mime_for(std::path::Path::new("a.bin")).starts_with("audio/"));
     }
 
-    #[tokio::test]
-    async fn speed_watchdog_exits_cleanly_on_cancellation() {
+    #[tokio::test(start_paused = true)]
+    async fn active_upload_can_take_longer_than_the_stall_deadline() {
+        let done = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let upload_done = Arc::clone(&done);
+        let result = monitor_upload(
+            async move {
+                for value in 1..=4 {
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                    upload_done.store(value, std::sync::atomic::Ordering::SeqCst);
+                }
+                Ok(())
+            },
+            || (done.load(std::sync::atomic::Ordering::SeqCst), 4),
+            None,
+            None,
+            None,
+            UPLOAD_STALL_TIMEOUT,
+        )
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(done.load(std::sync::atomic::Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn acknowledgement_at_the_deadline_extends_the_upload() {
+        let done = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let upload_done = Arc::clone(&done);
+        let result = monitor_upload(
+            async move {
+                tokio::time::sleep(UPLOAD_STALL_TIMEOUT).await;
+                upload_done.store(1, std::sync::atomic::Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_secs(40)).await;
+                upload_done.store(2, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            },
+            || (done.load(std::sync::atomic::Ordering::SeqCst), 2),
+            None,
+            None,
+            None,
+            UPLOAD_STALL_TIMEOUT,
+        )
+        .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn callbacks_stop_when_an_upload_is_cancelled() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let callback_calls = Arc::clone(&calls);
+        let callback: UploadProgressCallback = Arc::new(move |_, _, _, _| {
+            callback_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
         let handle = TransferHandle::new();
-        handle.cancel();
-        let watchdog = speed_watchdog_task(&handle, 1_000_000, Duration::from_millis(50));
-        let res = tokio::time::timeout(Duration::from_millis(300), watchdog).await;
-        assert!(res.is_ok());
+        let upload = async {
+            let _guard = TransferGuard(handle.clone());
+            monitor_upload(
+                std::future::pending::<Result<(), DeliveryError>>(),
+                || (0, 100),
+                Some(&callback),
+                None,
+                None,
+                UPLOAD_STALL_TIMEOUT,
+            )
+            .await
+        };
+        let result = tokio::time::timeout(Duration::from_secs(1), upload).await;
+        assert!(result.is_err());
+        assert!(handle.is_cancelled());
+        let stopped_at = calls.load(std::sync::atomic::Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), stopped_at);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cached_transfer_progress_task_stops_when_its_guard_is_dropped() {
+        let handle = TransferHandle::new();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let callback_calls = Arc::clone(&calls);
+        let callback: UploadProgressCallback = Arc::new(move |_, _, _, _| {
+            callback_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        let guard = progress_task(&handle, Some(&callback), None, None);
+        tokio::task::yield_now().await;
+        assert!(calls.load(std::sync::atomic::Ordering::SeqCst) > 0);
+        drop(guard);
+        let stopped_at = calls.load(std::sync::atomic::Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), stopped_at);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn thumbnail_and_publication_requests_have_a_deadline() {
+        for stage in ["thumbnail upload", "message publication"] {
+            let result =
+                telegram_request(stage, std::future::pending::<Result<(), InvocationError>>())
+                    .await;
+            assert!(
+                matches!(result, Err(DeliveryError::Transient(message)) if message.contains(stage))
+            );
+        }
+    }
+
+    struct PendingUpload(Arc<std::sync::atomic::AtomicBool>);
+
+    impl std::future::Future for PendingUpload {
+        type Output = Result<(), DeliveryError>;
+
+        fn poll(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Self::Output> {
+            std::task::Poll::Pending
+        }
+    }
+
+    impl Drop for PendingUpload {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_upload_drops_pending_rpc_even_at_completion() {
+        // Unknown size (setup), final chunk, and inflated/complete counters must
+        // all terminate rather than disabling the inactivity deadline.
+        for (done, total) in [(0, 0), (999, 1000), (1000, 1000), (1999, 1000)] {
+            let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let result = tokio::time::timeout(
+                UPLOAD_STALL_TIMEOUT + Duration::from_secs(1),
+                monitor_upload(
+                    PendingUpload(Arc::clone(&dropped)),
+                    || (done, total),
+                    None,
+                    Some(0),
+                    Some(5),
+                    UPLOAD_STALL_TIMEOUT,
+                ),
+            )
+            .await
+            .expect("the upload itself must terminate before the outer deadline");
+            assert!(matches!(result, Err(DeliveryError::Transient(_))));
+            assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
+        }
     }
 }

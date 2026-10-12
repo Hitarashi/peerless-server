@@ -953,7 +953,7 @@ dependencies = [
 [[package]]
 name = "ferogram"
 version = "0.6.5"
-source = "git+https://github.com/ankit-chaubey/ferogram?rev=be3fbc17d8ffd818679957356f92ca99caf9df16#be3fbc17d8ffd818679957356f92ca99caf9df16"
+source = "git+https://github.com/sayeed205/ferogram?rev=b8d1e1f934199dd74dbcd48a26aea52c45fd52eb#b8d1e1f934199dd74dbcd48a26aea52c45fd52eb"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -983,7 +983,7 @@ dependencies = [
 [[package]]
 name = "ferogram-connect"
 version = "0.6.5"
-source = "git+https://github.com/ankit-chaubey/ferogram?rev=be3fbc17d8ffd818679957356f92ca99caf9df16#be3fbc17d8ffd818679957356f92ca99caf9df16"
+source = "git+https://github.com/sayeed205/ferogram?rev=b8d1e1f934199dd74dbcd48a26aea52c45fd52eb#b8d1e1f934199dd74dbcd48a26aea52c45fd52eb"
 dependencies = [
  "ferogram-crypto",
  "ferogram-mtproto",
@@ -997,7 +997,7 @@ dependencies = [
 [[package]]
 name = "ferogram-crypto"
 version = "0.6.5"
-source = "git+https://github.com/ankit-chaubey/ferogram?rev=be3fbc17d8ffd818679957356f92ca99caf9df16#be3fbc17d8ffd818679957356f92ca99caf9df16"
+source = "git+https://github.com/sayeed205/ferogram?rev=b8d1e1f934199dd74dbcd48a26aea52c45fd52eb#b8d1e1f934199dd74dbcd48a26aea52c45fd52eb"
 dependencies = [
  "aes",
  "ctr",
@@ -1014,7 +1014,7 @@ dependencies = [
 [[package]]
 name = "ferogram-msgbox"
 version = "0.6.5"
-source = "git+https://github.com/ankit-chaubey/ferogram?rev=be3fbc17d8ffd818679957356f92ca99caf9df16#be3fbc17d8ffd818679957356f92ca99caf9df16"
+source = "git+https://github.com/sayeed205/ferogram?rev=b8d1e1f934199dd74dbcd48a26aea52c45fd52eb#b8d1e1f934199dd74dbcd48a26aea52c45fd52eb"
 dependencies = [
  "ferogram-tl-types",
  "tracing",
@@ -1023,7 +1023,7 @@ dependencies = [
 [[package]]
 name = "ferogram-mtproto"
 version = "0.6.5"
-source = "git+https://github.com/ankit-chaubey/ferogram?rev=be3fbc17d8ffd818679957356f92ca99caf9df16#be3fbc17d8ffd818679957356f92ca99caf9df16"
+source = "git+https://github.com/sayeed205/ferogram?rev=b8d1e1f934199dd74dbcd48a26aea52c45fd52eb#b8d1e1f934199dd74dbcd48a26aea52c45fd52eb"
 dependencies = [
  "ferogram-crypto",
  "ferogram-tl-types",
@@ -1035,7 +1035,7 @@ dependencies = [
 [[package]]
 name = "ferogram-mtsender"
 version = "0.6.5"
-source = "git+https://github.com/ankit-chaubey/ferogram?rev=be3fbc17d8ffd818679957356f92ca99caf9df16#be3fbc17d8ffd818679957356f92ca99caf9df16"
+source = "git+https://github.com/sayeed205/ferogram?rev=b8d1e1f934199dd74dbcd48a26aea52c45fd52eb#b8d1e1f934199dd74dbcd48a26aea52c45fd52eb"
 dependencies = [
  "ferogram-connect",
  "ferogram-crypto",
@@ -1049,7 +1049,7 @@ dependencies = [
 [[package]]
 name = "ferogram-parsers"
 version = "0.6.5"
-source = "git+https://github.com/ankit-chaubey/ferogram?rev=be3fbc17d8ffd818679957356f92ca99caf9df16#be3fbc17d8ffd818679957356f92ca99caf9df16"
+source = "git+https://github.com/sayeed205/ferogram?rev=b8d1e1f934199dd74dbcd48a26aea52c45fd52eb#b8d1e1f934199dd74dbcd48a26aea52c45fd52eb"
 dependencies = [
  "ferogram-tl-types",
 ]
@@ -1057,7 +1057,7 @@ dependencies = [
 [[package]]
 name = "ferogram-session"
 version = "0.6.5"
-source = "git+https://github.com/ankit-chaubey/ferogram?rev=be3fbc17d8ffd818679957356f92ca99caf9df16#be3fbc17d8ffd818679957356f92ca99caf9df16"
+source = "git+https://github.com/sayeed205/ferogram?rev=b8d1e1f934199dd74dbcd48a26aea52c45fd52eb#b8d1e1f934199dd74dbcd48a26aea52c45fd52eb"
 dependencies = [
  "base64 0.23.1",
  "thiserror 2.0.21",
@@ -1067,7 +1067,7 @@ dependencies = [
 [[package]]
 name = "ferogram-tl-gen"
 version = "0.6.5"
-source = "git+https://github.com/ankit-chaubey/ferogram?rev=be3fbc17d8ffd818679957356f92ca99caf9df16#be3fbc17d8ffd818679957356f92ca99caf9df16"
+source = "git+https://github.com/sayeed205/ferogram?rev=b8d1e1f934199dd74dbcd48a26aea52c45fd52eb#b8d1e1f934199dd74dbcd48a26aea52c45fd52eb"
 dependencies = [
  "ferogram-tl-parser",
 ]
@@ -1075,12 +1075,12 @@ dependencies = [
 [[package]]
 name = "ferogram-tl-parser"
 version = "0.6.5"
-source = "git+https://github.com/ankit-chaubey/ferogram?rev=be3fbc17d8ffd818679957356f92ca99caf9df16#be3fbc17d8ffd818679957356f92ca99caf9df16"
+source = "git+https://github.com/sayeed205/ferogram?rev=b8d1e1f934199dd74dbcd48a26aea52c45fd52eb#b8d1e1f934199dd74dbcd48a26aea52c45fd52eb"
 
 [[package]]
 name = "ferogram-tl-types"
 version = "0.6.5"
-source = "git+https://github.com/ankit-chaubey/ferogram?rev=be3fbc17d8ffd818679957356f92ca99caf9df16#be3fbc17d8ffd818679957356f92ca99caf9df16"
+source = "git+https://github.com/sayeed205/ferogram?rev=b8d1e1f934199dd74dbcd48a26aea52c45fd52eb#b8d1e1f934199dd74dbcd48a26aea52c45fd52eb"
 dependencies = [
  "ferogram-tl-gen",
  "ferogram-tl-parser",

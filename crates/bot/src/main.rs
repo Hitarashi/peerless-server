@@ -315,8 +315,13 @@ async fn main() -> Result<()> {
         .with_worker_pool(worker_pool.clone()),
     );
 
+    let upload_sessions = worker_pool.upload_session_count();
+    info!(
+        upload_sessions,
+        "Upload concurrency derived from bot sessions"
+    );
     let orchestrator = Arc::new(engine::orchestrator::RipOrchestrator::new(
-        bot::rip_deps::orchestrator_config(),
+        bot::rip_deps::orchestrator_config(upload_sessions),
     ));
 
     let stream_engine = Arc::new(stream::StreamEngine::new(

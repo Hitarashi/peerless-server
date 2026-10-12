@@ -52,6 +52,7 @@ pub struct WorkerInstance {
     pub dc_lock: Arc<Mutex<()>>,
     pub home_dc: i32,
     pub slow_until: Arc<Mutex<Option<Instant>>>,
+    upload_slot: Arc<Semaphore>,
 }
 
 pub fn extract_dc_from_session_str(session_str: &str) -> Option<i32> {
@@ -68,11 +69,30 @@ pub fn extract_dc_from_session_str(session_str: &str) -> Option<i32> {
     }
 }
 
+fn count_upload_sessions<'a>(
+    primary: &Arc<Semaphore>,
+    workers: impl IntoIterator<Item = &'a Arc<Semaphore>>,
+) -> usize {
+    1 + workers
+        .into_iter()
+        .filter(|slot| !Arc::ptr_eq(slot, primary))
+        .count()
+}
+
+fn claim_upload_worker<T>(
+    candidates: impl IntoIterator<Item = (T, Arc<Semaphore>)>,
+) -> Option<(T, tokio::sync::OwnedSemaphorePermit)> {
+    candidates
+        .into_iter()
+        .find_map(|(worker, slot)| slot.try_acquire_owned().ok().map(|permit| (worker, permit)))
+}
+
 pub struct UploadWorkerLease {
     pub worker_id: usize,
     pub client: ferogram::Client,
     pub home_dc: i32,
     counter: Arc<AtomicUsize>,
+    _upload_permit: tokio::sync::OwnedSemaphorePermit,
 }
 
 impl Drop for UploadWorkerLease {
@@ -88,6 +108,7 @@ pub struct StreamWorkerPool {
     primary_fallback: Option<WorkerInstance>,
     metrics: Arc<StreamMetrics>,
     rpc_slots: Semaphore,
+    primary_upload_slot: Arc<Semaphore>,
 }
 
 impl StreamWorkerPool {
@@ -99,6 +120,7 @@ impl StreamWorkerPool {
             primary_fallback: None,
             metrics: Arc::new(StreamMetrics::default()),
             rpc_slots: Semaphore::new(1),
+            primary_upload_slot: Arc::new(Semaphore::new(1)),
         })
     }
 
@@ -115,6 +137,7 @@ impl StreamWorkerPool {
             .filter(|t| !t.is_empty())
             .collect();
 
+        let primary_upload_slot = Arc::new(Semaphore::new(1));
         let (workers, primary_worker) = if valid_tokens.is_empty() {
             if let Some(primary) = primary_fallback {
                 tracing::warn!(
@@ -143,6 +166,7 @@ impl StreamWorkerPool {
                         dc_lock: Arc::new(Mutex::new(())),
                         home_dc: primary_dc,
                         slow_until: Arc::new(Mutex::new(None)),
+                        upload_slot: Arc::clone(&primary_upload_slot),
                     }],
                     None,
                 )
@@ -173,6 +197,7 @@ impl StreamWorkerPool {
                     dc_lock: Arc::new(Mutex::new(())),
                     home_dc: primary_dc,
                     slow_until: Arc::new(Mutex::new(None)),
+                    upload_slot: Arc::clone(&primary_upload_slot),
                 })
             } else {
                 None
@@ -288,6 +313,7 @@ impl StreamWorkerPool {
                     dc_lock: Arc::new(Mutex::new(())),
                     home_dc,
                     slow_until: Arc::new(Mutex::new(None)),
+                    upload_slot: Arc::new(Semaphore::new(1)),
                 });
             }
 
@@ -305,7 +331,21 @@ impl StreamWorkerPool {
             primary_fallback: primary_worker,
             metrics: Arc::new(StreamMetrics::default()),
             rpc_slots: Semaphore::new(max_parallel_rpcs),
+            primary_upload_slot,
         }))
+    }
+
+    /// Share the primary session gate with upload callers, including fallback leases.
+    pub fn primary_upload_slot(&self) -> Arc<Semaphore> {
+        Arc::clone(&self.primary_upload_slot)
+    }
+
+    /// Dedicated worker sessions plus the main bot, counted once for primary fallback.
+    pub fn upload_session_count(&self) -> usize {
+        count_upload_sessions(
+            &self.primary_upload_slot,
+            self.workers.iter().map(|worker| &worker.upload_slot),
+        )
     }
 
     pub fn worker_count(&self) -> usize {
@@ -372,7 +412,7 @@ impl StreamWorkerPool {
 
     pub fn lease_upload_worker(&self) -> Result<UploadWorkerLease, StreamError> {
         let now = Instant::now();
-        let eligible: Vec<&WorkerInstance> = self
+        let mut eligible: Vec<&WorkerInstance> = self
             .workers
             .iter()
             .filter(|worker| {
@@ -389,30 +429,32 @@ impl StreamWorkerPool {
             })
             .collect();
 
-        let chosen = if !eligible.is_empty() {
+        eligible.sort_by_key(|worker| worker.in_flight.load(Ordering::Relaxed));
+        if let Some(primary) = &self.primary_fallback {
+            let available = match primary.slow_until.try_lock() {
+                Ok(guard) => guard.is_none_or(|until| now >= until),
+                Err(_) => true,
+            };
+            if available {
+                eligible.push(primary);
+            }
+        }
+        // Permit acquisition is atomic, unlike snapshots of in_flight.
+        if let Some((worker, permit)) = claim_upload_worker(
             eligible
                 .into_iter()
-                .min_by_key(|w| w.in_flight.load(Ordering::Relaxed))
-        } else {
-            self.primary_fallback
-                .as_ref()
-                .filter(|primary| match primary.slow_until.try_lock() {
-                    Ok(guard) => match *guard {
-                        Some(until) => now >= until,
-                        None => true,
-                    },
-                    Err(_) => true,
-                })
-        };
-
-        let worker = chosen.ok_or(StreamError::AllWorkersUnavailable)?;
-        worker.in_flight.fetch_add(1, Ordering::SeqCst);
-        Ok(UploadWorkerLease {
-            worker_id: worker.id,
-            client: worker.client.clone(),
-            home_dc: worker.home_dc,
-            counter: Arc::clone(&worker.in_flight),
-        })
+                .map(|worker| (worker, Arc::clone(&worker.upload_slot))),
+        ) {
+            worker.in_flight.fetch_add(1, Ordering::SeqCst);
+            return Ok(UploadWorkerLease {
+                worker_id: worker.id,
+                client: worker.client.clone(),
+                home_dc: worker.home_dc,
+                counter: Arc::clone(&worker.in_flight),
+                _upload_permit: permit,
+            });
+        }
+        Err(StreamError::AllWorkersUnavailable)
     }
 
     pub fn mark_worker_slow(&self, worker_id: usize, duration: Duration) {
@@ -949,6 +991,52 @@ async fn create_fresh_client_and_sign_in(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upload_capacity_counts_workers_and_primary_once() {
+        let primary = Arc::new(Semaphore::new(1));
+        let workers = std::array::from_fn::<_, 3, _>(|_| Arc::new(Semaphore::new(1)));
+        assert_eq!(StreamWorkerPool::empty().upload_session_count(), 1);
+        assert_eq!(count_upload_sessions(&primary, [&primary]), 1);
+        assert_eq!(count_upload_sessions(&primary, &workers), 4);
+        assert_eq!(
+            count_upload_sessions(&primary, workers.iter().chain([&primary])),
+            4
+        );
+    }
+
+    #[test]
+    fn upload_leases_skip_busy_sessions_and_release_on_drop() {
+        let slots = [Arc::new(Semaphore::new(1)), Arc::new(Semaphore::new(1))];
+        let claim = || {
+            claim_upload_worker(
+                slots
+                    .iter()
+                    .enumerate()
+                    .map(|(id, slot)| (id, Arc::clone(slot))),
+            )
+        };
+        let (first_id, first) = claim().unwrap();
+        let (second_id, second) = claim().unwrap();
+        assert_eq!((first_id, second_id), (0, 1));
+        assert!(claim().is_none());
+        drop(first);
+        let (next_id, next) = claim().unwrap();
+        assert_eq!(next_id, 0);
+        drop((second, next));
+        assert!(slots.iter().all(|slot| slot.available_permits() == 1));
+    }
+
+    #[tokio::test]
+    async fn primary_fallback_and_direct_uploads_share_a_gate() {
+        let pool = StreamWorkerPool::empty();
+        let direct = pool.primary_upload_slot();
+        let fallback = pool.primary_upload_slot();
+        let permit = direct.acquire().await.unwrap();
+        assert!(fallback.try_acquire().is_err());
+        drop(permit);
+        assert!(fallback.try_acquire().is_ok());
+    }
 
     #[test]
     fn test_extract_dc_from_session_str() {
