@@ -14,9 +14,8 @@ fn settings_text_renders_expected_layout() {
     ));
     assert!(text.contains("• <b>Apple Music Ripping:</b> Enabled<br/>"));
     assert!(text.contains("• <b>Album Ripping:</b> Enabled<br/>"));
-    assert!(text.contains("• <b>Max Collection Limit:</b> <code>50 tracks</code>"));
     assert!(text.ends_with(
-        "<blockquote><i>Use the buttons below to toggle settings. Set or clear the API URL with <code>/settings lyricsporn_url &lt;URL|clear&gt;</code>. Owner requests bypass ripping limits.</i></blockquote>"
+        "<blockquote><i>Use the buttons below to toggle settings. Set or clear the API URL with <code>/settings lyricsporn_url &lt;URL|clear&gt;</code>.</i></blockquote>"
     ));
 }
 
@@ -31,10 +30,6 @@ fn settings_text_renders_mode_and_limit_variants() {
     assert!(render_settings_text(&s).contains(
         "• <b>Engine Mode:</b> ! <b>Paused</b> (Ripping commands suspended for regular users)<br/>"
     ));
-    s.max_collection_tracks = 0;
-    assert!(
-        render_settings_text(&s).contains("• <b>Max Collection Limit:</b> <code>Unlimited</code>")
-    );
 }
 
 #[test]

@@ -766,8 +766,6 @@ mod tests {
             failed_tracks: Vec::new(),
             skipped_uncached_tracks: Vec::new(),
             total_elapsed_sec: "0.1".into(),
-            capped_count: 0,
-            max_collection_limit: 50,
             is_cache_only: false,
             is_group: false,
             warnings: Vec::new(),

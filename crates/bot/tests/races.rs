@@ -18,7 +18,7 @@ use engine::{
             RetryConfig, SaveTrackInput, StorageRetryPolicy, Storefront, TaskBookkeeping,
             TrackAcquisition, TrackCache, TrackCacheError, UploadProgressCallback,
         },
-        types::{OrchestratorEvent, RipTaskOptions, TaskPhase},
+        types::{JobOrigin, OrchestratorEvent, RipTaskOptions, TaskPhase},
     },
     settings::BotSettings,
     types::{AlbumTracks, ArtistTracks, ParsedTargetItem, TargetKind},
@@ -255,6 +255,7 @@ fn race_options() -> RipTaskOptions {
         is_admin: true,
         codec_preference: None,
         rendition_policy: engine::orchestrator::types::RenditionPolicy::PrimaryWithOptionalAtmos,
+        origin: JobOrigin::default(),
     }
 }
 

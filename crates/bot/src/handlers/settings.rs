@@ -13,8 +13,6 @@ use crate::{
     interaction::{SettingFeature, SettingsAction},
 };
 
-const LIMIT_PRESETS: [u32; 4] = [25, 50, 100, 0];
-
 fn mode_button_label(mode: engine::settings::RippingMode) -> &'static str {
     use engine::settings::RippingMode::{CacheOnly, Live, Paused};
     match mode {
@@ -29,24 +27,7 @@ fn toggle_label(label: &str, enabled: bool) -> String {
 }
 
 fn settings_keyboard(settings: &engine::settings::BotSettings) -> ferogram::tl::enums::ReplyMarkup {
-    let limit_buttons = LIMIT_PRESETS
-        .iter()
-        .map(|&preset| {
-            let label = if preset == 0 {
-                "Unlimited"
-            } else {
-                &preset.to_string()
-            };
-            let text = if settings.max_collection_tracks == preset {
-                format!("Selected · {label}")
-            } else {
-                label.to_owned()
-            };
-            Button::callback(text, format!("settings:limit:{preset}").as_bytes())
-        })
-        .collect::<Vec<_>>();
-
-    let mut kb = InlineKeyboard::new()
+    let kb = InlineKeyboard::new()
         .row([Button::callback(
             mode_button_label(settings.ripping_mode),
             b"settings:mode",
@@ -79,7 +60,6 @@ fn settings_keyboard(settings: &engine::settings::BotSettings) -> ferogram::tl::
                 b"settings:multilink",
             ),
         ]);
-    kb = kb.row(limit_buttons);
     kb.row([
         Button::callback("Refresh", b"settings:refresh"),
         Button::callback("Close", b"settings:close"),
@@ -97,11 +77,6 @@ fn mode_description(mode: engine::settings::RippingMode) -> &'static str {
 }
 
 pub fn render_settings_text(settings: &engine::settings::BotSettings) -> String {
-    let limit_text = if settings.max_collection_tracks == 0 {
-        "Unlimited".to_owned()
-    } else {
-        format!("{} tracks", settings.max_collection_tracks)
-    };
     let lyricsporn_url = settings
         .lyricsporn_api_url
         .as_deref()
@@ -116,11 +91,10 @@ pub fn render_settings_text(settings: &engine::settings::BotSettings) -> String 
 • <b>Artist Ripping:</b> {}<br/>\
 • <b>.TXT File Ripping:</b> {}<br/>\
 • <b>Multi-Link Ripping:</b> {}<br/>\
-• <b>Max Collection Limit:</b> <code>{limit_text}</code><br/>\
 • <b>Lyricsporn API URL:</b> <code>{lyricsporn_url}</code><br/>\
 • <b>Stream Public URL:</b> <code>{}</code><br/>\
 • <b>Stream Server Port:</b> <code>{}</code><br/><br/>\
-<blockquote><i>Use the buttons below to toggle settings. Set or clear the API URL with <code>/settings lyricsporn_url &lt;URL|clear&gt;</code>. Owner requests bypass ripping limits.</i></blockquote>",
+<blockquote><i>Use the buttons below to toggle settings. Set or clear the API URL with <code>/settings lyricsporn_url &lt;URL|clear&gt;</code>.</i></blockquote>",
         mode_description(settings.ripping_mode),
         flag(settings.apple_rip_enabled),
         flag(settings.album_rip_enabled),
@@ -241,33 +215,6 @@ async fn subcommand_reply(state: Arc<BotState>, sub: &str, raw_value: &str) -> O
                 "{label} set to: <b>{}</b>",
                 if val { "ON" } else { "OFF" }
             ))
-        }
-        "limit" => {
-            let num: i64 = match raw_value.parse() {
-                Ok(num) => num,
-                Err(_) => {
-                    return Some(
-                        "Usage: <code>/settings limit &lt;number (0 for unlimited)&gt;</code>"
-                            .to_owned(),
-                    );
-                }
-            };
-            if num >= 0 {
-                let updated = settings_store.set_max_collection_tracks(num).await;
-                Some(format!(
-                    "Max collection limit set to: <b>{}</b>",
-                    if updated == 0 {
-                        "Unlimited".to_owned()
-                    } else {
-                        updated.to_string()
-                    }
-                ))
-            } else {
-                Some(
-                    "Usage: <code>/settings limit &lt;number (0 for unlimited)&gt;</code>"
-                        .to_owned(),
-                )
-            }
         }
         "lyricsporn_api_url" | "lyricsporn_url" | "lyricsporn" => {
             let url = if matches!(
@@ -404,28 +351,6 @@ pub async fn callback(state: Arc<BotState>, query: CallbackQuery, action: Settin
             let _ = query
                 .answer()
                 .text(format!("{label}: {}", if enabled { "ON" } else { "OFF" }))
-                .send(&state.client)
-                .await;
-            if let (Some(peer), Some(id)) = (peer, message_id) {
-                render_settings_message(&state, &peer, Some(id), None).await;
-            }
-        }
-        SettingsAction::Limit(limit) => {
-            state
-                .rip_deps
-                .settings()
-                .set_max_collection_tracks(i64::from(limit))
-                .await;
-            let _ = query
-                .answer()
-                .text(format!(
-                    "Collection limit: {}",
-                    if limit == 0 {
-                        "Unlimited".to_owned()
-                    } else {
-                        format!("{limit} tracks")
-                    }
-                ))
                 .send(&state.client)
                 .await;
             if let (Some(peer), Some(id)) = (peer, message_id) {

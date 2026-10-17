@@ -268,23 +268,8 @@ impl RipOrchestrator {
             .filter(|t| seen_ids.insert(t.id.clone()))
             .collect();
 
-        let mut capped_count = 0usize;
-        let max_collection_limit = settings.max_collection_tracks;
-        let mut tracks_to_process = unique_tracks;
-        if !options.is_admin
-            && max_collection_limit > 0
-            && tracks_to_process.len() > max_collection_limit as usize
-        {
-            capped_count = tracks_to_process.len() - max_collection_limit as usize;
-            let original = tracks_to_process.len();
-            tracks_to_process.truncate(max_collection_limit as usize);
-            tracing::warn!(
-                user_id = options.user_id,
-                original,
-                capped = max_collection_limit,
-                "Collection capped for non-admin user"
-            );
-        }
+        // Every resolved track is processed: there is no collection cap.
+        let tracks_to_process = unique_tracks;
 
         pub(super) fn non_empty(s: &Option<String>) -> Option<&str> {
             s.as_deref().filter(|s| !s.is_empty())
@@ -599,8 +584,6 @@ impl RipOrchestrator {
                 failed_tracks: failed,
                 skipped_uncached_tracks: skipped,
                 total_elapsed_sec: elapsed.to_string(),
-                capped_count,
-                max_collection_limit,
                 is_cache_only: options.is_cache_only,
                 is_group: options.is_group,
                 warnings: warnings.clone(),
@@ -949,9 +932,18 @@ impl RipOrchestrator {
 
         let _ = self.ensure_upload_lane();
 
+        // Scored once, here: the job's rip-lane children enqueue under this
+        // same score, so a job's own continuations keep its place in the queue
+        // instead of racing unrelated jobs.
+        let job_priority = priority::base_score(&PriorityInput {
+            options,
+            enqueued_at: std::time::Instant::now(),
+        });
+
         let job_ctx = Arc::new(TaskContext {
             config: self.config.clone(),
             options: options.clone(),
+            priority: job_priority,
             zip_build,
             zip_deliver,
             zip_states: zip_states.clone(),
@@ -983,8 +975,6 @@ impl RipOrchestrator {
             primary_zip_error: Arc::new(Mutex::new(None)),
             zip_new_dump_messages: Arc::new(Mutex::new(Vec::new())),
             is_multi_track,
-            max_collection_limit,
-            capped_count,
             queue_start_time_ms: queue_start_time,
             ripped_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             failed_tracks: Arc::new(Mutex::new(Vec::new())),
@@ -1080,6 +1070,7 @@ impl RipOrchestrator {
                     signal: Some(job_controller.clone()),
                     on_position_change: Some(on_position_change),
                     on_start: Some(on_start),
+                    priority: job_priority,
                 }),
             )
             .await

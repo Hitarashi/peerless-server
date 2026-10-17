@@ -6,6 +6,7 @@ pub use music::{
 use tokio_util::sync::CancellationToken;
 
 use super::deps::ChatMessageRef;
+pub use super::priority::{JobOrigin, RequestSource};
 use crate::types::{ParsedTargetItem, TargetKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +122,9 @@ pub struct RipTaskOptions {
     pub codec_preference: Option<CodecPreference>,
 
     pub rendition_policy: RenditionPolicy,
+
+    /// Where the request came from, captured before any fan-out expansion.
+    pub origin: JobOrigin,
 }
 
 #[cfg(test)]
@@ -517,8 +521,6 @@ pub struct RipTaskSummary {
     pub failed_tracks: Vec<FailedTrack>,
     pub skipped_uncached_tracks: Vec<String>,
     pub total_elapsed_sec: String,
-    pub capped_count: usize,
-    pub max_collection_limit: u32,
     pub is_cache_only: bool,
     pub is_group: bool,
 

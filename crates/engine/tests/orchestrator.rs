@@ -16,8 +16,8 @@ use engine::{
             TrackCacheError, TrackCacheOperation, UploadProgressCallback, ZipCaption,
         },
         types::{
-            DownloadLane, OrchestratorEvent, RipTaskOptions, RipTaskProgress, RipTaskSummary,
-            TaskActivity, TaskPhase, UploadLane,
+            DownloadLane, JobOrigin, OrchestratorEvent, RipTaskOptions, RipTaskProgress,
+            RipTaskSummary, TaskActivity, TaskPhase, UploadLane,
         },
     },
     ripper::RipError,
@@ -963,6 +963,7 @@ fn options(items: Vec<ParsedTargetItem>, is_admin: bool) -> RipTaskOptions {
         is_admin,
         codec_preference: None,
         rendition_policy: engine::orchestrator::types::RenditionPolicy::PrimaryOnly,
+        origin: JobOrigin::default(),
     }
 }
 
@@ -1436,28 +1437,26 @@ async fn maintenance_gate_allows_admin_and_cache_only() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn non_admin_collection_cap() {
+async fn every_album_track_is_processed_without_a_collection_cap() {
     let (orch, deps, _, _) = setup();
     let meta = |id: &str| FakeDeps::track_meta(id, "Says", "Nils Frahm");
     deps.albums.lock().unwrap().insert(
         "alb.1".into(),
         FakeDeps::album(vec![meta("t1"), meta("t2"), meta("t3")]),
     );
-    for id in ["t1", "t2"] {
+    for id in ["t1", "t2", "t3"] {
         deps.rip_scripts
             .lock()
             .unwrap()
             .insert(id.to_owned(), RipScript::OkWithFile(vec![1, 2, 3]));
     }
-    deps.set_settings(|s| s.max_collection_tracks = 2);
 
     let summary = run_async(&orch, &deps, &options(vec![album_item("alb.1")], false))
         .await
         .expect("job succeeds");
 
-    assert_eq!(summary.total_tracks, 2, "only the first 2 are processed");
-    assert_eq!(summary.capped_count, 1);
-    assert_eq!(summary.max_collection_limit, 2);
+    assert_eq!(summary.total_tracks, 3, "all tracks are processed");
+    assert_eq!(summary.ripped_count, 3, "no track is dropped by a cap");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2630,20 +2629,18 @@ async fn progress_percent_math() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn empty_tracks_after_cap_edge() {
+async fn album_with_no_usable_tracks_resolves_to_an_empty_summary() {
     let (orch, deps, _, _) = setup();
     let meta = |id: &str| FakeDeps::track_meta(id, "Says", "Nils Frahm");
     deps.albums.lock().unwrap().insert(
         "alb.1".into(),
         FakeDeps::album(vec![meta("t1"), meta("t2")]),
     );
-    deps.set_settings(|s| s.max_collection_tracks = 0);
 
     let summary = run_async(&orch, &deps, &options(vec![album_item("alb.1")], false))
         .await
         .expect("job succeeds");
-    assert_eq!(summary.total_tracks, 2, "0 disables the cap");
-    assert_eq!(summary.capped_count, 0);
+    assert_eq!(summary.total_tracks, 2);
 }
 
 fn album_options(album: &str, cache_only: bool, force: bool) -> RipTaskOptions {
@@ -2661,6 +2658,7 @@ fn album_options(album: &str, cache_only: bool, force: bool) -> RipTaskOptions {
         is_admin: true,
         codec_preference: None,
         rendition_policy: engine::orchestrator::types::RenditionPolicy::PrimaryOnly,
+        origin: JobOrigin::default(),
     }
 }
 

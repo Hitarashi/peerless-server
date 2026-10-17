@@ -1,7 +1,6 @@
 pub mod deps;
 pub mod types;
 
-mod admissions;
 mod cached_lane;
 mod dispatch;
 mod events;
@@ -9,6 +8,7 @@ mod finalize;
 mod helpers;
 mod inflight;
 mod job_run;
+mod priority;
 mod rip_lane;
 mod upload_lane;
 mod zip_state;
@@ -23,7 +23,6 @@ use std::{
     time::Duration,
 };
 
-use admissions::*;
 use cached_lane::*;
 use dispatch::*;
 use events::*;
@@ -34,6 +33,9 @@ pub use inflight::{InflightEntry, InflightTargetKey};
 use job_run::*;
 use music::{Rendition, time::now_ms};
 use peerless_core::retry::{exponential_delay, jitter_multiplier};
+pub(crate) use priority::effective_score;
+use priority::*;
+pub use priority::{JobOrigin, RequestSource};
 use rip_lane::*;
 use tokio_util::sync::CancellationToken;
 use upload_lane::*;
@@ -73,8 +75,6 @@ pub enum OrchestratorError {
     Cancelled,
     Message(String),
     ResolutionFailed { failures: Vec<ResolutionFailure> },
-    AdmissionLimit,
-    UserAdmissionLimit,
 }
 
 impl std::fmt::Display for OrchestratorError {
@@ -99,10 +99,6 @@ impl std::fmt::Display for OrchestratorError {
                 }
                 Ok(())
             }
-            Self::AdmissionLimit => write!(f, "job admission limit reached"),
-            Self::UserAdmissionLimit => {
-                write!(f, "user already has the maximum number of active jobs")
-            }
         }
     }
 }
@@ -118,6 +114,8 @@ impl From<crate::queue::QueueError> for OrchestratorError {
 struct TaskContext {
     config: OrchestratorConfig,
     options: RipTaskOptions,
+    /// Queue score of the owning job, reused by its rip-lane children.
+    priority: i16,
     zip_build: bool,
     zip_deliver: bool,
     zip_states: Vec<Arc<ZipState>>,
@@ -144,8 +142,6 @@ struct TaskContext {
     primary_zip_error: Arc<Mutex<Option<String>>>,
     zip_new_dump_messages: Arc<Mutex<Vec<DumpMessageRef>>>,
     is_multi_track: bool,
-    max_collection_limit: u32,
-    capped_count: usize,
     queue_start_time_ms: u64,
     ripped_count: Arc<std::sync::atomic::AtomicUsize>,
     failed_tracks: Arc<Mutex<Vec<FailedTrack>>>,
@@ -200,7 +196,6 @@ pub struct RipOrchestrator {
     queue: SequentialRipQueue,
 
     upload_lane: Arc<Mutex<Option<tokio::sync::mpsc::Sender<LaneTask>>>>,
-    admissions: Arc<Mutex<Admissions>>,
     cache_delivery_semaphore: Arc<tokio::sync::Semaphore>,
     inflight_items: Arc<Mutex<HashMap<InflightTargetKey, Arc<InflightEntry>>>>,
 }
@@ -219,7 +214,6 @@ impl RipOrchestrator {
             jobs: Arc::new(Mutex::new(HashMap::new())),
             queue: SequentialRipQueue::new(),
             upload_lane: Arc::new(Mutex::new(None)),
-            admissions: Arc::new(Mutex::new(Admissions::default())),
             cache_delivery_semaphore: Arc::new(tokio::sync::Semaphore::new(2)),
             inflight_items: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -273,28 +267,7 @@ impl RipOrchestrator {
         deps: Arc<D>,
         options: &RipTaskOptions,
     ) -> Result<RipTaskSummary, OrchestratorError> {
-        self.start_task_with_group(deps, options, None).await
-    }
-
-    pub async fn start_task_in_group<D: TaskDeps>(
-        &self,
-        deps: Arc<D>,
-        options: &RipTaskOptions,
-        group_id: String,
-    ) -> Result<RipTaskSummary, OrchestratorError> {
-        self.start_task_with_group(deps, options, Some(group_id))
-            .await
-    }
-
-    async fn start_task_with_group<D: TaskDeps>(
-        &self,
-        deps: Arc<D>,
-        options: &RipTaskOptions,
-        admission_group_id: Option<String>,
-    ) -> Result<RipTaskSummary, OrchestratorError> {
         let job_id = cuid2::create_id();
-        self.admit_in_group(&job_id, options, admission_group_id.as_deref())?;
-        let mut admission_guard = AdmissionGuard::new(Arc::clone(&self.admissions), job_id.clone());
 
         let settings = deps.settings_snapshot();
 
@@ -403,7 +376,6 @@ impl RipOrchestrator {
                 _ = job_controller.cancelled() => {
                     self.terminalize(&shared, TerminalTaskState::Cancelled, None, None);
                     job_table_guard.remove();
-                    admission_guard.release();
                     return Err(OrchestratorError::Cancelled);
                 }
             }
@@ -449,33 +421,12 @@ impl RipOrchestrator {
             result
         };
         job_table_guard.remove();
-        admission_guard.release();
         result
     }
 }
 
 #[cfg(test)]
 mod hardening_tests {
-    use super::*;
-
-    fn options(user_id: i64, is_admin: bool) -> RipTaskOptions {
-        RipTaskOptions {
-            chat_id: user_id,
-            user_id,
-            user_name: None,
-            delivery_chat_id: user_id,
-            is_group: false,
-            is_force: false,
-            is_cache_only: false,
-            single_storefront: None,
-            parsed_items: Vec::new(),
-            reply_to_message_id: None,
-            is_admin,
-            codec_preference: None,
-            rendition_policy: music::RenditionPolicy::PrimaryOnly,
-        }
-    }
-
     #[test]
     fn job_ids_are_cuid2_and_fit_callbacks() {
         let id = cuid2::create_id();
@@ -489,39 +440,5 @@ mod hardening_tests {
             callback_data.strip_prefix("cancel:").map(str::trim),
             Some(id.as_str())
         );
-    }
-
-    #[test]
-    fn admission_limits_users_and_global_jobs() {
-        let orchestrator = RipOrchestrator::new(OrchestratorConfig::test());
-
-        let user = options(1, false);
-        for job in ["u1", "u2", "u3", "u4"] {
-            orchestrator.admit(job, &user).expect("user job");
-        }
-        assert!(matches!(
-            orchestrator.admit("u5", &user),
-            Err(OrchestratorError::UserAdmissionLimit)
-        ));
-
-        let admin = options(2, true);
-        for job in ["a1", "a2", "a3", "a4", "a5"] {
-            orchestrator.admit(job, &admin).expect("admin job");
-        }
-
-        for user_id in 3..=14 {
-            orchestrator
-                .admit(&format!("j{user_id}"), &options(user_id, false))
-                .expect("global capacity");
-        }
-        assert!(matches!(
-            orchestrator.admit("overflow", &options(100, false)),
-            Err(OrchestratorError::AdmissionLimit)
-        ));
-
-        orchestrator.release_admission("j3");
-        orchestrator
-            .admit("after-release", &options(100, false))
-            .expect("released slot");
     }
 }

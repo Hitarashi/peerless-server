@@ -9,10 +9,6 @@ fn default_true() -> bool {
     true
 }
 
-fn default_50() -> u32 {
-    50
-}
-
 pub const FALLBACK_STOREFRONT: &str = "in";
 
 fn default_storefront() -> String {
@@ -107,8 +103,6 @@ pub struct BotSettings {
     pub txt_rip_enabled: bool,
     #[serde(default = "default_true")]
     pub multi_link_rip_enabled: bool,
-    #[serde(default = "default_50")]
-    pub max_collection_tracks: u32,
     #[serde(default = "default_true")]
     pub apple_rip_enabled: bool,
     #[serde(default)]
@@ -134,7 +128,6 @@ impl Default for BotSettings {
             artist_rip_enabled: true,
             txt_rip_enabled: true,
             multi_link_rip_enabled: true,
-            max_collection_tracks: 50,
             apple_rip_enabled: true,
             stream_public_url: None,
             stream_server_port: 4444,
@@ -219,7 +212,6 @@ mod tests {
         assert!(d.artist_rip_enabled);
         assert!(d.txt_rip_enabled);
         assert!(d.multi_link_rip_enabled);
-        assert_eq!(d.max_collection_tracks, 50);
         assert!(d.apple_rip_enabled);
         assert_eq!(d.stream_public_url, None);
         assert_eq!(d.stream_server_port, 4444);

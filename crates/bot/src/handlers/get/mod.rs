@@ -4,7 +4,7 @@ pub mod input;
 
 use std::sync::Arc;
 
-use engine::orchestrator::deps::CollectionResolver;
+use engine::orchestrator::{JobOrigin, RequestSource, deps::CollectionResolver};
 use ferogram::{
     InputMessage,
     filters::{self, Dispatcher},
@@ -210,11 +210,8 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
             return;
         }
 
-        let max_collection_limit = settings.max_collection_tracks;
         let rip_orchestrator = Arc::clone(&state.rip_orchestrator);
         let rip_deps = Arc::clone(&state.rip_deps);
-        let admission_group_id = format!("get-batch:{chat}:{}", msg.id());
-        let default_storefront = default_storefront.to_owned();
         let base_options = engine::orchestrator::types::RipTaskOptions {
             chat_id: chat,
             user_id: owner_id,
@@ -229,73 +226,22 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
             is_admin: owner_is_admin,
             codec_preference: parsed.codec_preference,
             rendition_policy,
+            origin: JobOrigin {
+                source: RequestSource::TelegramBot,
+                expanded_from_artist: has_artist,
+            },
         };
 
         tokio::spawn(async move {
-            let mut selected_tracks = 0usize;
-            let mut selected_items = Vec::with_capacity(expanded_items.len());
-            for item in expanded_items {
-                if !owner_is_admin
-                    && max_collection_limit > 0
-                    && selected_tracks >= max_collection_limit as usize
-                {
-                    tracing::info!(
-                        user_id = owner_id,
-                        selected_tracks,
-                        max_collection_limit,
-                        "batch reached collection limit, stopping"
-                    );
-                    break;
-                }
-
-                if !owner_is_admin && max_collection_limit > 0 {
-                    let storefront = item
-                        .storefront
-                        .as_deref()
-                        .or(base_options.single_storefront.as_deref())
-                        .unwrap_or(&default_storefront);
-                    let track_count = match item.kind {
-                        engine::types::TargetKind::Track => Ok(1),
-                        engine::types::TargetKind::Album => rip_deps
-                            .fetch_album_tracks(&item.id, storefront.into())
-                            .await
-                            .map(|album| album.tracks.len()),
-                        engine::types::TargetKind::Playlist => rip_deps
-                            .fetch_playlist_tracks(&item.id, storefront.into())
-                            .await
-                            .map(|playlist| playlist.tracks.len()),
-                        engine::types::TargetKind::Artist => {
-                            Err("artist links must be expanded before starting album jobs"
-                                .to_owned())
-                        }
-                    };
-                    match track_count {
-                        Ok(count) => {
-                            selected_tracks = selected_tracks
-                                .saturating_add(count.min(max_collection_limit as usize));
-                        }
-                        Err(error) => tracing::warn!(
-                            item_id = %item.id,
-                            error = %error,
-                            "could not estimate collection size before scheduling its job"
-                        ),
-                    }
-                }
-                selected_items.push(item);
-            }
-
             let mut jobs = tokio::task::JoinSet::new();
-            for item in selected_items {
+            for item in expanded_items {
                 let item_id = item.id.clone();
                 let mut item_options = base_options.clone();
                 item_options.parsed_items = vec![item];
                 let rip_orchestrator = Arc::clone(&rip_orchestrator);
                 let rip_deps = Arc::clone(&rip_deps);
-                let admission_group_id = admission_group_id.clone();
                 jobs.spawn(async move {
-                    let result = rip_orchestrator
-                        .start_task_in_group(rip_deps, &item_options, admission_group_id)
-                        .await;
+                    let result = rip_orchestrator.start_task(rip_deps, &item_options).await;
                     (item_id, result)
                 });
             }
@@ -348,6 +294,10 @@ async fn handle_command(state: Arc<BotState>, msg: ferogram::update::IncomingMes
         is_admin: owner_is_admin,
         codec_preference: parsed.codec_preference,
         rendition_policy,
+        origin: JobOrigin {
+            source: RequestSource::TelegramBot,
+            expanded_from_artist: false,
+        },
     };
 
     if let Err(error) = state

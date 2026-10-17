@@ -41,7 +41,6 @@ pub enum SettingsAction {
     Refresh,
     Mode,
     Toggle(SettingFeature),
-    Limit(u32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -237,10 +236,6 @@ fn decode_settings(parts: Vec<&str>) -> Result<SettingsAction, DecodeError> {
         ["artist"] => Ok(SettingsAction::Toggle(SettingFeature::Artist)),
         ["txt"] => Ok(SettingsAction::Toggle(SettingFeature::Txt)),
         ["multilink"] => Ok(SettingsAction::Toggle(SettingFeature::MultiLink)),
-        ["limit", value] => value
-            .parse::<u32>()
-            .map(SettingsAction::Limit)
-            .map_err(|_| DecodeError::Malformed),
         _ => Err(DecodeError::Unknown),
     }
 }
@@ -313,7 +308,6 @@ fn encode_settings(action: &SettingsAction) -> String {
                 SettingFeature::MultiLink => "multilink",
             }
         ),
-        SettingsAction::Limit(limit) => format!("settings:limit:{limit}"),
     }
 }
 

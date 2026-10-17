@@ -153,8 +153,6 @@ pub(super) fn build_job_summary(
         failed_tracks: failed,
         skipped_uncached_tracks: Vec::new(),
         total_elapsed_sec,
-        capped_count: ctx.capped_count,
-        max_collection_limit: ctx.max_collection_limit,
         is_cache_only: ctx.options.is_cache_only,
         is_group: ctx.options.is_group,
         warnings: ctx

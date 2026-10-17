@@ -5,16 +5,22 @@ use std::{
     panic::AssertUnwindSafe,
     pin::Pin,
     sync::{Arc, Mutex},
+    time::Instant,
 };
 
 use futures_util::FutureExt;
 use tokio::{sync::oneshot, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
+use crate::orchestrator::effective_score;
+
 pub struct EnqueueOptions {
     pub on_position_change: Option<Arc<dyn Fn(u64) + Send + Sync>>,
     pub on_start: Option<Arc<dyn Fn() + Send + Sync>>,
     pub signal: Option<CancellationToken>,
+    /// Base score pending items are ordered by. Equal scores stay in FIFO
+    /// order; waiting time is added on top when an item is picked.
+    pub priority: i16,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -42,6 +48,8 @@ struct QueuedItem {
     on_position_change: Option<Arc<dyn Fn(u64) + Send + Sync>>,
     on_start: Option<Arc<dyn Fn() + Send + Sync>>,
     stop_watcher: Arc<tokio::sync::Notify>,
+    priority: i16,
+    enqueued_at: Instant,
 }
 
 struct QueueState {
@@ -135,6 +143,7 @@ impl SequentialRipQueue {
             on_position_change: None,
             on_start: None,
             signal: None,
+            priority: 0,
         });
         if options
             .signal
@@ -168,6 +177,8 @@ impl SequentialRipQueue {
                 on_position_change: options.on_position_change.clone(),
                 on_start: options.on_start.clone(),
                 stop_watcher: stop_watcher.clone(),
+                priority: options.priority,
+                enqueued_at: Instant::now(),
             });
             let callback = if start_worker {
                 None
@@ -251,16 +262,42 @@ fn abort_item(inner: &Arc<Inner>, id: u64, child: &CancellationToken) {
     }
 }
 
+/// Picks the pending item with the highest score, ties going to the earlier
+/// index so equal scores keep running in FIFO order.
+///
+/// Scores are recomputed here and nowhere else, which is what keeps positions
+/// changing only at a dequeue boundary. Downloads stay serial: this only
+/// decides which pending item runs next.
+fn take_next(pending: &mut VecDeque<QueuedItem>) -> Option<QueuedItem> {
+    let now = Instant::now();
+    let mut best: Option<(usize, i64)> = None;
+    for (index, item) in pending.iter().enumerate() {
+        let waited_secs = now.saturating_duration_since(item.enqueued_at).as_secs();
+        let score = effective_score(item.priority, waited_secs);
+        match best {
+            // Only a strictly higher score displaces the incumbent, which keeps
+            // the earliest of several equally scored items in front.
+            Some((_, best_score)) if score <= best_score => {}
+            _ => best = Some((index, score)),
+        }
+    }
+
+    best.map(|(index, _)| index)
+        .and_then(|index| pending.remove(index))
+}
+
 async fn run_worker(inner: Arc<Inner>) {
     loop {
         let (mut item, callbacks) = {
             let mut state = inner.state.lock().expect("queue mutex poisoned");
-            let Some(item) = state.pending.pop_front() else {
+            let Some(item) = take_next(&mut state.pending) else {
                 state.active = None;
                 state.processing = false;
                 return;
             };
             state.active = Some(item.id);
+            // Positions are derived from the deque order that is left behind, so
+            // this stays correct after a priority reorder picked a later item.
             let callbacks = state
                 .pending
                 .iter()

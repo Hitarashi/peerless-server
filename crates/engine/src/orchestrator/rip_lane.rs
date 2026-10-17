@@ -256,6 +256,9 @@ where
     let task_ctx = Arc::clone(&ctx);
     let task_controller = job_controller.clone();
     let task_rip_job_dir = rip_job_dir;
+    // Enqueues under the owning job's score so a job's rip continuations stay
+    // behind it rather than jumping ahead of other jobs' pending work.
+    let priority = ctx.priority;
     queue.submit(
         move |queue_signal| {
             Box::pin(async move {
@@ -276,6 +279,7 @@ where
             on_position_change: None,
             on_start: None,
             signal: Some(job_controller),
+            priority,
         }),
     )
 }

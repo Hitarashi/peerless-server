@@ -139,7 +139,6 @@ async fn settings_defaults_parsing_and_mutations() {
 
     let store = SettingsStore::new(client.clone());
     store.init().await.expect("load settings");
-    assert_eq!(store.get_settings().max_collection_tracks, 50);
 
     assert_eq!(
         store
@@ -148,13 +147,6 @@ async fn settings_defaults_parsing_and_mutations() {
             .ripping_mode
             .as_str(),
         "live"
-    );
-    assert_eq!(
-        store
-            .set_setting("max_collection_tracks", json!(-1))
-            .await
-            .max_collection_tracks,
-        50
     );
     assert!(
         !store
@@ -168,19 +160,10 @@ async fn settings_defaults_parsing_and_mutations() {
     assert!(!store.toggle_artist().await);
     assert!(!store.toggle_txt().await);
     assert!(!store.toggle_multi_link_rip().await);
-    assert_eq!(
-        store
-            .set_setting("max_collection_tracks", json!(12))
-            .await
-            .max_collection_tracks,
-        12
-    );
     assert_eq!(store.cycle_ripping_mode().await.as_str(), "cache_only");
     assert_eq!(store.cycle_ripping_mode().await.as_str(), "paused");
     assert_eq!(store.cycle_ripping_mode().await.as_str(), "live");
-    assert_eq!(store.set_max_collection_tracks(-8).await, 0);
     store.set_setting("ripping_mode", json!("live")).await;
-    store.set_setting("max_collection_tracks", json!(50)).await;
     store.set_setting("album_rip_enabled", json!(true)).await;
     store.set_setting("playlist_rip_enabled", json!(true)).await;
     store.set_setting("artist_rip_enabled", json!(true)).await;

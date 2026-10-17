@@ -258,6 +258,10 @@ async fn get(state: Arc<BotState>, query: CallbackQuery, track_id: String) {
         is_admin,
         codec_preference: None,
         rendition_policy: engine::orchestrator::types::RenditionPolicy::PrimaryOnly,
+        origin: engine::orchestrator::JobOrigin {
+            source: engine::orchestrator::RequestSource::TelegramBot,
+            expanded_from_artist: false,
+        },
     };
     match state
         .rip_orchestrator

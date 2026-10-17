@@ -390,6 +390,10 @@ async fn main() -> Result<()> {
                     codec_preference,
                     rendition_policy:
                         engine::orchestrator::types::RenditionPolicy::PrimaryWithOptionalAtmos,
+                    origin: engine::orchestrator::JobOrigin {
+                        source: engine::orchestrator::RequestSource::Client,
+                        expanded_from_artist: false,
+                    },
                 };
 
                 tracing::info!(task_id = %task_id, "Executing background rip task via RipOrchestrator");

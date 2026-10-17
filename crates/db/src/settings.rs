@@ -3,8 +3,7 @@ use std::sync::RwLock;
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use peerless_core::{
-    BotSettings, LyricspornApiEndpoint, MAX_COLLECTION_TRACKS, RippingMode, default_settings,
-    normalize_lyricsporn_api_url, validate_collection_limit,
+    BotSettings, LyricspornApiEndpoint, RippingMode, default_settings, normalize_lyricsporn_api_url,
 };
 use serde_json::{Value, json};
 
@@ -149,15 +148,6 @@ impl SettingsStore {
             _ => settings.multi_link_rip_enabled,
         }
     }
-
-    pub async fn set_max_collection_tracks(&self, limit: i64) -> u32 {
-        let value = u32::try_from(limit.max(0))
-            .unwrap_or(MAX_COLLECTION_TRACKS)
-            .min(MAX_COLLECTION_TRACKS);
-        self.set_setting("max_collection_tracks", json!(value))
-            .await
-            .max_collection_tracks
-    }
 }
 
 fn from_row(row: SettingsRow) -> BotSettings {
@@ -195,7 +185,6 @@ fn canonical_key(key: &str) -> Option<&'static str> {
         "artist_rip_enabled" | "artistRipEnabled" => Some("artist_rip_enabled"),
         "txt_rip_enabled" | "txtRipEnabled" => Some("txt_rip_enabled"),
         "multi_link_rip_enabled" | "multiLinkRipEnabled" => Some("multi_link_rip_enabled"),
-        "max_collection_tracks" | "maxCollectionTracks" => Some("max_collection_tracks"),
         "stream_public_url" | "streamPublicUrl" | "stream_url" | "streamUrl" => {
             Some("stream_public_url")
         }
@@ -239,12 +228,6 @@ fn apply_value(settings: &mut BotSettings, key: &str, value: &Value) -> bool {
         "multi_link_rip_enabled" => value
             .as_bool()
             .map(|v| settings.multi_link_rip_enabled = v)
-            .is_some(),
-        "max_collection_tracks" => value
-            .as_u64()
-            .and_then(|v| u32::try_from(v).ok())
-            .filter(|v| validate_collection_limit(*v))
-            .map(|v| settings.max_collection_tracks = v)
             .is_some(),
         "stream_public_url" => {
             if value.is_null() {

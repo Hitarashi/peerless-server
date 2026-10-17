@@ -722,6 +722,10 @@ async fn admin_callback(state: Arc<BotState>, query: CallbackQuery, action: Repo
                 is_admin: true,
                 codec_preference: None,
                 rendition_policy: engine::orchestrator::types::RenditionPolicy::PrimaryOnly,
+                origin: engine::orchestrator::JobOrigin {
+                    source: engine::orchestrator::RequestSource::TelegramBot,
+                    expanded_from_artist: false,
+                },
             };
             match state
                 .rip_orchestrator

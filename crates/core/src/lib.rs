@@ -14,10 +14,7 @@ pub use cache::{
     AlbumUpload, CachedAlbum, CachedTrack, CachedTracksMap, SaveTrackInput, TrackCacheError,
     TrackCacheOperation,
 };
-pub use limits::{
-    MAX_COLLECTION_TRACKS, MAX_DOCUMENT_BYTES, MAX_RETRIES, MAX_RETRY_BASE_MS,
-    validate_collection_limit,
-};
+pub use limits::{MAX_DOCUMENT_BYTES, MAX_RETRIES, MAX_RETRY_BASE_MS};
 pub use retry::{RetryConfig, RetryPolicy, exponential_delay, jitter_multiplier};
 pub use settings::{
     BotSettings, FALLBACK_STOREFRONT, LyricspornApiEndpoint, RippingMode, default_settings,
