@@ -16,7 +16,7 @@ use crate::{BotState, html::parse_dynamic_html, pending::PendingConfirmations};
 
 const RESTRICTED: &str =
     "! <b>Access restricted</b><br/>This command is restricted to the bot owner.";
-const USAGE: &str = "<b>Delete track usage</b><br/><br/><blockquote>• <code>/delete &lt;Apple Music link&gt;</code><br/>• Reply to an Apple Music link with <code>/delete</code></blockquote>";
+const USAGE: &str = "<b>Delete track usage</b><br/><br/><blockquote>• <code>/delete &lt;Apple Music link&gt;</code><br/>• <code>/delete &lt;track_id&gt;</code> for a bare track id<br/>• Reply to an Apple Music link with <code>/delete</code></blockquote>";
 const CONFIRMATION_TTL: Duration = Duration::from_secs(120);
 
 #[derive(Clone)]

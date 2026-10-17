@@ -30,6 +30,21 @@ fn regexes() -> &'static [Regex; 6] {
     })
 }
 
+/// Bare track-id form: a whole token of ASCII digits, e.g. `1537450185`. Only digits
+/// are accepted and they must span the whole token, so `id1537450185`, `12a`, `1024x`
+/// and `1537450185id` are all rejected. No storefront, so the caller's default
+/// resolution applies just like a `/song/` link without a region.
+fn bare_track_id(token: &str) -> Option<ParsedTargetItem> {
+    if token.is_empty() || !token.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    Some(ParsedTargetItem {
+        id: token.to_owned(),
+        kind: TargetKind::Track,
+        storefront: None,
+    })
+}
+
 fn storefront_of(caps: &regex::Captures<'_>) -> Option<String> {
     caps.get(1).map(|m| m.as_str().to_lowercase())
 }
@@ -85,7 +100,7 @@ pub fn parse_single_item(raw_token: &str) -> Option<ParsedTargetItem> {
     {
         return Some(item(id.as_str(), TargetKind::Album, &caps));
     }
-    None
+    bare_track_id(token)
 }
 
 pub fn extract_batch_items(content: &str) -> Vec<ParsedTargetItem> {
@@ -320,8 +335,78 @@ mod tests {
     }
 
     #[test]
-    fn rejects_bare_track_id() {
-        assert!(parse_alac_input("/alac 1440841730", None).is_none());
+    fn parses_bare_track_id_token() {
+        let parsed = parse_single_item("1537450185").unwrap();
+        assert_eq!(parsed, track("1537450185", None));
+        assert_eq!(parsed.kind, TargetKind::Track);
+        assert!(parsed.storefront.is_none());
+    }
+
+    #[test]
+    fn rejects_id_prefixed_track_id() {
+        assert!(parse_single_item("id1537450185").is_none());
+        assert!(parse_single_item("ID1537450185").is_none());
+        assert!(parse_single_item("Id1537450185").is_none());
+        assert!(parse_alac_input("/get id1537450185", None).is_none());
+    }
+
+    #[test]
+    fn rejects_partial_and_non_numeric_id_tokens() {
+        assert!(parse_single_item("1537450185abc").is_none());
+        assert!(parse_single_item("12a").is_none());
+        assert!(parse_single_item("1537450185id").is_none());
+        assert!(parse_single_item("1024x").is_none());
+        assert!(parse_single_item("v2").is_none());
+        assert!(parse_single_item("+1537450185").is_none());
+        assert!(parse_single_item("-1537450185").is_none());
+        assert!(parse_single_item("1.5").is_none());
+        assert!(parse_single_item("id123abc").is_none());
+        assert!(parse_single_item("id").is_none());
+        assert!(parse_single_item("idabc").is_none());
+    }
+
+    #[test]
+    fn get_parses_single_bare_track_id() {
+        let res = parse_alac_input("/get 1537450185", None).unwrap();
+        assert_eq!(res.items, vec![track("1537450185", None)]);
+        assert_eq!(res.track_id, "1537450185");
+        assert!(res.storefront.is_none());
+        assert!(!res.is_album && !res.is_playlist && !res.is_artist);
+    }
+
+    #[test]
+    fn get_parses_multiple_bare_track_ids() {
+        let res = parse_alac_input("/get 111 222", None).unwrap();
+        assert_eq!(res.items, vec![track("111", None), track("222", None)]);
+    }
+
+    #[test]
+    fn get_deduplicates_repeated_bare_track_ids() {
+        let res = parse_alac_input("/get 111 111", None).unwrap();
+        assert_eq!(res.items, vec![track("111", None)]);
+    }
+
+    #[test]
+    fn get_bare_track_id_composes_with_force_flag() {
+        let res = parse_alac_input("/get 123 -f", None).unwrap();
+        assert!(res.force);
+        assert_eq!(res.items, vec![track("123", None)]);
+    }
+
+    #[test]
+    fn batch_extracts_bare_track_ids() {
+        let items = extract_batch_items("1537450185\n1537450186");
+        assert_eq!(
+            items,
+            vec![track("1537450185", None), track("1537450186", None)]
+        );
+    }
+
+    #[test]
+    fn batch_ignores_numeric_looking_junk() {
+        let items =
+            extract_batch_items("# quality notes\n1024x\nv2\n12a\n1537450185\n1537450185id");
+        assert_eq!(items, vec![track("1537450185", None)]);
     }
 
     #[test]

@@ -64,9 +64,9 @@ pub fn feature_gate(
 
 pub fn usage(is_cache_only: bool) -> &'static str {
     if is_cache_only {
-        "<b>Apple Music dumper (admin)</b><br/><br/><blockquote><b>Usage:</b><br/>• <code>/get &lt;Apple Music link&gt;</code><br/>• Send multiple links or attach a <code>.txt</code> file<br/>• Multi-track albums are archived as ZIPs<br/>• Option: <code>-f</code> (force re-rip)<br/><i>Seeds primary audio and optional Dolby Atmos into the dump channel and database.</i></blockquote>"
+        "<b>Apple Music dumper (admin)</b><br/><br/><blockquote><b>Usage:</b><br/>• <code>/get &lt;Apple Music link&gt;</code><br/>• <code>/get &lt;track_id&gt;</code> for a bare track id (default storefront)<br/>• Send multiple links or attach a <code>.txt</code> file<br/>• Multi-track albums are archived as ZIPs<br/>• Option: <code>-f</code> (force re-rip)<br/><i>Seeds primary audio and optional Dolby Atmos into the dump channel and database.</i></blockquote>"
     } else {
-        "<b>Apple Music downloader</b><br/><br/><blockquote><b>Supported inputs:</b><br/>• <code>/get &lt;Apple Music link&gt;</code><br/>• Send multiple links or attach a <code>.txt</code> file<br/>• Multi-track albums are delivered as ZIPs automatically<br/>• Primary audio plus optional Dolby Atmos<br/>• Missing Atmos is silent<br/>• Cancel with the Cancel download button<br/>• Option: <code>-f</code> (force re-rip)</blockquote>"
+        "<b>Apple Music downloader</b><br/><br/><blockquote><b>Supported inputs:</b><br/>• <code>/get &lt;Apple Music link&gt;</code><br/>• <code>/get &lt;track_id&gt;</code> for a bare track id (default storefront)<br/>• Send multiple links or attach a <code>.txt</code> file<br/>• Multi-track albums are delivered as ZIPs automatically<br/>• Primary audio plus optional Dolby Atmos<br/>• Missing Atmos is silent<br/>• Cancel with the Cancel download button<br/>• Option: <code>-f</code> (force re-rip)</blockquote>"
     }
 }
 
@@ -77,6 +77,7 @@ mod tests {
     fn usage_and_restrictions_are_actionable() {
         assert!(usage(false).contains("Cancel download button"));
         assert!(usage(false).contains("/get"));
+        assert!(usage(false).contains("/get &lt;track_id&gt;"));
         assert!(usage(false).contains("optional Dolby Atmos"));
         assert!(!usage(false).contains("/alac"));
         assert!(!usage(false).contains('🎵'));

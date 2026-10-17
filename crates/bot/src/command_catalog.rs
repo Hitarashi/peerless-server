@@ -23,7 +23,7 @@ pub const COMMANDS: &[CommandDescriptor] = &[
         name: "get",
         role: CommandRole::User,
         summary: "Download primary audio plus optional Dolby Atmos",
-        usage: "/get <Apple Music link> [-f]",
+        usage: "/get <Apple Music link> or <track_id> [-f]",
     },
     CommandDescriptor {
         name: "search",
@@ -41,7 +41,7 @@ pub const COMMANDS: &[CommandDescriptor] = &[
         name: "info",
         role: CommandRole::User,
         summary: "Inspect metadata and cache status",
-        usage: "/info <Apple Music link>",
+        usage: "/info <Apple Music link> or <track_id>",
     },
     CommandDescriptor {
         name: "spec",
@@ -71,7 +71,7 @@ pub const COMMANDS: &[CommandDescriptor] = &[
         name: "delete",
         role: CommandRole::Admin,
         summary: "Delete a cached track",
-        usage: "/delete <Apple Music link>",
+        usage: "/delete <Apple Music link> or <track_id>",
     },
     CommandDescriptor {
         name: "auth",

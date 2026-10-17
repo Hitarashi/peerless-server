@@ -8,7 +8,7 @@ use crate::{
     html::{escape, parse_dynamic_html},
 };
 
-const USAGE: &str = "<b>Track info usage</b><br/><br/><blockquote>• <code>/info &lt;Apple Music link&gt;</code><br/>• Reply to an Apple Music link with <code>/info</code></blockquote>";
+const USAGE: &str = "<b>Track info usage</b><br/><br/><blockquote>• <code>/info &lt;Apple Music link&gt;</code><br/>• <code>/info &lt;track_id&gt;</code> for a bare track id<br/>• Reply to an Apple Music link with <code>/info</code></blockquote>";
 
 async fn reply_text(msg: &ferogram::update::IncomingMessage, state: &BotState) -> Option<String> {
     let reply_header = match &msg.raw {
