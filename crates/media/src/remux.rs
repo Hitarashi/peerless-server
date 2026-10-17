@@ -164,7 +164,18 @@ fn remux_fragmented(
         },
         width: track.width,
         height: track.height,
-        edit_list: track.edit_list.clone(),
+        // Deliberately dropped. In a fragmented source the edit list is
+        // vestigial: duration lives in the fragments, so `segment_duration` is
+        // usually 0. Carrying it into a progressive file makes it
+        // authoritative, and `Mp4Writer::track_movie_duration` short-circuits
+        // on a non-empty list and returns that sum -- writing `mvhd`/`tkhd`
+        // duration as 0 while `mdhd` (computed from the sample table) stays
+        // correct. Players that trust the movie header then report a 0:00
+        // track and refuse to play, while decoders that read `mdat`
+        // sequentially are unaffected. Leaving it empty makes the writer fall
+        // through to the media-duration scaling, which is correct for the
+        // progressive output we just built.
+        edit_list: Vec::new(),
     };
     let config = WriterConfig {
         movie_timescale: reader.movie_timescale(),
@@ -527,5 +538,93 @@ fn remux_error(context: &str, error: Mp4Error) -> MediaError {
     match error {
         Mp4Error::Io(error) => MediaError::Io(error),
         other => invalid(format!("{context}: {other}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    fn fixture_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/fragmented_zero_edit_list.m4a")
+    }
+
+    /// Reads `mvhd` and `tkhd` duration straight out of a progressive file's
+    /// `moov`, using the box offsets rather than any helper, so the assertion
+    /// cannot inherit a bug from the code under test.
+    fn header_durations(path: &Path) -> (u64, u64) {
+        let mut file = File::open(path).expect("open remuxed output");
+        let len = file.metadata().expect("stat").len();
+        let mut moov = None;
+        let mut offset = 0u64;
+        while offset < len {
+            file.seek(SeekFrom::Start(offset)).expect("seek");
+            let mut header = [0u8; 8];
+            file.read_exact(&mut header).expect("read box header");
+            let size = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as u64;
+            let kind = &header[4..8];
+            if kind == b"moov" {
+                moov = Some((offset + 8, offset + size));
+            }
+            assert!(size >= 8, "box at {offset} is undersized");
+            offset += size;
+        }
+        let (start, end) = moov.expect("remuxed output has a moov");
+        file.seek(SeekFrom::Start(start)).expect("seek moov");
+        let mut moov = vec![0u8; (end - start) as usize];
+        file.read_exact(&mut moov).expect("read moov");
+
+        let find = |tag: &[u8; 4]| -> usize {
+            moov.windows(4)
+                .position(|window| window == tag)
+                .expect("box present in moov")
+        };
+        // mvhd/mdhd v0: creation, modification, timescale, duration.
+        // tkhd v0: creation, modification, track_ID, reserved, duration.
+        let u32_at = |base: usize, offset: usize| -> u64 {
+            let at = base + offset;
+            u64::from(u32::from_be_bytes([
+                moov[at],
+                moov[at + 1],
+                moov[at + 2],
+                moov[at + 3],
+            ]))
+        };
+        let mvhd = find(b"mvhd");
+        let tkhd = find(b"tkhd");
+        (u32_at(mvhd, 20), u32_at(tkhd, 24))
+    }
+
+    fn remux_fixture(destination: &Path) -> bool {
+        remux_if_fragmented(&fixture_path(), destination, &CancellationToken::new())
+            .expect("remux succeeds")
+    }
+
+    /// The source carries an `elst` whose `segment_duration` is 0, which is
+    /// normal for a fragmented file and meaningless in a progressive one.
+    /// `Mp4Writer` sums `segment_duration` when an edit list is present, so
+    /// copying it through wrote `mvhd`/`tkhd` duration as 0 while `mdhd` stayed
+    /// correct. Players that trust the movie header then saw a 0:00 track.
+    #[test]
+    fn remuxed_output_reports_a_nonzero_movie_duration() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let output = directory.path().join("out.m4a");
+
+        assert!(remux_fixture(&output), "fixture is fragmented");
+
+        let (mvhd, tkhd) = header_durations(&output);
+        assert_ne!(
+            mvhd, 0,
+            "mvhd duration must not be zero; a 0-duration movie header makes \
+             strict players reject the file"
+        );
+        assert_ne!(
+            tkhd, 0,
+            "tkhd duration must not be zero; a 0-duration track header makes \
+             strict players reject the file"
+        );
     }
 }
