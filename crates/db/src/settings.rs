@@ -194,6 +194,7 @@ fn canonical_key(key: &str) -> Option<&'static str> {
         "lyricsporn_api_url" | "lyricspornApiUrl" | "lyricsporn_url" | "lyricspornUrl" => {
             Some("lyricsporn_api_url")
         }
+        "default_storefront" | "defaultStorefront" | "storefront" => Some("default_storefront"),
         _ => None,
     }
 }
@@ -261,6 +262,19 @@ fn apply_value(settings: &mut BotSettings, key: &str, value: &Value) -> bool {
                 false
             }
         }
+        "default_storefront" => {
+            if let Some(s) = value.as_str() {
+                let trimmed = s.trim().to_ascii_lowercase();
+                if trimmed.len() == 2 && trimmed.chars().all(|c| c.is_ascii_alphabetic()) {
+                    settings.default_storefront = trimmed;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        }
         _ => false,
     }
 }
@@ -321,6 +335,38 @@ mod tests {
             &json!(8080)
         ));
         assert_eq!(settings.stream_server_port, 8080);
+
+        assert_eq!(canonical_key("storefront"), Some("default_storefront"));
+        assert_eq!(
+            canonical_key("default_storefront"),
+            Some("default_storefront")
+        );
+
+        assert!(apply_value(
+            &mut settings,
+            "default_storefront",
+            &json!("us")
+        ));
+        assert_eq!(settings.default_storefront, "us");
+
+        assert!(apply_value(
+            &mut settings,
+            "default_storefront",
+            &json!("  GB  ")
+        ));
+        assert_eq!(settings.default_storefront, "gb");
+
+        assert!(!apply_value(
+            &mut settings,
+            "default_storefront",
+            &json!("invalid")
+        ));
+        assert!(!apply_value(
+            &mut settings,
+            "default_storefront",
+            &json!("12")
+        ));
+        assert_eq!(settings.default_storefront, "gb");
     }
 
     #[test]

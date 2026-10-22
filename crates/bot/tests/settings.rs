@@ -15,7 +15,7 @@ fn settings_text_renders_expected_layout() {
     assert!(text.contains("• <b>Apple Music Ripping:</b> Enabled<br/>"));
     assert!(text.contains("• <b>Album Ripping:</b> Enabled<br/>"));
     assert!(text.ends_with(
-        "<blockquote><i>Use the buttons below to toggle settings. Set or clear the API URL with <code>/settings lyricsporn_url &lt;URL|clear&gt;</code>.</i></blockquote>"
+        "<blockquote><i>Select a setting below to view details, learn how to configure it, or change values.</i></blockquote>"
     ));
 }
 
@@ -53,4 +53,50 @@ fn provider_setting_callbacks_round_trip() {
         TelegramAction::decode("settings:apple").unwrap(),
         apple_action
     );
+}
+
+#[test]
+fn catalog_and_detail_callbacks_round_trip() {
+    use bot::interaction::{SettingPage, SettingsAction, TelegramAction};
+
+    let pages = [
+        (SettingPage::Catalog, "settings:view:catalog"),
+        (SettingPage::Mode, "settings:view:mode"),
+        (SettingPage::Apple, "settings:view:apple"),
+        (SettingPage::Scopes, "settings:view:scopes"),
+        (SettingPage::Lyricsporn, "settings:view:lyricsporn"),
+        (SettingPage::Stream, "settings:view:stream"),
+        (SettingPage::Storefront, "settings:view:storefront"),
+    ];
+
+    for (page, expected_code) in pages {
+        let action = TelegramAction::Settings(SettingsAction::View(page));
+        assert_eq!(action.encode(), expected_code);
+        assert_eq!(TelegramAction::decode(expected_code).unwrap(), action);
+    }
+
+    let set_mode = TelegramAction::Settings(SettingsAction::SetMode(RippingMode::Paused));
+    assert_eq!(set_mode.encode(), "settings:set_mode:paused");
+    assert_eq!(
+        TelegramAction::decode("settings:set_mode:paused").unwrap(),
+        set_mode
+    );
+
+    let clear_lp = TelegramAction::Settings(SettingsAction::ClearLyricsporn);
+    assert_eq!(clear_lp.encode(), "settings:clear:lyricsporn");
+    assert_eq!(
+        TelegramAction::decode("settings:clear:lyricsporn").unwrap(),
+        clear_lp
+    );
+
+    let clear_stream = TelegramAction::Settings(SettingsAction::ClearStreamUrl);
+    assert_eq!(clear_stream.encode(), "settings:clear:stream");
+    assert_eq!(
+        TelegramAction::decode("settings:clear:stream").unwrap(),
+        clear_stream
+    );
+
+    let sf = TelegramAction::Settings(SettingsAction::SetStorefront("jp".to_string()));
+    assert_eq!(sf.encode(), "settings:sf:jp");
+    assert_eq!(TelegramAction::decode("settings:sf:jp").unwrap(), sf);
 }

@@ -35,12 +35,28 @@ pub enum TelegramAction {
     Noop,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingPage {
+    Catalog,
+    Mode,
+    Apple,
+    Scopes,
+    Lyricsporn,
+    Stream,
+    Storefront,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SettingsAction {
     Close,
     Refresh,
     Mode,
     Toggle(SettingFeature),
+    View(SettingPage),
+    SetMode(peerless_core::RippingMode),
+    ClearLyricsporn,
+    ClearStreamUrl,
+    SetStorefront(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -229,6 +245,25 @@ fn decode_settings(parts: Vec<&str>) -> Result<SettingsAction, DecodeError> {
     match parts.as_slice() {
         ["close"] => Ok(SettingsAction::Close),
         ["refresh"] => Ok(SettingsAction::Refresh),
+        ["home"] | ["cat"] | ["catalog"] | ["view", "catalog"] => {
+            Ok(SettingsAction::View(SettingPage::Catalog))
+        }
+        ["view", "mode"] => Ok(SettingsAction::View(SettingPage::Mode)),
+        ["view", "apple"] => Ok(SettingsAction::View(SettingPage::Apple)),
+        ["view", "scopes"] => Ok(SettingsAction::View(SettingPage::Scopes)),
+        ["view", "lyricsporn"] => Ok(SettingsAction::View(SettingPage::Lyricsporn)),
+        ["view", "stream"] => Ok(SettingsAction::View(SettingPage::Stream)),
+        ["view", "storefront"] => Ok(SettingsAction::View(SettingPage::Storefront)),
+        ["set_mode", "live"] => Ok(SettingsAction::SetMode(peerless_core::RippingMode::Live)),
+        ["set_mode", "cache_only"] => Ok(SettingsAction::SetMode(
+            peerless_core::RippingMode::CacheOnly,
+        )),
+        ["set_mode", "paused"] => Ok(SettingsAction::SetMode(peerless_core::RippingMode::Paused)),
+        ["clear", "lyricsporn"] => Ok(SettingsAction::ClearLyricsporn),
+        ["clear", "stream"] | ["clear", "stream_url"] => Ok(SettingsAction::ClearStreamUrl),
+        ["sf", code] if code.len() == 2 && code.chars().all(|c| c.is_ascii_alphabetic()) => {
+            Ok(SettingsAction::SetStorefront((*code).to_ascii_lowercase()))
+        }
         ["mode"] => Ok(SettingsAction::Mode),
         ["apple"] => Ok(SettingsAction::Toggle(SettingFeature::Apple)),
         ["album"] => Ok(SettingsAction::Toggle(SettingFeature::Album)),
@@ -308,6 +343,22 @@ fn encode_settings(action: &SettingsAction) -> String {
                 SettingFeature::MultiLink => "multilink",
             }
         ),
+        SettingsAction::View(page) => format!(
+            "settings:view:{}",
+            match page {
+                SettingPage::Catalog => "catalog",
+                SettingPage::Mode => "mode",
+                SettingPage::Apple => "apple",
+                SettingPage::Scopes => "scopes",
+                SettingPage::Lyricsporn => "lyricsporn",
+                SettingPage::Stream => "stream",
+                SettingPage::Storefront => "storefront",
+            }
+        ),
+        SettingsAction::SetMode(mode) => format!("settings:set_mode:{}", mode.as_str()),
+        SettingsAction::ClearLyricsporn => "settings:clear:lyricsporn".to_owned(),
+        SettingsAction::ClearStreamUrl => "settings:clear:stream".to_owned(),
+        SettingsAction::SetStorefront(sf) => format!("settings:sf:{}", sf.to_ascii_lowercase()),
     }
 }
 
@@ -361,6 +412,18 @@ mod tests {
                 job_id: "job-1".into(),
             },
             TelegramAction::Settings(SettingsAction::Toggle(SettingFeature::Apple)),
+            TelegramAction::Settings(SettingsAction::View(SettingPage::Catalog)),
+            TelegramAction::Settings(SettingsAction::View(SettingPage::Mode)),
+            TelegramAction::Settings(SettingsAction::View(SettingPage::Scopes)),
+            TelegramAction::Settings(SettingsAction::View(SettingPage::Lyricsporn)),
+            TelegramAction::Settings(SettingsAction::View(SettingPage::Stream)),
+            TelegramAction::Settings(SettingsAction::View(SettingPage::Storefront)),
+            TelegramAction::Settings(SettingsAction::SetMode(
+                peerless_core::RippingMode::CacheOnly,
+            )),
+            TelegramAction::Settings(SettingsAction::ClearLyricsporn),
+            TelegramAction::Settings(SettingsAction::ClearStreamUrl),
+            TelegramAction::Settings(SettingsAction::SetStorefront("us".into())),
             TelegramAction::Report(ReportAction::Dismiss {
                 report_id: "7".into(),
             }),
